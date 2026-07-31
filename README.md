@@ -21,9 +21,11 @@ npm run dev
 
 ## Android 编译（GitHub Actions）
 
-推送到 `main` 或在 Actions 里手动 **Run workflow**，完成后在对应 run 的 **Artifacts** 下载 `bookreader-debug-apk`。
+推送到 `main` 或在 Actions 里手动 **Run workflow**，完成后在对应 run 的 **Artifacts** 下载 **`bookreader-release-apk`**（已正式签名，可直接装到小米）。
 
 仓库：https://github.com/johnsondiao/bookreader
+
+签名文件在 `android/keystore/`，配置见 `android/keystore.properties`。仓库若公开，请改密并把密钥改成 GitHub Secrets。
 
 ## 本地 Capacitor（可选）
 
