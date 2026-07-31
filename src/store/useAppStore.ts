@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
 import { createSampleBooks } from '../data/sampleBooks'
 import type { Book, ProgressSnapshot, ReaderSettings, Screen, TabId } from '../types'
+import type { ParsedEbook } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphs } from '../utils/chapterParser'
 
 interface AppState {
@@ -18,6 +19,7 @@ interface AppState {
   openBook: (bookId: string) => void
   closeReader: () => void
   importTextBook: (content: string, filename?: string) => string
+  importParsedBook: (parsed: ParsedEbook) => string
   removeBook: (bookId: string) => void
   updateReadingProgress: (payload: {
     bookId: string
@@ -39,6 +41,36 @@ const defaultSettings: ReaderSettings = {
   theme: 'day',
   ttsRate: 1,
   autoScroll: true,
+}
+
+function buildBook(parsed: {
+  title: string
+  author: string
+  content: string
+  chapters: { title: string; startIndex: number; content: string }[]
+  coverColor: string
+}): Book {
+  const chapters = parsed.chapters.map((c, i) => ({
+    id: `ch-${i}`,
+    title: c.title,
+    startIndex: c.startIndex,
+    content: c.content,
+  }))
+  return {
+    id: uuid(),
+    title: parsed.title,
+    author: parsed.author,
+    coverColor: parsed.coverColor,
+    coverEmoji: parsed.title.slice(0, 1) || '书',
+    content: parsed.content,
+    chapters,
+    addedAt: Date.now(),
+    lastReadAt: Date.now(),
+    chapterId: chapters[0]?.id ?? '',
+    paragraphIndex: 0,
+    charOffset: 0,
+    progressPercent: 0,
+  }
 }
 
 export const useAppStore = create<AppState>()(
@@ -66,26 +98,25 @@ export const useAppStore = create<AppState>()(
 
       importTextBook: (content, filename) => {
         const chapters = parseChapters(content)
-        const id = uuid()
-        const color = COVER_COLORS[get().books.length % COVER_COLORS.length]
         const title = guessTitleFromContent(content, filename)
-        const book: Book = {
-          id,
+        const book = buildBook({
           title,
           author: '本地导入',
-          coverColor: color,
-          coverEmoji: title.slice(0, 1) || '书',
           content,
           chapters,
-          addedAt: Date.now(),
-          lastReadAt: Date.now(),
-          chapterId: chapters[0]?.id ?? '',
-          paragraphIndex: 0,
-          charOffset: 0,
-          progressPercent: 0,
-        }
+          coverColor: COVER_COLORS[get().books.length % COVER_COLORS.length],
+        })
         set({ books: [book, ...get().books], showImportHint: false })
-        return id
+        return book.id
+      },
+
+      importParsedBook: (parsed) => {
+        const book = buildBook({
+          ...parsed,
+          coverColor: COVER_COLORS[get().books.length % COVER_COLORS.length],
+        })
+        set({ books: [book, ...get().books], showImportHint: false })
+        return book.id
       },
 
       removeBook: (bookId) => {
