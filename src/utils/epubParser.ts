@@ -4,8 +4,15 @@ import type { Chapter } from '../types'
 export interface ParsedEbook {
   title: string
   author: string
+  /** 已弃用双份存储：正文只在 chapters 里，此字段恒为空串 */
   content: string
   chapters: Omit<Chapter, 'id'>[]
+}
+
+export type EpubParseProgress = {
+  phase: 'unzip' | 'chapters'
+  current: number
+  total: number
 }
 
 function decodeXml(text: string) {
@@ -35,6 +42,16 @@ function stripHtml(html: string): string {
   return text
 }
 
+/** 避免对超大 HTML 用非贪婪 [\s\S]*? 正则 */
+function extractBody(html: string): string {
+  const open = html.match(/<body\b[^>]*>/i)
+  if (!open || open.index == null) return html
+  const start = open.index + open[0].length
+  const close = html.slice(start).match(/<\/body>/i)
+  if (!close || close.index == null) return html.slice(start)
+  return html.slice(start, start + close.index)
+}
+
 function dirname(path: string) {
   const i = path.lastIndexOf('/')
   return i >= 0 ? path.slice(0, i) : ''
@@ -58,33 +75,55 @@ function attr(tag: string, name: string): string | null {
   return m ? m[1] : null
 }
 
-function findZipFile(zip: JSZip, path: string) {
-  const normalized = path.replace(/^\.\//, '')
+function buildZipIndex(zip: JSZip) {
+  const index = new Map<string, JSZip.JSZipObject>()
+  const lowerIndex = new Map<string, JSZip.JSZipObject>()
+  zip.forEach((relativePath, file) => {
+    if (file.dir) return
+    const path = relativePath.replace(/\\/g, '/')
+    index.set(path, file)
+    lowerIndex.set(path.toLowerCase(), file)
+  })
+  return { index, lowerIndex }
+}
+
+type ZipIndex = ReturnType<typeof buildZipIndex>
+
+function findZipFile(zipIndex: ZipIndex, path: string) {
+  const normalized = path.replace(/^\.\//, '').replace(/\\/g, '/')
   return (
-    zip.file(normalized) ||
-    zip.file(decodeURIComponent(normalized)) ||
-    Object.values(zip.files).find((f) => !f.dir && f.name.replace(/\\/g, '/') === normalized) ||
+    zipIndex.index.get(normalized) ||
+    zipIndex.index.get(decodeURIComponent(normalized)) ||
+    zipIndex.lowerIndex.get(normalized.toLowerCase()) ||
     null
   )
 }
 
-async function readZipText(zip: JSZip, path: string): Promise<string | null> {
-  const file = findZipFile(zip, path)
+async function readZipText(zipIndex: ZipIndex, path: string): Promise<string | null> {
+  const file = findZipFile(zipIndex, path)
   if (!file) return null
   return file.async('text')
+}
+
+function yieldToMain() {
+  return new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => setTimeout(resolve, 0))
+    } else {
+      setTimeout(resolve, 0)
+    }
+  })
 }
 
 /** 从 nav / ncx 提取标题映射 href -> title */
 function parseNavTitles(navXml: string, navDir: string): Map<string, string> {
   const map = new Map<string, string>()
-  // EPUB3 nav
   const contentLinks = [...navXml.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
   for (const m of contentLinks) {
     const href = resolvePath(navDir, m[1])
     const title = stripHtml(m[2]).trim()
     if (href && title) map.set(href, title)
   }
-  // EPUB2 NCX
   const navPoints = [...navXml.matchAll(/<navPoint[\s\S]*?<\/navPoint>/gi)]
   for (const block of navPoints) {
     const label = block[0].match(/<navLabel>[\s\S]*?<text[^>]*>([\s\S]*?)<\/text>/i)
@@ -106,10 +145,23 @@ function titleFromPath(path: string, index: number) {
   return `第 ${index + 1} 章`
 }
 
-export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<ParsedEbook> {
-  const zip = await JSZip.loadAsync(data)
+export async function parseEpub(
+  data: ArrayBuffer,
+  filename?: string,
+  onProgress?: (p: EpubParseProgress) => void,
+): Promise<ParsedEbook> {
+  onProgress?.({ phase: 'unzip', current: 0, total: 1 })
+  await yieldToMain()
 
-  const containerXml = await readZipText(zip, 'META-INF/container.xml')
+  // 只解析 ZIP 目录，正文按需解压；跳过图片等二进制可减少内存压力
+  const zip = await JSZip.loadAsync(data, {
+    createFolders: false,
+  })
+  const zipIndex = buildZipIndex(zip)
+  onProgress?.({ phase: 'unzip', current: 1, total: 1 })
+  await yieldToMain()
+
+  const containerXml = await readZipText(zipIndex, 'META-INF/container.xml')
   if (!containerXml) throw new Error('无效的 EPUB：缺少 container.xml')
 
   const rootfile = containerXml.match(/full-path\s*=\s*["']([^"']+)["']/i)?.[1]
@@ -117,7 +169,7 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
 
   const opfPath = rootfile.replace(/\\/g, '/')
   const opfDir = dirname(opfPath)
-  const opfXml = await readZipText(zip, opfPath)
+  const opfXml = await readZipText(zipIndex, opfPath)
   if (!opfXml) throw new Error('无效的 EPUB：无法读取 OPF')
 
   const title =
@@ -128,7 +180,6 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
   const author =
     stripHtml(opfXml.match(/<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i)?.[1] || '') || '未知作者'
 
-  // manifest id -> href + media-type
   const manifest = new Map<string, { href: string; type: string }>()
   const manifestBlock = opfXml.match(/<manifest[\s\S]*?<\/manifest>/i)?.[0] || ''
   for (const m of manifestBlock.matchAll(/<item\b[^>]*>/gi)) {
@@ -140,7 +191,6 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
     }
   }
 
-  // spine order
   const spineIds: string[] = []
   const spineBlock = opfXml.match(/<spine[\s\S]*?<\/spine>/i)?.[0] || ''
   for (const m of spineBlock.matchAll(/<itemref\b[^>]*>/gi)) {
@@ -148,7 +198,6 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
     if (idref) spineIds.push(idref)
   }
 
-  // nav titles
   let titleMap = new Map<string, string>()
   let navHref: string | null = null
   for (const m of manifestBlock.matchAll(/<item\b[^>]*>/gi)) {
@@ -164,26 +213,33 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
     if (ncx) navHref = ncx.href
   }
   if (navHref) {
-    const navXml = await readZipText(zip, navHref)
+    const navXml = await readZipText(zipIndex, navHref)
     if (navXml) titleMap = parseNavTitles(navXml, dirname(navHref))
   }
 
   const chapters: Omit<Chapter, 'id'>[] = []
   let cursor = 0
+  const total = spineIds.length
 
   for (let i = 0; i < spineIds.length; i++) {
+    if (i % 2 === 0) {
+      onProgress?.({ phase: 'chapters', current: i, total })
+      await yieldToMain()
+    }
+
     const item = manifest.get(spineIds[i])
     if (!item) continue
     if (item.type && !/html|xml|svg/i.test(item.type) && !/\.x?html?$/i.test(item.href)) continue
 
-    const html = await readZipText(zip, item.href)
+    // 跳过封面图等非文本；只读 xhtml/html
+    if (/\.(jpe?g|png|gif|webp|svg|ttf|otf|woff2?|css|mp3|mp4)$/i.test(item.href)) continue
+
+    const html = await readZipText(zipIndex, item.href)
     if (!html) continue
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)
-    const raw = bodyMatch ? bodyMatch[1] : html
+    const raw = extractBody(html)
     const text = stripHtml(raw)
     if (!text || text.length < 2) continue
 
-    // skip obvious cover/toc-only short pages without paragraphs
     const heading = html.match(/<h[1-3][^>]*>([\s\S]*?)<\/h[1-3]>/i)
     const fromNav = titleMap.get(item.href) || titleMap.get(item.href.split('#')[0])
     const chapterTitle =
@@ -199,11 +255,12 @@ export async function parseEpub(data: ArrayBuffer, filename?: string): Promise<P
     cursor += text.length + 2
   }
 
+  onProgress?.({ phase: 'chapters', current: total, total })
+
   if (chapters.length === 0) {
     throw new Error('未能从 EPUB 中提取到正文，请换一本试试')
   }
 
-  const content = chapters.map((c) => `${c.title}\n\n${c.content}`).join('\n\n')
-
-  return { title, author, content, chapters }
+  // 不拼接全书正文，避免大书内存翻倍
+  return { title, author, content: '', chapters }
 }

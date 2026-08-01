@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { BottomNav } from './components/BottomNav'
 import { HistoryPage } from './pages/HistoryPage'
 import { MePage } from './pages/MePage'
@@ -23,6 +24,28 @@ function Home() {
 
 export default function App() {
   const screen = useAppStore((s) => s.screen)
+  const [hydrated, setHydrated] = useState(() => useAppStore.persist.hasHydrated())
+
+  useEffect(() => {
+    const unsub = useAppStore.persist.onFinishHydration(() => setHydrated(true))
+    if (useAppStore.persist.hasHydrated()) setHydrated(true)
+    return unsub
+  }, [])
+
+  if (!hydrated) {
+    return (
+      <div className="app-stage">
+        <div className="phone-shell">
+          <div className="phone-notch" />
+          <div className="phone-screen">
+            <div className="empty-state" style={{ paddingTop: '40%' }}>
+              加载书架…
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="app-stage">

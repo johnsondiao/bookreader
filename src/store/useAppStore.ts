@@ -5,6 +5,7 @@ import { createSampleBooks } from '../data/sampleBooks'
 import type { Book, ProgressSnapshot, ReaderSettings, Screen, TabId } from '../types'
 import type { ParsedEbook } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphs } from '../utils/chapterParser'
+import { createIdbStorage } from '../utils/idbStorage'
 
 interface AppState {
   books: Book[]
@@ -62,7 +63,8 @@ function buildBook(parsed: {
     author: parsed.author,
     coverColor: parsed.coverColor,
     coverEmoji: parsed.title.slice(0, 1) || '书',
-    content: parsed.content,
+    // 正文只保存在 chapters，避免大书双份占用内存/存储
+    content: '',
     chapters,
     addedAt: Date.now(),
     lastReadAt: Date.now(),
@@ -179,13 +181,24 @@ export const useAppStore = create<AppState>()(
       getBook: (id) => get().books.find((b) => b.id === id),
     }),
     {
-      name: 'langyue-reader-v1',
+      name: 'langyue-reader-v2',
+      storage: createIdbStorage(),
       partialize: (s) => ({
-        books: s.books,
+        books: s.books.map((b) => ({ ...b, content: '' })),
         snapshots: s.snapshots,
         settings: s.settings,
         showImportHint: s.showImportHint,
       }),
+      merge: (persisted, current) => {
+        const p = persisted as Partial<AppState> | undefined
+        if (!p) return current
+        return {
+          ...current,
+          ...p,
+          // 旧数据可能双份存了全书正文，恢复时丢掉 content
+          books: (p.books ?? current.books).map((b) => ({ ...b, content: '' })),
+        }
+      },
     },
   ),
 )
