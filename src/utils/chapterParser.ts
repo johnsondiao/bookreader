@@ -34,12 +34,42 @@ export function parseChapters(content: string): Chapter[] {
   })
 }
 
+/** 单段过长时再切刀，避免一个巨大 DOM 文本节点卡死页面 */
+const MAX_PARA_CHARS = 600
+
 /** 按段落拆分，便于朗读定位 */
 export function splitParagraphs(text: string): string[] {
-  return text
+  const raw = text
     .split(/\n+/)
     .map((p) => p.trim())
     .filter(Boolean)
+
+  const out: string[] = []
+  for (const p of raw) {
+    if (p.length <= MAX_PARA_CHARS) {
+      out.push(p)
+      continue
+    }
+    // 尽量在句号/问号处切开
+    let rest = p
+    while (rest.length > MAX_PARA_CHARS) {
+      const window = rest.slice(0, MAX_PARA_CHARS)
+      const breakAt = Math.max(
+        window.lastIndexOf('。'),
+        window.lastIndexOf('！'),
+        window.lastIndexOf('？'),
+        window.lastIndexOf('；'),
+        window.lastIndexOf('. '),
+        window.lastIndexOf('! '),
+        window.lastIndexOf('? '),
+      )
+      const cut = breakAt > MAX_PARA_CHARS * 0.4 ? breakAt + 1 : MAX_PARA_CHARS
+      out.push(rest.slice(0, cut).trim())
+      rest = rest.slice(cut).trim()
+    }
+    if (rest) out.push(rest)
+  }
+  return out
 }
 
 export function calcProgress(chapterIndex: number, chapterCount: number, paragraphIndex: number, paragraphCount: number): number {

@@ -527,6 +527,53 @@ button {
   font-family: 'Noto Serif SC', 'Songti SC', serif;
 }
 
+.reader-content.has-debug {
+  padding-top: 118px;
+}
+
+.reader-debug {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  padding: 8px 10px;
+  font-size: 10px;
+  line-height: 1.45;
+  font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+  background: rgba(20, 24, 32, 0.92);
+  color: #9ad1ff;
+  pointer-events: none;
+  word-break: break-all;
+}
+
+.reader-debug.warn {
+  background: rgba(80, 40, 10, 0.94);
+  color: #ffd59a;
+}
+
+.reader-debug .err {
+  color: #ff8e8e;
+  margin-top: 2px;
+}
+
+.load-more-btn {
+  display: block;
+  width: 100%;
+  margin: 12px 0 24px;
+  padding: 12px;
+  border: 1px dashed rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.04);
+  color: inherit;
+  font-size: 14px;
+}
+
+.reader.theme-night .load-more-btn {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .reader-content .chapter-title {
   font-size: 1.35em;
   font-weight: 700;
@@ -706,6 +753,9 @@ button {
 
 .chapter-row {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   text-align: left;
   padding: 12px 16px;
   font-size: 14px;
