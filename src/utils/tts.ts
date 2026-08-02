@@ -11,8 +11,10 @@ export interface TtsController {
   stop: () => void
   getStatus: () => TtsStatus
   getEngine: () => 'native' | 'web' | 'none'
-  /** 探测设备语言/音色（调试与初始化用） */
   probe: () => Promise<Record<string, unknown>>
+  /** 打开系统「安装 TTS 语言数据」界面（Android） */
+  openLanguageInstall: () => Promise<void>
+  hasChineseSupport: () => boolean
 }
 
 function hasWebSpeech() {
@@ -33,6 +35,8 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       : 'none'
   let cachedLang: string | null = null
   let probed = false
+  let chineseOk = false
+  let installPrompted = false
 
   const pickVoice = () => {
     if (!hasWebSpeech()) return null
@@ -69,14 +73,43 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         .map((v, i) => ({ i, lang: v.lang, name: v.name, default: v.default }))
         .filter((v) => /zh|cmn|chi|chinese/i.test(`${v.lang} ${v.name}`))
         .slice(0, 20)
+      const anyCheck = Object.values(checks).some(Boolean)
+      const anyListed = ((result.languages as string[]) || []).some((l) => /zh|cmn|chi/i.test(l))
+      chineseOk = anyCheck || anyListed || ((result.zhVoices as unknown[]) || []).length > 0
+      result.chineseOk = chineseOk
     } catch (err) {
       result.probeError = err instanceof Error ? err.message : String(err)
+      chineseOk = false
     }
     probed = true
     // #region agent log
-    agentLog('tts.ts:probeNative', 'native TTS probe', result, 'A')
+    agentLog('tts.ts:probeNative', 'native TTS probe', result, 'B')
     // #endregion
     return result
+  }
+
+  const openLanguageInstall = async () => {
+    if (!Capacitor.isNativePlatform()) return
+    // #region agent log
+    agentLog('tts.ts:openLanguageInstall', 'opening TTS data installer', {}, 'B')
+    // #endregion
+    try {
+      await TextToSpeech.openInstall()
+    } catch (err) {
+      // #region agent log
+      agentLog(
+        'tts.ts:openLanguageInstall',
+        'openInstall failed',
+        { err: err instanceof Error ? err.message : String(err) },
+        'B',
+      )
+      // #endregion
+      throw new Error('无法打开语音包安装页面，请到系统设置 → 语言与输入法 → 文字转语音 中安装中文数据')
+    }
+    // 安装返回后强制重新探测
+    cachedLang = null
+    probed = false
+    chineseOk = false
   }
 
   const resolveNativeLang = async (): Promise<string> => {
@@ -105,10 +138,17 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       return hit
     }
     // #region agent log
-    agentLog('tts.ts:resolveNativeLang', 'no Chinese lang found, fallback zh-CN', { languages: languages.slice(0, 30), checks }, 'B')
+    agentLog('tts.ts:resolveNativeLang', 'no Chinese lang found', { languages: languages.slice(0, 30), checks }, 'B')
     // #endregion
-    cachedLang = 'zh-CN'
-    return cachedLang
+    if (!installPrompted) {
+      installPrompted = true
+      try {
+        await openLanguageInstall()
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new Error('设备缺少中文语音包。请安装「中文（简体）」语音数据后重试播放')
   }
 
   const speakWeb = (text: string, rate: number, pitch = 1) =>
@@ -207,6 +247,15 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
             // #endregion
           }
         }
+        if (!installPrompted) {
+          installPrompted = true
+          try {
+            await openLanguageInstall()
+          } catch {
+            /* ignore */
+          }
+        }
+        throw new Error('设备缺少中文语音包。请安装「中文（简体）」语音数据后重试播放')
       }
       throw err
     } finally {
@@ -217,9 +266,11 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
 
   return {
     getEngine: () => engine,
+    hasChineseSupport: () => chineseOk,
+    openLanguageInstall,
     probe: async () => {
       if (Capacitor.isNativePlatform()) return probeNative()
-      return { engine: 'web', hasWebSpeech: hasWebSpeech() }
+      return { engine: 'web', hasWebSpeech: hasWebSpeech(), chineseOk: hasWebSpeech() }
     },
     async speak(text, rate = 1, opts) {
       pausedText = null

@@ -114,12 +114,8 @@ export function ReaderPage() {
   // #region agent log
   useEffect(() => {
     void ttsRef.current.probe().then((info) => {
-      const checks = (info.langChecks || {}) as Record<string, boolean>
-      const ok = Object.entries(checks)
-        .filter(([, v]) => v)
-        .map(([k]) => k)
-      if (info.native && ok.length === 0) {
-        showToast('TTS未检测到中文语音包')
+      if (info.native && info.chineseOk === false) {
+        showToast('缺少中文语音包，可在设置中安装')
       }
     })
   }, [book?.id])
@@ -553,6 +549,28 @@ export function ReaderPage() {
                   +
                 </button>
               </div>
+            </div>
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+              <span>中文语音包</span>
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ width: '100%' }}
+                onClick={() => {
+                  void ttsRef.current
+                    .openLanguageInstall()
+                    .then(() => {
+                      showToast('请安装「中文（简体）」后返回重试朗读')
+                      return ttsRef.current.probe()
+                    })
+                    .catch((e) => showToast(e instanceof Error ? e.message : '打开安装页失败'))
+                }}
+              >
+                安装 / 管理语音数据
+              </button>
+              <span style={{ fontSize: 11, opacity: 0.65, lineHeight: 1.4 }}>
+                若提示语言不支持，需在系统中安装中文文字转语音（TTS）数据包。
+              </span>
             </div>
           </div>
         </div>

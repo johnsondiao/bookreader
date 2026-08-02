@@ -183,7 +183,16 @@ export const useAppStore = create<AppState>()(
         const paras = splitParagraphs(chapter.content)
         const progressPercent = calcProgress(chapterIndex, book.chapters.length, paragraphIndex, paras.length)
 
-        const readChapterIds = [...new Set([...(book.readChapterIds || []), chapterId])]
+        // 仅在真正读过（非仅跳转到章首）时记入已读
+        const visited =
+          paragraphIndex > 0 ||
+          source === 'tts' ||
+          note === '手动书签' ||
+          note === '点击定位' ||
+          note === '下翻定位'
+        const readChapterIds = visited
+          ? [...new Set([...(book.readChapterIds || []), chapterId])]
+          : book.readChapterIds || []
         const furthestChapterIndex = Math.max(book.furthestChapterIndex ?? 0, chapterIndex)
 
         const snapshot: ProgressSnapshot | null = recordSnapshot

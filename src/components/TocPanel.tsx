@@ -8,12 +8,7 @@ function statusOf(
 ): TocReadStatus {
   if (!entry.chapterId) return 'unread'
   if (entry.chapterId === currentChapterId) return 'reading'
-  const idx = book.chapters.findIndex((c) => c.id === entry.chapterId)
-  if (idx < 0) return 'unread'
-  const curIdx = book.chapters.findIndex((c) => c.id === currentChapterId)
-  const furthest = book.furthestChapterIndex ?? -1
-  if (curIdx >= 0 && idx < curIdx) return 'read'
-  if (idx <= furthest) return 'read'
+  // 仅标记实际打开/读过的章节，不因当前位置把前面章节一律算已读
   if ((book.readChapterIds || []).includes(entry.chapterId)) return 'read'
   return 'unread'
 }
@@ -62,8 +57,12 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
     return out
   }, [filtered, collapsed, query])
 
-  const curIdx = book.chapters.findIndex((c) => c.id === currentChapterId)
-  const readCount = Math.max(0, curIdx)
+  const readCount = useMemo(() => {
+    const set = new Set(book.readChapterIds || [])
+    // 当前章算在读，统计里仍计入「到过」
+    if (currentChapterId) set.add(currentChapterId)
+    return book.chapters.filter((c) => set.has(c.id)).length
+  }, [book.readChapterIds, book.chapters, currentChapterId])
 
   const hasChildren = (id: string, level: number) => {
     const i = toc.findIndex((t) => t.id === id)
