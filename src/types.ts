@@ -63,6 +63,12 @@ export interface ReaderSettings {
   theme: ThemeMode
   ttsRate: number
   autoScroll: boolean
+  /** 中文正文音色 key：lang||name */
+  ttsVoiceZh: string
+  /** 英文音色 */
+  ttsVoiceEn: string
+  /** 注释音色 */
+  ttsVoiceNote: string
 }
 
 export type TabId = 'shelf' | 'history' | 'me'

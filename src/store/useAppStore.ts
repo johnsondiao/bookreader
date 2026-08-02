@@ -43,6 +43,9 @@ const defaultSettings: ReaderSettings = {
   theme: 'day',
   ttsRate: 1,
   autoScroll: true,
+  ttsVoiceZh: '',
+  ttsVoiceEn: '',
+  ttsVoiceNote: '',
 }
 
 function normalizeBook(book: Book): Book {
@@ -254,6 +257,7 @@ export const useAppStore = create<AppState>()(
           ...current,
           ...p,
           books: (p.books ?? current.books).map((b) => normalizeBook(b as Book)),
+          settings: { ...defaultSettings, ...(p.settings || current.settings) },
         }
       },
     },

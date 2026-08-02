@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TocPanel } from '../components/TocPanel'
 import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
-import { createTtsController } from '../utils/tts'
+import { createTtsController, splitSpeakSegments, type TtsVoiceRef } from '../utils/tts'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -44,6 +44,9 @@ export function ReaderPage() {
   const [ttsPaused, setTtsPaused] = useState(false)
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
+  const [zhVoices, setZhVoices] = useState<TtsVoiceRef[]>([])
+  const [enVoices, setEnVoices] = useState<TtsVoiceRef[]>([])
+  const [voiceStatus, setVoiceStatus] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
@@ -108,18 +111,51 @@ export function ReaderPage() {
 
   const showToast = (msg: string) => {
     setToast(msg)
-    window.setTimeout(() => setToast(''), 2200)
+    window.setTimeout(() => setToast(''), 2800)
   }
+
+  const refreshVoices = useCallback(async () => {
+    const info = await ttsRef.current.probe()
+    setZhVoices(info.zhVoices)
+    setEnVoices(info.enVoices)
+    setVoiceStatus(
+      `已装：中文 ${info.zhVoices.length} 个音色 · 英文 ${info.enVoices.length} 个音色`,
+    )
+    ttsRef.current.setPrefs({
+      zhKey: settings.ttsVoiceZh || undefined,
+      enKey: settings.ttsVoiceEn || undefined,
+      noteKey: settings.ttsVoiceNote || undefined,
+    })
+    // 若尚未选定音色，自动挑第一个
+    if (!settings.ttsVoiceZh && info.zhVoices[0]) {
+      updateSettings({ ttsVoiceZh: info.zhVoices[0].key })
+    }
+    if (!settings.ttsVoiceEn && info.enVoices[0]) {
+      updateSettings({ ttsVoiceEn: info.enVoices[0].key })
+    }
+    if (!settings.ttsVoiceNote && (info.zhVoices[1] || info.zhVoices[0])) {
+      updateSettings({ ttsVoiceNote: (info.zhVoices[1] || info.zhVoices[0]).key })
+    }
+    return info
+  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote, updateSettings])
 
   // #region agent log
   useEffect(() => {
-    void ttsRef.current.probe().then((info) => {
-      if (info.native && info.chineseOk === false) {
-        showToast('缺少中文语音包，可在设置中安装')
+    void refreshVoices().then((info) => {
+      if (!info.chineseOk || !info.englishOk) {
+        showToast('请到设置一次性安装中英文语音包')
       }
     })
   }, [book?.id])
   // #endregion
+
+  useEffect(() => {
+    ttsRef.current.setPrefs({
+      zhKey: settings.ttsVoiceZh || undefined,
+      enKey: settings.ttsVoiceEn || undefined,
+      noteKey: settings.ttsVoiceNote || undefined,
+    })
+  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
 
   const saveProgress = useCallback(
     (cid: string, pIndex: number, source: 'read' | 'tts', note?: string, recordSnapshot = true) => {
@@ -213,7 +249,18 @@ export function ReaderPage() {
         saveProgress(chapter.id, i, 'tts', '朗读进度', true)
 
         try {
-          await ttsRef.current.speak(paragraphs[i], settings.ttsRate)
+          const segments = splitSpeakSegments(paragraphs[i])
+          for (const seg of segments) {
+            if (!speakingRef.current) break
+            const isNote = seg.kind === 'note'
+            await ttsRef.current.speak(seg.text, settings.ttsRate, {
+              pitch: isNote ? 1.15 : 1,
+              voiceKey: isNote
+                ? settings.ttsVoiceNote || settings.ttsVoiceZh
+                : undefined,
+              langHint: 'auto',
+            })
+          }
         } catch (err) {
           showToast(err instanceof Error ? err.message : '当前环境不支持语音朗读')
           speakingRef.current = false
@@ -243,7 +290,7 @@ export function ReaderPage() {
         }
       }
     },
-    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.autoScroll],
+    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.ttsVoiceZh, settings.ttsVoiceNote, settings.autoScroll],
   )
 
   useEffect(() => {
@@ -422,7 +469,11 @@ export function ReaderPage() {
             <span className="mi">记</span>
             记位置
           </button>
-          <button type="button" className={panel === 'settings' ? 'active' : ''} onClick={() => setPanel(panel === 'settings' ? null : 'settings')}>
+          <button type="button" className={panel === 'settings' ? 'active' : ''} onClick={() => {
+            const next = panel === 'settings' ? null : 'settings'
+            setPanel(next)
+            if (next === 'settings') void refreshVoices()
+          }}>
             <span className="mi">设</span>
             设置
           </button>
@@ -550,27 +601,104 @@ export function ReaderPage() {
                 </button>
               </div>
             </div>
-            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-              <span>中文语音包</span>
-              <button
-                type="button"
-                className="btn-primary"
-                style={{ width: '100%' }}
-                onClick={() => {
-                  void ttsRef.current
-                    .openLanguageInstall()
-                    .then(() => {
-                      showToast('请安装「中文（简体）」后返回重试朗读')
-                      return ttsRef.current.probe()
-                    })
-                    .catch((e) => showToast(e instanceof Error ? e.message : '打开安装页失败'))
-                }}
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+              <span>语音包（系统离线）</span>
+              <div className="voice-install-box">
+                <p>点下方按钮后，在系统页请<strong>一次勾选并下载</strong>：</p>
+                <ul>
+                  <li>中文（简体）— 尽量选「高质量」</li>
+                  <li>English (United States)</li>
+                  <li>English (United Kingdom)（可选）</li>
+                  <li>若列表有多个中文/英文音色，可全部勾选</li>
+                </ul>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: '100%' }}
+                  onClick={() => {
+                    void ttsRef.current
+                      .openLanguageInstall()
+                      .then(() => showToast('安装完成后请点「刷新音色列表」'))
+                      .catch((e) => showToast(e instanceof Error ? e.message : '打开安装页失败'))
+                  }}
+                >
+                  一次性安装中英语音包
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: '100%', marginTop: 8 }}
+                  onClick={() => {
+                    void refreshVoices()
+                      .then((info) => {
+                        showToast(
+                          info.chineseOk && info.englishOk
+                            ? '语音包已就绪'
+                            : `检测：中文${info.chineseOk ? '✓' : '✗'} 英文${info.englishOk ? '✓' : '✗'}`,
+                        )
+                      })
+                      .catch(() => showToast('刷新失败'))
+                  }}
+                >
+                  刷新音色列表
+                </button>
+                {voiceStatus && (
+                  <p style={{ margin: '8px 0 0', fontSize: 11, opacity: 0.7 }}>{voiceStatus}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>中文音色（记住）</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceZh}
+                onChange={(e) => updateSettings({ ttsVoiceZh: e.target.value })}
               >
-                安装 / 管理语音数据
-              </button>
-              <span style={{ fontSize: 11, opacity: 0.65, lineHeight: 1.4 }}>
-                若提示语言不支持，需在系统中安装中文文字转语音（TTS）数据包。
-              </span>
+                <option value="">自动</option>
+                {zhVoices.map((v) => (
+                  <option key={v.key} value={v.key}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>英文音色（记住）</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceEn}
+                onChange={(e) => updateSettings({ ttsVoiceEn: e.target.value })}
+              >
+                <option value="">自动</option>
+                {enVoices.map((v) => (
+                  <option key={v.key} value={v.key}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>注释音色（记住）</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceNote}
+                onChange={(e) => updateSettings({ ttsVoiceNote: e.target.value })}
+              >
+                <option value="">同中文</option>
+                {zhVoices.map((v) => (
+                  <option key={v.key} value={v.key}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+                {enVoices.map((v) => (
+                  <option key={`n-${v.key}`} value={v.key}>
+                    {v.name} ({v.lang})
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </div>

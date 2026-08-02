@@ -1,97 +1,200 @@
 import { Capacitor } from '@capacitor/core'
-import { TextToSpeech } from '@capacitor-community/text-to-speech'
+import { TextToSpeech, type SpeechSynthesisVoice } from '@capacitor-community/text-to-speech'
 import { agentLog } from './agentLog'
 
 export type TtsStatus = 'idle' | 'speaking' | 'paused'
 
+export type TtsVoiceRef = {
+  /** getSupportedVoices 下标，运行时解析 */
+  index: number
+  lang: string
+  name: string
+  key: string
+}
+
+export type TtsVoicePrefs = {
+  zhKey?: string
+  enKey?: string
+  noteKey?: string
+}
+
 export interface TtsController {
-  speak: (text: string, rate?: number, opts?: { pitch?: number; voiceIndex?: number }) => Promise<void>
+  speak: (
+    text: string,
+    rate?: number,
+    opts?: { pitch?: number; voiceKey?: string; langHint?: 'zh' | 'en' | 'auto' },
+  ) => Promise<void>
   pause: () => void
   resume: () => void
   stop: () => void
   getStatus: () => TtsStatus
   getEngine: () => 'native' | 'web' | 'none'
-  probe: () => Promise<Record<string, unknown>>
-  /** 打开系统「安装 TTS 语言数据」界面（Android） */
+  probe: () => Promise<{
+    chineseOk: boolean
+    englishOk: boolean
+    languages: string[]
+    voices: TtsVoiceRef[]
+    zhVoices: TtsVoiceRef[]
+    enVoices: TtsVoiceRef[]
+  }>
+  /** 打开系统语音数据安装页（请一次勾选中文+英文等） */
   openLanguageInstall: () => Promise<void>
-  hasChineseSupport: () => boolean
+  listVoices: () => Promise<TtsVoiceRef[]>
+  setPrefs: (prefs: TtsVoicePrefs) => void
+  getPrefs: () => TtsVoicePrefs
 }
 
 function hasWebSpeech() {
   return typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis
 }
 
-const LANG_CANDIDATES = ['zh-CN', 'zh_CN', 'zh-Hans', 'zh', 'cmn-CN', 'chi', 'zh-TW', 'zh_TW']
+const ZH_LANGS = ['zh-CN', 'zh_CN', 'zh-Hans', 'zh', 'cmn-CN', 'chi', 'zh-TW', 'zh_TW', 'zh-HK']
+const EN_LANGS = ['en-US', 'en_US', 'en-GB', 'en_GB', 'en-AU', 'en', 'eng']
+
+function voiceKey(lang: string, name: string) {
+  return `${lang}||${name}`
+}
+
+function isZhLang(lang: string) {
+  return /zh|cmn|chi|chinese/i.test(lang)
+}
+
+function isEnLang(lang: string) {
+  return /^en/i.test(lang) || /english/i.test(lang)
+}
+
+function detectTextLang(text: string): 'zh' | 'en' {
+  const sample = text.slice(0, 80)
+  const latin = (sample.match(/[A-Za-z]/g) || []).length
+  const cjk = (sample.match(/[\u4e00-\u9fff]/g) || []).length
+  return cjk >= latin ? 'zh' : 'en'
+}
+
+function toVoiceRef(v: SpeechSynthesisVoice, index: number): TtsVoiceRef {
+  return {
+    index,
+    lang: v.lang || '',
+    name: v.name || `voice-${index}`,
+    key: voiceKey(v.lang || '', v.name || `voice-${index}`),
+  }
+}
 
 export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex: number) => void): TtsController {
   let status: TtsStatus = 'idle'
   let utterance: SpeechSynthesisUtterance | null = null
-  let pausedText: string | null = null
-  let pausedRate = 1
   let engine: 'native' | 'web' | 'none' = Capacitor.isNativePlatform()
     ? 'native'
     : hasWebSpeech()
       ? 'web'
       : 'none'
-  let cachedLang: string | null = null
-  let probed = false
-  let chineseOk = false
-  let installPrompted = false
+  let cachedVoices: TtsVoiceRef[] = []
+  let prefs: TtsVoicePrefs = {}
 
-  const pickVoice = () => {
+  const pickWebVoice = (lang: 'zh' | 'en', preferredKey?: string) => {
     if (!hasWebSpeech()) return null
     const voices = window.speechSynthesis.getVoices()
+    if (preferredKey) {
+      const [pl, ...rest] = preferredKey.split('||')
+      const pn = rest.join('||')
+      const hit = voices.find((v) => v.lang === pl && v.name === pn)
+      if (hit) return hit
+    }
+    if (lang === 'zh') {
+      return (
+        voices.find((v) => v.lang.startsWith('zh') && /female|xiaoxiao|ting|hui|yao/i.test(v.name)) ||
+        voices.find((v) => v.lang.startsWith('zh-CN')) ||
+        voices.find((v) => v.lang.startsWith('zh')) ||
+        null
+      )
+    }
     return (
-      voices.find((v) => v.lang.startsWith('zh') && /female|xiaoxiao|tingting|huihui|yaoyao/i.test(v.name)) ||
-      voices.find((v) => v.lang.startsWith('zh-CN')) ||
-      voices.find((v) => v.lang.startsWith('zh')) ||
+      voices.find((v) => v.lang.startsWith('en-US')) ||
+      voices.find((v) => v.lang.startsWith('en')) ||
       null
     )
   }
 
-  const probeNative = async () => {
-    const result: Record<string, unknown> = {
-      platform: Capacitor.getPlatform(),
-      native: Capacitor.isNativePlatform(),
+  const refreshVoices = async (): Promise<TtsVoiceRef[]> => {
+    if (Capacitor.isNativePlatform()) {
+      const { voices } = await TextToSpeech.getSupportedVoices()
+      cachedVoices = (voices || []).map((v, i) => toVoiceRef(v, i))
+      return cachedVoices
     }
-    try {
-      const langs = await TextToSpeech.getSupportedLanguages()
-      result.languages = langs.languages
-      const checks: Record<string, boolean> = {}
-      for (const lang of LANG_CANDIDATES) {
-        try {
-          const r = await TextToSpeech.isLanguageSupported({ lang })
-          checks[lang] = !!r.supported
-        } catch {
-          checks[lang] = false
-        }
-      }
-      result.langChecks = checks
-      const voices = await TextToSpeech.getSupportedVoices()
-      result.voiceCount = voices.voices?.length ?? 0
-      result.zhVoices = (voices.voices || [])
-        .map((v, i) => ({ i, lang: v.lang, name: v.name, default: v.default }))
-        .filter((v) => /zh|cmn|chi|chinese/i.test(`${v.lang} ${v.name}`))
-        .slice(0, 20)
-      const anyCheck = Object.values(checks).some(Boolean)
-      const anyListed = ((result.languages as string[]) || []).some((l) => /zh|cmn|chi/i.test(l))
-      chineseOk = anyCheck || anyListed || ((result.zhVoices as unknown[]) || []).length > 0
-      result.chineseOk = chineseOk
-    } catch (err) {
-      result.probeError = err instanceof Error ? err.message : String(err)
-      chineseOk = false
+    if (hasWebSpeech()) {
+      const voices = window.speechSynthesis.getVoices()
+      cachedVoices = voices.map((v, i) =>
+        toVoiceRef({ lang: v.lang, name: v.name, default: v.default } as SpeechSynthesisVoice, i),
+      )
+      return cachedVoices
     }
-    probed = true
+    cachedVoices = []
+    return cachedVoices
+  }
+
+  const resolveVoiceIndex = (key: string | undefined, lang: 'zh' | 'en'): number | undefined => {
+    if (!cachedVoices.length) return undefined
+    if (key) {
+      const hit = cachedVoices.find((v) => v.key === key)
+      if (hit) return hit.index
+    }
+    const pool = cachedVoices.filter((v) => (lang === 'zh' ? isZhLang(v.lang) : isEnLang(v.lang)))
+    return pool[0]?.index
+  }
+
+  const resolveLangCode = (lang: 'zh' | 'en', voiceIdx?: number): string => {
+    if (typeof voiceIdx === 'number') {
+      const v = cachedVoices.find((x) => x.index === voiceIdx)
+      if (v?.lang) return v.lang
+    }
+    return lang === 'zh' ? 'zh-CN' : 'en-US'
+  }
+
+  const probe = async () => {
     // #region agent log
-    agentLog('tts.ts:probeNative', 'native TTS probe', result, 'B')
+    agentLog('tts.ts:probe', 'probe start', { native: Capacitor.isNativePlatform() }, 'B')
+    // #endregion
+    let languages: string[] = []
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const r = await TextToSpeech.getSupportedLanguages()
+        languages = r.languages || []
+      } catch {
+        languages = []
+      }
+    }
+    const voices = await refreshVoices()
+    const zhVoices = voices.filter((v) => isZhLang(v.lang) || /chinese|中文/i.test(v.name))
+    const enVoices = voices.filter((v) => isEnLang(v.lang) || /english|英文/i.test(v.name))
+    const chineseOk =
+      zhVoices.length > 0 ||
+      languages.some((l) => ZH_LANGS.some((z) => l.toLowerCase().startsWith(z.split('-')[0].toLowerCase()) && /zh|cmn|chi/i.test(l)))
+    const englishOk = enVoices.length > 0 || languages.some((l) => /^en/i.test(l))
+
+    const result = { chineseOk, englishOk, languages, voices, zhVoices, enVoices }
+    // #region agent log
+    agentLog(
+      'tts.ts:probe',
+      'probe done',
+      {
+        chineseOk,
+        englishOk,
+        langCount: languages.length,
+        voiceCount: voices.length,
+        zh: zhVoices.length,
+        en: enVoices.length,
+      },
+      'B',
+    )
     // #endregion
     return result
   }
 
   const openLanguageInstall = async () => {
-    if (!Capacitor.isNativePlatform()) return
+    if (!Capacitor.isNativePlatform()) {
+      throw new Error('请在安卓手机上安装系统语音包')
+    }
     // #region agent log
-    agentLog('tts.ts:openLanguageInstall', 'opening TTS data installer', {}, 'B')
+    agentLog('tts.ts:openLanguageInstall', 'openInstall for zh+en voices', {}, 'B')
     // #endregion
     try {
       await TextToSpeech.openInstall()
@@ -104,54 +207,11 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         'B',
       )
       // #endregion
-      throw new Error('无法打开语音包安装页面，请到系统设置 → 语言与输入法 → 文字转语音 中安装中文数据')
+      throw new Error('无法打开语音包安装页。请到：系统设置 → 语言和输入法 → 文字转语音（TTS）→ 安装语音数据')
     }
-    // 安装返回后强制重新探测
-    cachedLang = null
-    probed = false
-    chineseOk = false
   }
 
-  const resolveNativeLang = async (): Promise<string> => {
-    if (cachedLang) return cachedLang
-    const probe = await probeNative()
-    const checks = (probe.langChecks || {}) as Record<string, boolean>
-    for (const lang of LANG_CANDIDATES) {
-      if (checks[lang]) {
-        cachedLang = lang
-        // #region agent log
-        agentLog('tts.ts:resolveNativeLang', 'picked lang from isLanguageSupported', { lang, checks }, 'A')
-        // #endregion
-        return lang
-      }
-    }
-    const languages = (probe.languages || []) as string[]
-    const hit =
-      languages.find((l) => /^zh/i.test(l)) ||
-      languages.find((l) => /cmn|chi|chinese/i.test(l)) ||
-      null
-    if (hit) {
-      cachedLang = hit
-      // #region agent log
-      agentLog('tts.ts:resolveNativeLang', 'picked lang from getSupportedLanguages', { hit, languages: languages.slice(0, 30) }, 'A')
-      // #endregion
-      return hit
-    }
-    // #region agent log
-    agentLog('tts.ts:resolveNativeLang', 'no Chinese lang found', { languages: languages.slice(0, 30), checks }, 'B')
-    // #endregion
-    if (!installPrompted) {
-      installPrompted = true
-      try {
-        await openLanguageInstall()
-      } catch {
-        /* ignore */
-      }
-    }
-    throw new Error('设备缺少中文语音包。请安装「中文（简体）」语音数据后重试播放')
-  }
-
-  const speakWeb = (text: string, rate: number, pitch = 1) =>
+  const speakWeb = (text: string, rate: number, pitch: number, lang: 'zh' | 'en', voiceKey?: string) =>
     new Promise<void>((resolve, reject) => {
       if (!hasWebSpeech()) {
         reject(new Error('当前浏览器不支持语音朗读'))
@@ -159,10 +219,10 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       }
       window.speechSynthesis.cancel()
       utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = 'zh-CN'
+      utterance.lang = lang === 'zh' ? 'zh-CN' : 'en-US'
       utterance.rate = rate
       utterance.pitch = pitch
-      const voice = pickVoice()
+      const voice = pickWebVoice(lang, voiceKey)
       if (voice) utterance.voice = voice
 
       utterance.onend = () => {
@@ -184,21 +244,25 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       window.speechSynthesis.speak(utterance)
     })
 
-  const speakNative = async (text: string, rate: number, pitch = 1, voiceIndex?: number) => {
+  const speakNative = async (text: string, rate: number, pitch: number, lang: 'zh' | 'en', preferredKey?: string) => {
     status = 'speaking'
-    const lang = await resolveNativeLang()
+    if (!cachedVoices.length) await refreshVoices()
+    const voiceIndex = resolveVoiceIndex(preferredKey, lang)
+    const langCode = resolveLangCode(lang, voiceIndex)
+
     // #region agent log
     agentLog(
       'tts.ts:speakNative',
-      'speakNative attempt',
-      { lang, rate, pitch, voiceIndex, textLen: text.length, probed, secondCall: probed },
-      'C',
+      'speakNative',
+      { lang, langCode, voiceIndex, preferredKey, textLen: text.length },
+      'B',
     )
     // #endregion
+
     try {
       await TextToSpeech.speak({
         text,
-        lang,
+        lang: langCode,
         rate: Math.min(2, Math.max(0.5, rate)),
         pitch,
         volume: 1.0,
@@ -207,21 +271,19 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         ...(typeof voiceIndex === 'number' ? { voice: voiceIndex } : {}),
       })
       // #region agent log
-      agentLog('tts.ts:speakNative', 'speakNative ok', { lang }, 'A')
+      agentLog('tts.ts:speakNative', 'ok', { langCode, voiceIndex }, 'B')
       // #endregion
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       // #region agent log
-      agentLog('tts.ts:speakNative', 'speakNative failed', { lang, err: msg }, 'A')
+      agentLog('tts.ts:speakNative', 'failed', { langCode, err: msg }, 'B')
       // #endregion
-      // 语言失败时清缓存并尝试其它候选
       if (/language|not supported|lang/i.test(msg)) {
-        cachedLang = null
-        for (const alt of LANG_CANDIDATES.filter((l) => l !== lang)) {
+        // 再试一组常见语言码，不自动弹安装页
+        const alts = lang === 'zh' ? ZH_LANGS : EN_LANGS
+        for (const alt of alts) {
+          if (alt === langCode) continue
           try {
-            // #region agent log
-            agentLog('tts.ts:speakNative', 'retry with alt lang', { alt }, 'D')
-            // #endregion
             await TextToSpeech.speak({
               text,
               lang: alt,
@@ -230,32 +292,18 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
               volume: 1.0,
               category: 'playback',
               queueStrategy: 1,
+              ...(typeof voiceIndex === 'number' ? { voice: voiceIndex } : {}),
             })
-            cachedLang = alt
-            // #region agent log
-            agentLog('tts.ts:speakNative', 'alt lang ok', { alt }, 'D')
-            // #endregion
             return
-          } catch (e2) {
-            // #region agent log
-            agentLog(
-              'tts.ts:speakNative',
-              'alt lang failed',
-              { alt, err: e2 instanceof Error ? e2.message : String(e2) },
-              'D',
-            )
-            // #endregion
-          }
-        }
-        if (!installPrompted) {
-          installPrompted = true
-          try {
-            await openLanguageInstall()
           } catch {
-            /* ignore */
+            /* try next */
           }
         }
-        throw new Error('设备缺少中文语音包。请安装「中文（简体）」语音数据后重试播放')
+        throw new Error(
+          lang === 'zh'
+            ? '缺少中文语音包。请到设置里点「一次性安装中英语音包」，勾选中文（简体）和英文后返回'
+            : '缺少英文语音包。请到设置里点「一次性安装中英语音包」，勾选 English 后返回',
+        )
       }
       throw err
     } finally {
@@ -266,38 +314,35 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
 
   return {
     getEngine: () => engine,
-    hasChineseSupport: () => chineseOk,
-    openLanguageInstall,
-    probe: async () => {
-      if (Capacitor.isNativePlatform()) return probeNative()
-      return { engine: 'web', hasWebSpeech: hasWebSpeech(), chineseOk: hasWebSpeech() }
+    setPrefs: (p) => {
+      prefs = { ...prefs, ...p }
     },
+    getPrefs: () => ({ ...prefs }),
+    listVoices: refreshVoices,
+    probe,
+    openLanguageInstall,
     async speak(text, rate = 1, opts) {
       pausedText = null
       const pitch = opts?.pitch ?? 1
+      const hint = opts?.langHint || 'auto'
+      const lang = hint === 'auto' ? detectTextLang(text) : hint
+      const voiceKey =
+        opts?.voiceKey ||
+        (lang === 'zh' ? prefs.zhKey : prefs.enKey) ||
+        undefined
+
       // #region agent log
-      agentLog(
-        'tts.ts:speak',
-        'speak called',
-        {
-          engine,
-          native: Capacitor.isNativePlatform(),
-          textLen: text?.length ?? 0,
-          rate,
-          pitch,
-          voiceIndex: opts?.voiceIndex,
-        },
-        'E',
-      )
+      agentLog('tts.ts:speak', 'speak', { lang, voiceKey, rate, pitch, textLen: text.length }, 'B')
       // #endregion
+
       if (Capacitor.isNativePlatform()) {
         engine = 'native'
-        await speakNative(text, rate, pitch, opts?.voiceIndex)
+        await speakNative(text, rate, pitch, lang, voiceKey)
         return
       }
       if (hasWebSpeech()) {
         engine = 'web'
-        await speakWeb(text, rate, pitch)
+        await speakWeb(text, rate, pitch, lang, voiceKey)
         return
       }
       engine = 'none'
@@ -322,12 +367,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         return
       }
       status = 'speaking'
-      if (pausedText) {
-        const t = pausedText
-        const r = pausedRate
-        pausedText = null
-        void this.speak(t, r)
-      }
     },
     stop() {
       try {
@@ -346,4 +385,22 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
     },
     getStatus: () => status,
   }
+}
+
+/** 注释片段：脚注、括号注、以「注」开头等 */
+export function splitSpeakSegments(text: string): { text: string; kind: 'body' | 'note' }[] {
+  const parts = text.split(/(（注[^）]*）|\(注[^)]*\)|〔[^〕]*〕|【注[^】]*】)/g).filter((p) => p && p.trim())
+  if (parts.length <= 1) {
+    const t = text.trim()
+    if (!t) return []
+    if (/^(注[:：]|注释[:：]|——注)/.test(t) || /^\*.+\*$/.test(t)) {
+      return [{ text: t, kind: 'note' }]
+    }
+    return [{ text: t, kind: 'body' }]
+  }
+  return parts.map((p) => {
+    const s = p.trim()
+    const note = /^（注/.test(s) || /^\(注/.test(s) || /^〔/.test(s) || /^【注/.test(s)
+    return { text: s, kind: note ? ('note' as const) : ('body' as const) }
+  })
 }
