@@ -528,7 +528,7 @@ button {
 }
 
 .reader-content.has-debug {
-  padding-top: 118px;
+  padding-top: 128px;
 }
 
 .reader-debug {
@@ -572,6 +572,25 @@ button {
 .reader.theme-night .load-more-btn {
   border-color: rgba(255, 255, 255, 0.25);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.chapter-nav-row {
+  display: flex;
+  gap: 12px;
+  margin: 8px 0 32px;
+}
+
+.chapter-nav-row button {
+  flex: 1;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.06);
+  color: inherit;
+  font-size: 14px;
+}
+
+.reader.theme-night .chapter-nav-row button {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .reader-content .chapter-title {

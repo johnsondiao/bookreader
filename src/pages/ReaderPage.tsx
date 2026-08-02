@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { agentLog, readAgentEvents } from '../utils/agentLog'
 import { splitParagraphs } from '../utils/chapterParser'
 import { createTtsController } from '../utils/tts'
 
@@ -7,9 +8,25 @@ type Panel = null | 'toc' | 'settings'
 
 const INITIAL_VISIBLE = 40
 const LOAD_MORE = 40
+const TINY_CHAPTER = 40
 
 function fmt(n: number) {
   return n.toLocaleString('zh-CN')
+}
+
+function pickStartChapter(book: { chapterId: string; paragraphIndex: number; chapters: { id: string; content: string }[] }) {
+  let cid = book.chapterId || book.chapters[0]?.id || ''
+  let pIndex = book.paragraphIndex || 0
+  const current = book.chapters.find((c) => c.id === cid) ?? book.chapters[0]
+  // 打开时若落在极短扉页/题词，自动跳到第一篇有正文的章节
+  if (current && (current.content?.length || 0) < TINY_CHAPTER && pIndex === 0) {
+    const better = book.chapters.find((c) => (c.content?.length || 0) >= TINY_CHAPTER)
+    if (better) {
+      cid = better.id
+      pIndex = 0
+    }
+  }
+  return { cid, pIndex }
 }
 
 export function ReaderPage() {
@@ -30,10 +47,13 @@ export function ReaderPage() {
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [mountedAt, setMountedAt] = useState(() => performance.now())
   const [scrollLoads, setScrollLoads] = useState(0)
+  const [debugEvent, setDebugEvent] = useState('')
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
+  const touchRef = useRef<{ x: number; y: number } | null>(null)
+  const chapterIdRef = useRef(chapterId)
 
   const chapter = useMemo(
     () => book?.chapters.find((c) => c.id === chapterId) ?? book?.chapters[0],
@@ -77,18 +97,48 @@ export function ReaderPage() {
     }
   }, [book])
 
-  // 进入阅读器时恢复进度
+  useEffect(() => {
+    chapterIdRef.current = chapterId
+  }, [chapterId])
+
+  // 进入阅读器时恢复进度（跳过极短扉页）
   useEffect(() => {
     if (!book) return
-    setChapterId(book.chapterId || book.chapters[0]?.id || '')
-    setParaIndex(book.paragraphIndex || 0)
+    const { cid, pIndex } = pickStartChapter(book)
+    // #region agent log
+    agentLog(
+      'ReaderPage.tsx:open',
+      'open book start chapter',
+      {
+        bookId: book.id,
+        requested: book.chapterId,
+        picked: cid,
+        chapters: book.chapters.length,
+        firstLen: book.chapters[0]?.content?.length || 0,
+        pickedLen: book.chapters.find((c) => c.id === cid)?.content?.length || 0,
+        engine: ttsRef.current.getEngine(),
+      },
+      'C',
+    )
+    // #endregion
+    setChapterId(cid)
+    setParaIndex(pIndex)
     setVisibleCount(INITIAL_VISIBLE)
     setMountedAt(performance.now())
     setScrollLoads(0)
     setMenuOpen(true)
+    if (cid !== book.chapterId) {
+      updateReadingProgress({
+        bookId: book.id,
+        chapterId: cid,
+        paragraphIndex: 0,
+        source: 'read',
+        note: '跳过短扉页',
+        recordSnapshot: false,
+      })
+    }
   }, [book?.id])
 
-  // 切章时重置窗口渲染
   useEffect(() => {
     setVisibleCount(INITIAL_VISIBLE)
     setMountedAt(performance.now())
@@ -96,7 +146,6 @@ export function ReaderPage() {
     contentRef.current?.scrollTo({ top: 0 })
   }, [chapter?.id])
 
-  // 若当前段超出已渲染窗口，自动扩大窗口
   useEffect(() => {
     if (paraIndex + 5 >= visibleCount && visibleCount < paragraphs.length) {
       setVisibleCount((v) => Math.min(paragraphs.length, Math.max(v, paraIndex + INITIAL_VISIBLE)))
@@ -151,6 +200,76 @@ export function ReaderPage() {
     if (remain < 400) loadMore()
   }
 
+  const stopTts = useCallback(() => {
+    speakingRef.current = false
+    try {
+      ttsRef.current.stop()
+    } catch (err) {
+      // #region agent log
+      agentLog(
+        'ReaderPage.tsx:stopTts',
+        'stopTts outer catch',
+        { err: err instanceof Error ? err.message : String(err) },
+        'A',
+      )
+      // #endregion
+    }
+    setTtsOn(false)
+    setTtsPaused(false)
+  }, [])
+
+  const jumpChapter = useCallback(
+    (cid: string, reason = 'toc') => {
+      // #region agent log
+      agentLog(
+        'ReaderPage.tsx:jumpChapter',
+        'jumpChapter enter',
+        {
+          from: chapterIdRef.current,
+          to: cid,
+          reason,
+          found: !!book?.chapters.some((c) => c.id === cid),
+        },
+        'A',
+      )
+      // #endregion
+      try {
+        stopTts()
+      } catch {
+        /* ignore */
+      }
+      setChapterId(cid)
+      setParaIndex(0)
+      setPanel(null)
+      setDebugEvent(`jump ${chapterIdRef.current}→${cid} (${reason})`)
+      saveProgress(cid, 0, 'read', '切换章节')
+      // #region agent log
+      agentLog(
+        'ReaderPage.tsx:jumpChapter',
+        'jumpChapter applied',
+        { chapterIdSet: cid, title: book?.chapters.find((c) => c.id === cid)?.title },
+        'C',
+      )
+      // #endregion
+    },
+    [book, saveProgress, stopTts],
+  )
+
+  const goRelativeChapter = useCallback(
+    (delta: number) => {
+      if (!book) return
+      const idx = book.chapters.findIndex((c) => c.id === chapterIdRef.current)
+      const next = book.chapters[idx + delta]
+      if (!next) {
+        showToast(delta < 0 ? '已是第一章' : '已是最后一章')
+        return
+      }
+      jumpChapter(next.id, delta < 0 ? 'swipe-prev' : 'swipe-next')
+      showToast(next.title)
+    },
+    [book, jumpChapter],
+  )
+
   const speakFrom = useCallback(
     async (startIndex: number) => {
       if (!book || !chapter) return
@@ -158,6 +277,15 @@ export function ReaderPage() {
       setTtsOn(true)
       setTtsPaused(false)
       setMenuOpen(true)
+
+      // #region agent log
+      agentLog(
+        'ReaderPage.tsx:speakFrom',
+        'speakFrom start',
+        { engine: ttsRef.current.getEngine(), startIndex, paras: paragraphs.length },
+        'E',
+      )
+      // #endregion
 
       for (let i = startIndex; i < paragraphs.length; i++) {
         if (!speakingRef.current) break
@@ -167,8 +295,16 @@ export function ReaderPage() {
 
         try {
           await ttsRef.current.speak(paragraphs[i], settings.ttsRate)
-        } catch {
-          showToast('当前环境不支持语音朗读')
+        } catch (err) {
+          // #region agent log
+          agentLog(
+            'ReaderPage.tsx:speakFrom',
+            'speak failed',
+            { err: err instanceof Error ? err.message : String(err), engine: ttsRef.current.getEngine() },
+            'E',
+          )
+          // #endregion
+          showToast(err instanceof Error ? err.message : '当前环境不支持语音朗读')
           speakingRef.current = false
           setTtsOn(false)
           return
@@ -246,12 +382,21 @@ export function ReaderPage() {
     }
   }
 
-  const stopTts = () => {
-    speakingRef.current = false
-    ttsRef.current.stop()
-    setTtsOn(false)
-    setTtsPaused(false)
-    if (book) saveProgress(chapter.id, paraIndex, 'tts', '停止朗读')
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.changedTouches[0]
+    touchRef.current = { x: t.clientX, y: t.clientY }
+  }
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touchRef.current
+    touchRef.current = null
+    if (!start || panel) return
+    const t = e.changedTouches[0]
+    const dx = t.clientX - start.x
+    const dy = t.clientY - start.y
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.3) return
+    // 左滑 → 下一章；右滑 → 上一章
+    goRelativeChapter(dx < 0 ? 1 : -1)
   }
 
   const togglePlay = () => {
@@ -269,17 +414,10 @@ export function ReaderPage() {
     saveProgress(chapter.id, paraIndex, 'tts', '暂停朗读')
   }
 
-  const jumpChapter = (cid: string) => {
-    stopTts()
-    setChapterId(cid)
-    setParaIndex(0)
-    setPanel(null)
-    saveProgress(cid, 0, 'read', '切换章节')
-  }
-
   const contentLen = chapter.content?.length || 0
   const openMs = Math.round(performance.now() - mountedAt)
   const warnHuge = paragraphs.length > 2000 || contentLen > 200_000
+  const events = debugEvent || readAgentEvents().split('\n')[0] || ''
 
   return (
     <div className={`reader theme-${settings.theme}`}>
@@ -290,18 +428,15 @@ export function ReaderPage() {
         <div>
           本章字数 {fmt(contentLen)} · 段落 {fmt(paragraphs.length)} · 已渲染 {fmt(visibleParagraphs.length)}
           {paragraphs.length > visibleParagraphs.length ? ` (+滚动加载)` : ''}
+          {' · '}TTS:{ttsRef.current.getEngine()}
         </div>
         <div>
-          拆分 {splitMs}ms · 打开 {openMs}ms · 加载次数 {scrollLoads} · 全书字数 {fmt(chapterSizes.totalChars || 0)}
-          （均章 {fmt(chapterSizes.avg)} / 最大 {fmt(chapterSizes.max)} / 空章 {chapterSizes.empty}）
+          拆分 {splitMs}ms · 打开 {openMs}ms · 加载 {scrollLoads} · 全书 {fmt(chapterSizes.totalChars || 0)}字
+          （均 {fmt(chapterSizes.avg)} / 最大 {fmt(chapterSizes.max)} / 空 {chapterSizes.empty}）
         </div>
-        {contentLen === 0 && <div className="err">⚠ 本章 content 为空 — 导入解析可能失败</div>}
-        {paragraphs.length === 0 && contentLen > 0 && <div className="err">⚠ 有字数但段落为 0 — 拆分异常</div>}
-        {warnHuge && (
-          <div className="err">
-            ⚠ 本章过大（段落&gt;2000 或字数&gt;20万），已改窗口渲染；若仍卡请切下一章或从目录跳过
-          </div>
-        )}
+        <div>事件: {events || '—'} · id={chapter.id}</div>
+        {contentLen === 0 && <div className="err">⚠ 本章 content 为空</div>}
+        {warnHuge && <div className="err">⚠ 本章过大，已窗口渲染</div>}
       </div>
 
       <div
@@ -310,10 +445,12 @@ export function ReaderPage() {
         style={{ fontSize: settings.fontSize, lineHeight: settings.lineHeight }}
         onClick={onTapContent}
         onScroll={onScrollContent}
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
       >
         <h2 className="chapter-title">{chapter.title}</h2>
         {visibleParagraphs.length === 0 ? (
-          <p style={{ textIndent: 0, opacity: 0.7 }}>（本章暂无正文，可打开目录切换章节）</p>
+          <p style={{ textIndent: 0, opacity: 0.7 }}>（本章暂无正文，可打开目录或左右滑动切换章节）</p>
         ) : (
           visibleParagraphs.map((p, i) => (
             <p
@@ -337,14 +474,48 @@ export function ReaderPage() {
           ))
         )}
         {visibleParagraphs.length < paragraphs.length && (
-          <button type="button" className="load-more-btn" onClick={(e) => { e.stopPropagation(); loadMore() }}>
+          <button
+            type="button"
+            className="load-more-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              loadMore()
+            }}
+          >
             加载更多正文（{visibleParagraphs.length}/{paragraphs.length}）
           </button>
         )}
+        <div className="chapter-nav-row">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              goRelativeChapter(-1)
+            }}
+          >
+            ← 上一章
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              goRelativeChapter(1)
+            }}
+          >
+            下一章 →
+          </button>
+        </div>
       </div>
 
       <div className={`reader-topbar${menuOpen ? '' : ' hidden'}`}>
-        <button type="button" className="back" onClick={() => { stopTts(); closeReader() }}>
+        <button
+          type="button"
+          className="back"
+          onClick={() => {
+            stopTts()
+            closeReader()
+          }}
+        >
           ← 返回
         </button>
         <div className="title">{book.title}</div>
@@ -386,11 +557,18 @@ export function ReaderPage() {
 
         {(ttsOn || menuOpen) && (
           <div className="tts-bar">
-            <button type="button" className="side-btn" onClick={() => {
-              const n = Math.max(0, paraIndex - 1)
-              setParaIndex(n)
-              if (ttsOn) { stopTts(); window.setTimeout(() => void speakFrom(n), 50) }
-            }}>
+            <button
+              type="button"
+              className="side-btn"
+              onClick={() => {
+                const n = Math.max(0, paraIndex - 1)
+                setParaIndex(n)
+                if (ttsOn) {
+                  stopTts()
+                  window.setTimeout(() => void speakFrom(n), 50)
+                }
+              }}
+            >
               上段
             </button>
             <button type="button" className="tts-btn" onClick={togglePlay}>
@@ -399,14 +577,21 @@ export function ReaderPage() {
             <div className="tts-info">
               <div>{ttsOn ? (ttsPaused ? '已暂停' : '正在朗读…') : '点击播放开始朗读'}</div>
               <div className="muted">
-                {chapter.title} · 第 {paraIndex + 1}/{paragraphs.length} 段 · {settings.ttsRate.toFixed(1)}x
+                {chapter.title} · 第 {paraIndex + 1}/{paragraphs.length || 1} 段 · {settings.ttsRate.toFixed(1)}x · {ttsRef.current.getEngine()}
               </div>
             </div>
-            <button type="button" className="side-btn" onClick={() => {
-              const n = Math.min(paragraphs.length - 1, paraIndex + 1)
-              setParaIndex(n)
-              if (ttsOn) { stopTts(); window.setTimeout(() => void speakFrom(n), 50) }
-            }}>
+            <button
+              type="button"
+              className="side-btn"
+              onClick={() => {
+                const n = Math.min(Math.max(paragraphs.length - 1, 0), paraIndex + 1)
+                setParaIndex(n)
+                if (ttsOn) {
+                  stopTts()
+                  window.setTimeout(() => void speakFrom(n), 50)
+                }
+              }}
+            >
               下段
             </button>
           </div>
@@ -416,10 +601,12 @@ export function ReaderPage() {
       {panel && <div className="overlay-mask" onClick={() => setPanel(null)} />}
 
       {panel === 'toc' && (
-        <div className="panel-sheet">
+        <div className="panel-sheet" onClick={(e) => e.stopPropagation()}>
           <div className="panel-head">
             <span>目录 · 共 {book.chapters.length} 章</span>
-            <button type="button" onClick={() => setPanel(null)}>关闭</button>
+            <button type="button" onClick={() => setPanel(null)}>
+              关闭
+            </button>
           </div>
           <div className="panel-body">
             {book.chapters.map((c, i) => (
@@ -427,13 +614,14 @@ export function ReaderPage() {
                 key={c.id}
                 type="button"
                 className={`chapter-row${c.id === chapter.id ? ' current' : ''}`}
-                onClick={() => jumpChapter(c.id)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  jumpChapter(c.id, 'toc')
+                }}
               >
                 <span style={{ opacity: 0.55, marginRight: 6, fontSize: 11 }}>{i + 1}</span>
                 {c.title}
-                <span style={{ marginLeft: 'auto', opacity: 0.45, fontSize: 11 }}>
-                  {fmt(c.content?.length || 0)}字
-                </span>
+                <span style={{ marginLeft: 'auto', opacity: 0.45, fontSize: 11 }}>{fmt(c.content?.length || 0)}字</span>
               </button>
             ))}
           </div>
@@ -441,20 +629,24 @@ export function ReaderPage() {
       )}
 
       {panel === 'settings' && (
-        <div className="panel-sheet">
+        <div className="panel-sheet" onClick={(e) => e.stopPropagation()}>
           <div className="panel-head">
             <span>阅读设置</span>
-            <button type="button" onClick={() => setPanel(null)}>关闭</button>
+            <button type="button" onClick={() => setPanel(null)}>
+              关闭
+            </button>
           </div>
           <div className="setting-panel">
             <div className="row">
               <span>背景</span>
               <div className="theme-pills">
-                {([
-                  ['day', '日间'],
-                  ['eye', '护眼'],
-                  ['night', '夜间'],
-                ] as const).map(([k, label]) => (
+                {(
+                  [
+                    ['day', '日间'],
+                    ['eye', '护眼'],
+                    ['night', '夜间'],
+                  ] as const
+                ).map(([k, label]) => (
                   <button
                     key={k}
                     type="button"
@@ -469,17 +661,25 @@ export function ReaderPage() {
             <div className="row">
               <span>字号</span>
               <div className="stepper">
-                <button type="button" onClick={() => updateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })}>A−</button>
+                <button type="button" onClick={() => updateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })}>
+                  A−
+                </button>
                 <span>{settings.fontSize}</span>
-                <button type="button" onClick={() => updateSettings({ fontSize: Math.min(28, settings.fontSize + 1) })}>A+</button>
+                <button type="button" onClick={() => updateSettings({ fontSize: Math.min(28, settings.fontSize + 1) })}>
+                  A+
+                </button>
               </div>
             </div>
             <div className="row">
               <span>语速</span>
               <div className="stepper">
-                <button type="button" onClick={() => updateSettings({ ttsRate: Math.max(0.6, +(settings.ttsRate - 0.1).toFixed(1)) })}>−</button>
+                <button type="button" onClick={() => updateSettings({ ttsRate: Math.max(0.6, +(settings.ttsRate - 0.1).toFixed(1)) })}>
+                  −
+                </button>
                 <span>{settings.ttsRate.toFixed(1)}x</span>
-                <button type="button" onClick={() => updateSettings({ ttsRate: Math.min(1.8, +(settings.ttsRate + 0.1).toFixed(1)) })}>+</button>
+                <button type="button" onClick={() => updateSettings({ ttsRate: Math.min(1.8, +(settings.ttsRate + 0.1).toFixed(1)) })}>
+                  +
+                </button>
               </div>
             </div>
           </div>
