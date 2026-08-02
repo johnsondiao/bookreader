@@ -108,8 +108,22 @@ export function ReaderPage() {
 
   const showToast = (msg: string) => {
     setToast(msg)
-    window.setTimeout(() => setToast(''), 1800)
+    window.setTimeout(() => setToast(''), 2200)
   }
+
+  // #region agent log
+  useEffect(() => {
+    void ttsRef.current.probe().then((info) => {
+      const checks = (info.langChecks || {}) as Record<string, boolean>
+      const ok = Object.entries(checks)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+      if (info.native && ok.length === 0) {
+        showToast('TTS未检测到中文语音包')
+      }
+    })
+  }, [book?.id])
+  // #endregion
 
   const saveProgress = useCallback(
     (cid: string, pIndex: number, source: 'read' | 'tts', note?: string, recordSnapshot = true) => {
