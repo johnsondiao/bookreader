@@ -115,38 +115,33 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
   }
 
   const refreshVoices = async (): Promise<TtsVoiceRef[]> => {
-    if (Capacitor.isNativePlatform()) {
-      const { voices } = await TextToSpeech.getSupportedVoices()
-      cachedVoices = (voices || []).map((v, i) => toVoiceRef(v, i))
-      return cachedVoices
-    }
-    if (hasWebSpeech()) {
-      const voices = window.speechSynthesis.getVoices()
-      cachedVoices = voices.map((v, i) =>
-        toVoiceRef({ lang: v.lang, name: v.name, default: v.default } as SpeechSynthesisVoice, i),
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const { voices } = await TextToSpeech.getSupportedVoices()
+        cachedVoices = (voices || []).map((v, i) => toVoiceRef(v, i))
+        return cachedVoices
+      }
+      if (hasWebSpeech()) {
+        const voices = window.speechSynthesis.getVoices()
+        cachedVoices = voices.map((v, i) =>
+          toVoiceRef({ lang: v.lang, name: v.name, default: v.default } as SpeechSynthesisVoice, i),
+        )
+        return cachedVoices
+      }
+    } catch (err) {
+      // #region agent log
+      agentLog(
+        'tts.ts:refreshVoices',
+        'list voices failed (ROM may return null Set)',
+        { err: err instanceof Error ? err.message : String(err) },
+        'NPE',
       )
+      // #endregion
+      cachedVoices = []
       return cachedVoices
     }
     cachedVoices = []
     return cachedVoices
-  }
-
-  const resolveVoiceIndex = (key: string | undefined, lang: 'zh' | 'en'): number | undefined => {
-    if (!cachedVoices.length) return undefined
-    if (key) {
-      const hit = cachedVoices.find((v) => v.key === key)
-      if (hit) return hit.index
-    }
-    const pool = cachedVoices.filter((v) => (lang === 'zh' ? isZhLang(v.lang) : isEnLang(v.lang)))
-    return pool[0]?.index
-  }
-
-  const resolveLangCode = (lang: 'zh' | 'en', voiceIdx?: number): string => {
-    if (typeof voiceIdx === 'number') {
-      const v = cachedVoices.find((x) => x.index === voiceIdx)
-      if (v?.lang) return v.lang
-    }
-    return lang === 'zh' ? 'zh-CN' : 'en-US'
   }
 
   const probe = async () => {
@@ -244,68 +239,65 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       window.speechSynthesis.speak(utterance)
     })
 
-  const speakNative = async (text: string, rate: number, pitch: number, lang: 'zh' | 'en', preferredKey?: string) => {
+  const speakNative = async (text: string, rate: number, pitch: number, lang: 'zh' | 'en', _preferredKey?: string) => {
     status = 'speaking'
-    if (!cachedVoices.length) await refreshVoices()
-    const voiceIndex = resolveVoiceIndex(preferredKey, lang)
-    const langCode = resolveLangCode(lang, voiceIndex)
+    // 恢复最初能播的路径：只设语言 + 语速/音调，绝不传 voice 下标。
+    // 原因：传 voice 会让插件调用 tts.getVoices()；小米等 ROM 常返回 null → Set.iterator NPE。
+    const langCode = lang === 'zh' ? 'zh-CN' : 'en-US'
+    const rateClamped = Math.min(2, Math.max(0.5, rate))
+    const alts = lang === 'zh' ? ZH_LANGS : EN_LANGS
 
-    // #region agent log
-    agentLog(
-      'tts.ts:speakNative',
-      'speakNative',
-      { lang, langCode, voiceIndex, preferredKey, textLen: text.length },
-      'B',
-    )
-    // #endregion
-
-    try {
-      await TextToSpeech.speak({
+    const doSpeak = (code: string) =>
+      TextToSpeech.speak({
         text,
-        lang: langCode,
-        rate: Math.min(2, Math.max(0.5, rate)),
+        lang: code,
+        rate: rateClamped,
         pitch,
         volume: 1.0,
         category: 'playback',
         queueStrategy: 1,
-        ...(typeof voiceIndex === 'number' ? { voice: voiceIndex } : {}),
+        // 故意不传 voice，避免插件遍历 null 的 voices Set
       })
+
+    // #region agent log
+    agentLog(
+      'tts.ts:speakNative',
+      'speak without voice index (Xiaomi-safe)',
+      { lang, langCode, textLen: text.length, pitch },
+      'NPE',
+    )
+    // #endregion
+
+    try {
+      await doSpeak(langCode)
       // #region agent log
-      agentLog('tts.ts:speakNative', 'ok', { langCode, voiceIndex }, 'B')
+      agentLog('tts.ts:speakNative', 'ok', { langCode }, 'NPE')
       // #endregion
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       // #region agent log
-      agentLog('tts.ts:speakNative', 'failed', { langCode, err: msg }, 'B')
+      agentLog('tts.ts:speakNative', 'failed', { langCode, err: msg }, 'NPE')
       // #endregion
-      if (/language|not supported|lang/i.test(msg)) {
-        // 再试一组常见语言码，不自动弹安装页
-        const alts = lang === 'zh' ? ZH_LANGS : EN_LANGS
-        for (const alt of alts) {
-          if (alt === langCode) continue
-          try {
-            await TextToSpeech.speak({
-              text,
-              lang: alt,
-              rate: Math.min(2, Math.max(0.5, rate)),
-              pitch,
-              volume: 1.0,
-              category: 'playback',
-              queueStrategy: 1,
-              ...(typeof voiceIndex === 'number' ? { voice: voiceIndex } : {}),
-            })
-            return
-          } catch {
-            /* try next */
-          }
+
+      for (const alt of alts) {
+        if (alt === langCode) continue
+        try {
+          await doSpeak(alt)
+          // #region agent log
+          agentLog('tts.ts:speakNative', 'ok with alt lang', { alt }, 'NPE')
+          // #endregion
+          return
+        } catch {
+          /* try next */
         }
-        throw new Error(
-          lang === 'zh'
-            ? '缺少中文语音包。请到设置里点「一次性安装中英语音包」，勾选中文（简体）和英文后返回'
-            : '缺少英文语音包。请到设置里点「一次性安装中英语音包」，勾选 English 后返回',
-        )
       }
-      throw err
+      throw new Error(
+        /iterator|null object|NullPointer/i.test(msg)
+          ? '系统朗读组件异常。请完全杀掉 App 后重开再试；若仍失败再去设置安装语音包'
+          : lang === 'zh'
+            ? '中文朗读失败。请到设置安装中文语音包后重试'
+            : '英文朗读失败。请到设置安装英文语音包后重试',
+      )
     } finally {
       if (status === 'speaking') status = 'idle'
       onEnd?.()

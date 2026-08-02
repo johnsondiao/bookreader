@@ -141,10 +141,8 @@ export function ReaderPage() {
 
   // #region agent log
   useEffect(() => {
-    void refreshVoices().then((info) => {
-      if (!info.chineseOk || !info.englishOk) {
-        showToast('请到设置一次性安装中英文语音包')
-      }
+    void refreshVoices().catch(() => {
+      /* 列表失败不影响播放：朗读走无 voice 下标路径 */
     })
   }, [book?.id])
   // #endregion

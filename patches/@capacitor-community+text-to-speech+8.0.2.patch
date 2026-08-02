@@ -1,0 +1,56 @@
+diff --git a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
+index 3ad7683..352b39f 100644
+--- a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
++++ b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
+@@ -115,9 +115,11 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+ 
+         if (voice >= 0) {
+             ArrayList<Voice> supportedVoices = getSupportedVoicesOrdered();
+-            if (voice < supportedVoices.size()) {
++            if (supportedVoices != null && voice < supportedVoices.size()) {
+                 Voice newVoice = supportedVoices.get(voice);
+-                int resultCode = tts.setVoice(newVoice);
++                if (newVoice != null) {
++                    tts.setVoice(newVoice);
++                }
+             }
+         }
+         tts.speak(text, queueStrategy, ttsParams, callbackId);
+@@ -131,9 +133,13 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+     public JSArray getSupportedLanguages() {
+         ArrayList<String> languages = new ArrayList<>();
+         Set<Locale> supportedLocales = tts.getAvailableLanguages();
+-        for (Locale supportedLocale : supportedLocales) {
+-            String tag = supportedLocale.toLanguageTag();
+-            languages.add(tag);
++        // 部分国产 ROM（如小米）在引擎未就绪时会返回 null
++        if (supportedLocales != null) {
++            for (Locale supportedLocale : supportedLocales) {
++                if (supportedLocale == null) continue;
++                String tag = supportedLocale.toLanguageTag();
++                languages.add(tag);
++            }
+         }
+         JSArray result = JSArray.from(languages.toArray());
+         return result;
+@@ -145,13 +151,15 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+     public ArrayList<Voice> getSupportedVoicesOrdered() {
+         Set<Voice> supportedVoices = tts.getVoices();
+         ArrayList<Voice> orderedVoices = new ArrayList<Voice>();
+-        for (Voice supportedVoice : supportedVoices) {
+-            orderedVoices.add(supportedVoice);
++        // 部分设备 getVoices() 返回 null，直接 for-each 会 NPE
++        if (supportedVoices != null) {
++            for (Voice supportedVoice : supportedVoices) {
++                if (supportedVoice == null) continue;
++                orderedVoices.add(supportedVoice);
++            }
++            Collections.sort(orderedVoices, (v1, v2) -> v1.getName().compareTo(v2.getName()));
+         }
+ 
+-        //voice.getName() is guaranteed to be unique, so will be used for sorting.
+-        Collections.sort(orderedVoices, (v1, v2) -> v1.getName().compareTo(v2.getName()));
+-
+         return orderedVoices;
+     }
+ 
