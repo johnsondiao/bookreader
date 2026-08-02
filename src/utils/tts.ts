@@ -1,6 +1,5 @@
 import { Capacitor } from '@capacitor/core'
 import { TextToSpeech } from '@capacitor-community/text-to-speech'
-import { agentLog } from './agentLog'
 
 export type TtsStatus = 'idle' | 'speaking' | 'paused'
 
@@ -10,7 +9,6 @@ export interface TtsController {
   resume: () => void
   stop: () => void
   getStatus: () => TtsStatus
-  /** web | native */
   getEngine: () => 'native' | 'web' | 'none'
 }
 
@@ -94,21 +92,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
     getEngine: () => engine,
     async speak(text, rate = 1) {
       pausedText = null
-      // #region agent log
-      agentLog(
-        'tts.ts:speak',
-        'speak called',
-        {
-          engine,
-          native: Capacitor.isNativePlatform(),
-          hasWebSpeech: hasWebSpeech(),
-          textLen: text?.length ?? 0,
-          rate,
-        },
-        'E',
-      )
-      // #endregion
-
       if (Capacitor.isNativePlatform()) {
         engine = 'native'
         await speakNative(text, rate)
@@ -129,7 +112,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         status = 'paused'
         return
       }
-      // 原生 TTS 无可靠 pause：停住并记下当前段，resume 时重读
       pausedText = null
       void TextToSpeech.stop().catch(() => {})
       status = 'paused'
@@ -141,7 +123,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         status = 'speaking'
         return
       }
-      // native: Reader 层会重新 speakFrom；此处只恢复状态标记
       status = 'speaking'
       if (pausedText) {
         const t = pausedText
@@ -151,14 +132,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       }
     },
     stop() {
-      // #region agent log
-      agentLog(
-        'tts.ts:stop',
-        'stop called',
-        { engine, hasWebSpeech: hasWebSpeech(), status },
-        'A',
-      )
-      // #endregion
       try {
         if (engine === 'native' || Capacitor.isNativePlatform()) {
           void TextToSpeech.stop().catch(() => {})
@@ -166,15 +139,8 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         if (hasWebSpeech()) {
           window.speechSynthesis.cancel()
         }
-      } catch (err) {
-        // #region agent log
-        agentLog(
-          'tts.ts:stop',
-          'stop threw',
-          { err: err instanceof Error ? err.message : String(err) },
-          'A',
-        )
-        // #endregion
+      } catch {
+        /* WebView 可能没有 speechSynthesis，忽略 */
       }
       status = 'idle'
       utterance = null
