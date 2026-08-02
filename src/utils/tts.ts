@@ -1,4 +1,14 @@
 import { agentLog } from './agentLog'
+import {
+  DEFAULT_VOICE_EN,
+  DEFAULT_VOICE_NOTE,
+  DEFAULT_VOICE_ZH,
+  getVoice,
+  pickVoice,
+  VOICE_CATALOG,
+  voicesForLang,
+  type VoiceDef,
+} from './ttsVoices'
 
 export type TtsStatus = 'idle' | 'speaking' | 'paused' | 'loading'
 
@@ -7,6 +17,7 @@ export type TtsVoiceRef = {
   lang: string
   name: string
   key: string
+  gender?: string
 }
 
 export type TtsVoicePrefs = {
@@ -32,8 +43,8 @@ export interface TtsController {
   stop: () => void
   getStatus: () => TtsStatus
   getEngine: () => 'local' | 'none'
-  /** 预下载并初始化本地模型（首次需联网，之后本地合成） */
-  ensureReady: (onProgress?: (p: TtsProgress) => void) => Promise<void>
+  /** 预下载并初始化指定/默认音色 */
+  ensureReady: (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => Promise<void>
   probe: () => Promise<{
     chineseOk: boolean
     englishOk: boolean
@@ -48,36 +59,7 @@ export interface TtsController {
   getPrefs: () => TtsVoicePrefs
 }
 
-/** 中国大陆可访问的镜像；失败时回退官方 HuggingFace */
-const MODEL_URLS = [
-  'https://hf-mirror.com/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx',
-  'https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx',
-]
-
-const BUILTIN_VOICES: TtsVoiceRef[] = [
-  { index: 0, lang: 'zh-CN', name: '本地中文', key: 'local||zh' },
-  { index: 1, lang: 'en-US', name: '本地英文', key: 'local||en' },
-]
-
-function detectTextLang(text: string): 'zh' | 'en' {
-  const sample = text.slice(0, 80)
-  const latin = (sample.match(/[A-Za-z]/g) || []).length
-  const cjk = (sample.match(/[\u4e00-\u9fff]/g) || []).length
-  return cjk >= latin ? 'zh' : 'en'
-}
-
-type PiperInstance = {
-  synthesize: (
-    text: string,
-    opts?: { language?: string; lengthScale?: number; noiseScale?: number },
-  ) => Promise<{
-    toBlob: () => Blob
-    play: () => Promise<void>
-    duration: number
-  }>
-  dispose: () => void
-  isInitialized: boolean
-}
+export { VOICE_CATALOG, voicesForLang, DEFAULT_VOICE_ZH, DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE }
 
 class SpeakAborted extends Error {
   constructor() {
@@ -86,14 +68,74 @@ class SpeakAborted extends Error {
   }
 }
 
+function detectTextLang(text: string): 'zh' | 'en' {
+  const sample = text.slice(0, 80)
+  const latin = (sample.match(/[A-Za-z]/g) || []).length
+  const cjk = (sample.match(/[\u4e00-\u9fff]/g) || []).length
+  return cjk >= latin ? 'zh' : 'en'
+}
+
+function toRef(v: VoiceDef, index: number): TtsVoiceRef {
+  return {
+    index,
+    lang: v.lang === 'both' ? 'zh/en' : v.lang === 'zh' ? 'zh-CN' : 'en',
+    name: v.name,
+    key: v.key,
+    gender: v.gender,
+  }
+}
+
+type PiperPlusInstance = {
+  synthesize: (
+    text: string,
+    opts?: { language?: string; lengthScale?: number; noiseScale?: number },
+  ) => Promise<{
+    toBlob: () => Blob
+    duration: number
+  }>
+  dispose: () => void
+  isInitialized: boolean
+}
+
+type PiperSession = {
+  voiceId: string
+  predict: (text: string) => Promise<Blob>
+}
+
+/** 国内访问 HuggingFace 时走镜像（mintplex 写死了 huggingface.co） */
+function installHfMirrorFetch() {
+  const w = window as unknown as { __HF_MIRROR_FETCH__?: boolean }
+  if (w.__HF_MIRROR_FETCH__) return
+  w.__HF_MIRROR_FETCH__ = true
+  const orig = window.fetch.bind(window)
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    try {
+      const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (raw.includes('huggingface.co/') && !raw.includes('hf-mirror.com')) {
+        const mirrored = raw.replace('https://huggingface.co/', 'https://hf-mirror.com/')
+        return orig(mirrored, init)
+      }
+    } catch {
+      /* fall through */
+    }
+    return orig(input, init)
+  }
+}
+
 export function createTtsController(onEnd?: () => void): TtsController {
   let status: TtsStatus = 'idle'
-  let prefs: TtsVoicePrefs = {}
-  let piper: PiperInstance | null = null
-  let initPromise: Promise<void> | null = null
+  let prefs: TtsVoicePrefs = {
+    zhKey: DEFAULT_VOICE_ZH,
+    enKey: DEFAULT_VOICE_EN,
+    noteKey: DEFAULT_VOICE_NOTE,
+  }
+  const plusCache = new Map<string, PiperPlusInstance>()
+  const piperCache = new Map<string, PiperSession>()
+  const loading = new Map<string, Promise<void>>()
   let audio: HTMLAudioElement | null = null
   let objectUrl: string | null = null
   let playWait: { resolve: () => void; reject: (e: Error) => void } | null = null
+  let anyReady = false
 
   const cleanupAudio = () => {
     if (audio) {
@@ -117,94 +159,134 @@ export function createTtsController(onEnd?: () => void): TtsController {
     else w.resolve()
   }
 
-  const ensureReady = async (onProgress?: (p: TtsProgress) => void) => {
-    if (piper?.isInitialized) {
-      onProgress?.({ stage: 'ready', progress: 1, message: '本地引擎已就绪' })
+  const loadPlus = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
+    if (plusCache.get(voice.key)?.isInitialized) return
+    if (loading.has(voice.key)) {
+      await loading.get(voice.key)
       return
     }
-    if (initPromise) {
-      await initPromise
-      return
-    }
-
-    initPromise = (async () => {
+    const urls = voice.modelUrls || []
+    const task = (async () => {
       status = 'loading'
-      // #region agent log
-      agentLog('tts.ts:ensureReady', 'local piper init start', {}, 'L1')
-      // #endregion
-      try {
-        const [{ PiperPlus }, ort] = await Promise.all([
-          import('piper-plus'),
-          import('onnxruntime-web'),
-        ])
-
-        // 交给 Vite 打包后的 wasm 资源路径；Android WebView 强制单线程更稳
-        ort.env.wasm.numThreads = 1
-        // 若打包器未内联路径，回退到 public/ort（含 simd-threaded 与 jsep）
-        if (!ort.env.wasm.wasmPaths) {
-          ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
-        }
-
-        let lastErr: unknown
-        for (const modelUrl of MODEL_URLS) {
-          try {
-            // #region agent log
-            agentLog('tts.ts:ensureReady', 'trying model url', { modelUrl }, 'L1')
-            // #endregion
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const instance = await (PiperPlus.initialize as (opts: any) => Promise<PiperInstance>)({
-              model: modelUrl,
-              ort,
-              onProgress: (p: TtsProgress) => {
-                onProgress?.(p)
-                // #region agent log
-                agentLog(
-                  'tts.ts:ensureReady',
-                  'progress',
-                  { stage: p.stage, progress: p.progress, message: p.message },
-                  'L1',
-                )
-                // #endregion
-              },
-              wasmLoader: async () => {
-                const mod = await import('piper-plus/wasm/multilingual')
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const init = (mod as any).default
-                if (typeof init === 'function') await init()
-                return mod
-              },
-            })
-            piper = instance
-            // #region agent log
-            agentLog('tts.ts:ensureReady', 'piper ready', { modelUrl }, 'L1')
-            // #endregion
-            onProgress?.({ stage: 'ready', progress: 1, message: '本地引擎已就绪' })
-            if (status === 'loading') status = 'idle'
-            return
-          } catch (err) {
-            lastErr = err
-            // #region agent log
-            agentLog(
-              'tts.ts:ensureReady',
-              'model url failed',
-              { modelUrl, err: err instanceof Error ? err.message : String(err) },
-              'L1',
-            )
-            // #endregion
-          }
-        }
-        throw lastErr instanceof Error
-          ? lastErr
-          : new Error('本地语音模型下载失败，请检查网络后重试')
-      } catch (err) {
-        initPromise = null
-        piper = null
-        status = 'idle'
-        throw err instanceof Error ? err : new Error(String(err))
+      const [{ PiperPlus }, ort] = await Promise.all([import('piper-plus'), import('onnxruntime-web')])
+      ort.env.wasm.numThreads = 1
+      if (!ort.env.wasm.wasmPaths) {
+        ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
       }
+      let lastErr: unknown
+      for (const modelUrl of urls) {
+        try {
+          // #region agent log
+          agentLog('tts.ts:loadPlus', 'load', { key: voice.key, modelUrl }, 'V1')
+          // #endregion
+          const instance = await (PiperPlus.initialize as (opts: unknown) => Promise<PiperPlusInstance>)({
+            model: modelUrl,
+            ort,
+            onProgress: (p: TtsProgress) => {
+              onProgress?.({ ...p, message: `${voice.name}: ${p.message || p.stage}` })
+            },
+            wasmLoader: async () => {
+              const mod = await import('piper-plus/wasm/multilingual')
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const init = (mod as any).default
+              if (typeof init === 'function') await init()
+              return mod
+            },
+          })
+          plusCache.set(voice.key, instance)
+          anyReady = true
+          // #region agent log
+          agentLog('tts.ts:loadPlus', 'ready', { key: voice.key }, 'V1')
+          // #endregion
+          if (status === 'loading') status = 'idle'
+          return
+        } catch (err) {
+          lastErr = err
+          agentLog(
+            'tts.ts:loadPlus',
+            'failed url',
+            { key: voice.key, modelUrl, err: err instanceof Error ? err.message : String(err) },
+            'V1',
+          )
+        }
+      }
+      throw lastErr instanceof Error ? lastErr : new Error(`${voice.name} 模型加载失败`)
     })()
+    loading.set(voice.key, task)
+    try {
+      await task
+    } finally {
+      loading.delete(voice.key)
+    }
+  }
 
-    await initPromise
+  const loadPiper = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
+    if (!voice.voiceId) throw new Error('音色配置缺少 voiceId')
+    if (piperCache.has(voice.key)) return
+    if (loading.has(voice.key)) {
+      await loading.get(voice.key)
+      return
+    }
+    const task = (async () => {
+      status = 'loading'
+      installHfMirrorFetch()
+      onProgress?.({ stage: 'model', progress: 0.1, message: `下载 ${voice.name}…` })
+      const { TtsSession } = await import('@mintplex-labs/piper-tts-web')
+      // #region agent log
+      agentLog('tts.ts:loadPiper', 'create session', { key: voice.key, voiceId: voice.voiceId }, 'V1')
+      // #endregion
+      const session = await TtsSession.create({
+        voiceId: voice.voiceId as never,
+        progress: (p) => {
+          const pct = p.total ? p.loaded / p.total : 0
+          onProgress?.({
+            stage: 'model',
+            progress: Math.min(0.95, pct),
+            message: `下载 ${voice.name} ${Math.round(pct * 100)}%`,
+          })
+        },
+        wasmPaths: {
+          onnxWasm: `${import.meta.env.BASE_URL}ort/`,
+          piperData: 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.data',
+          piperWasm: 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.wasm',
+        },
+      })
+      piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
+      anyReady = true
+      // #region agent log
+      agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'V1')
+      // #endregion
+      onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
+      if (status === 'loading') status = 'idle'
+    })()
+    loading.set(voice.key, task)
+    try {
+      await task
+    } catch (err) {
+      loading.delete(voice.key)
+      status = 'idle'
+      throw err instanceof Error ? err : new Error(String(err))
+    } finally {
+      loading.delete(voice.key)
+    }
+  }
+
+  const ensureVoice = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
+    if (voice.engine === 'piper-plus') await loadPlus(voice, onProgress)
+    else await loadPiper(voice, onProgress)
+  }
+
+  const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
+    const keys =
+      voiceKeys && voiceKeys.length
+        ? voiceKeys
+        : [prefs.zhKey || DEFAULT_VOICE_ZH, prefs.enKey || DEFAULT_VOICE_EN, prefs.noteKey || DEFAULT_VOICE_NOTE]
+    const unique = [...new Set(keys.filter(Boolean))] as string[]
+    for (const key of unique) {
+      const voice = getVoice(key) || pickVoice('zh', key)
+      await ensureVoice(voice, onProgress)
+    }
+    onProgress?.({ stage: 'ready', progress: 1, message: '本地音色已就绪' })
   }
 
   const playBlob = (blob: Blob, playbackRate: number) =>
@@ -236,76 +318,84 @@ export function createTtsController(onEnd?: () => void): TtsController {
       })
     })
 
-  const speakLocal = async (text: string, rate: number, lang: 'zh' | 'en', pitch: number) => {
-    await ensureReady()
-    if (!piper) throw new Error('本地语音引擎未就绪')
-
+  const speakWithVoice = async (
+    text: string,
+    rate: number,
+    lang: 'zh' | 'en',
+    pitch: number,
+    voice: VoiceDef,
+  ) => {
+    await ensureVoice(voice)
     const trimmed = text.trim()
     if (!trimmed) return
 
-    // piper lengthScale：越小越快；用语速反比近似
     const lengthScale = Math.min(2.2, Math.max(0.55, 1 / rate))
     // #region agent log
     agentLog(
-      'tts.ts:speakLocal',
-      'synthesize start',
-      { lang, rate, lengthScale, pitch, textLen: trimmed.length },
-      'L2',
+      'tts.ts:speakWithVoice',
+      'start',
+      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length },
+      'V2',
     )
     // #endregion
 
-    const result = await piper.synthesize(trimmed, {
-      language: lang,
-      lengthScale,
-      noiseScale: 0.667,
-    })
-    const blob = result.toBlob()
+    let blob: Blob
+    if (voice.engine === 'piper-plus') {
+      const piper = plusCache.get(voice.key)
+      if (!piper) throw new Error('音色引擎未就绪')
+      const result = await piper.synthesize(trimmed, {
+        language: lang,
+        lengthScale,
+        noiseScale: 0.667,
+      })
+      blob = result.toBlob()
+    } else {
+      const session = piperCache.get(voice.key)
+      if (!session) throw new Error('音色引擎未就绪')
+      blob = await session.predict(trimmed)
+    }
+
     // #region agent log
-    agentLog(
-      'tts.ts:speakLocal',
-      'synthesize done, play wav',
-      { bytes: blob.size, duration: result.duration, type: blob.type },
-      'L2',
-    )
+    agentLog('tts.ts:speakWithVoice', 'play', { key: voice.key, bytes: blob.size }, 'V2')
     // #endregion
 
-    // pitch：HTMLAudio 无原生 pitch，注释段用略慢/略快区分（playbackRate 微调）
     const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
     await playBlob(blob, playRate)
   }
 
   return {
-    getEngine: () => (piper?.isInitialized ? 'local' : 'none'),
+    getEngine: () => (anyReady ? 'local' : 'none'),
     setPrefs: (p) => {
       prefs = { ...prefs, ...p }
     },
     getPrefs: () => ({ ...prefs }),
-    listVoices: async () => BUILTIN_VOICES,
+    listVoices: async () => VOICE_CATALOG.map(toRef),
     ensureReady,
     async probe() {
-      const ready = !!piper?.isInitialized
-      // #region agent log
-      agentLog('tts.ts:probe', 'local probe', { ready }, 'L1')
-      // #endregion
+      const voices = VOICE_CATALOG.map(toRef)
+      const zhVoices = voicesForLang('zh').map(toRef)
+      const enVoices = voicesForLang('en').map(toRef)
       return {
         chineseOk: true,
         englishOk: true,
         languages: ['zh', 'en'],
-        voices: BUILTIN_VOICES,
-        zhVoices: [BUILTIN_VOICES[0]],
-        enVoices: [BUILTIN_VOICES[1]],
-        ready,
+        voices,
+        zhVoices,
+        enVoices,
+        ready: anyReady,
       }
     },
     async speak(text, rate = 1, opts) {
       const pitch = opts?.pitch ?? 1
       const hint = opts?.langHint || 'auto'
       const lang = hint === 'auto' ? detectTextLang(text) : hint
-      // #region agent log
-      agentLog('tts.ts:speak', 'speak local', { lang, rate, pitch, textLen: text.length }, 'L2')
-      // #endregion
+      const preferred =
+        opts?.voiceKey ||
+        (lang === 'zh' ? prefs.zhKey : prefs.enKey) ||
+        undefined
+      const voice = pickVoice(lang, preferred)
       try {
-        await speakLocal(text, rate, lang, pitch)
+        await speakWithVoice(text, rate, lang, pitch, voice)
       } catch (err) {
         if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
           return

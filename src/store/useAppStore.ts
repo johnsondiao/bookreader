@@ -7,6 +7,7 @@ import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphs } from '../utils/chapterParser'
 import { createIdbStorage } from '../utils/idbStorage'
+import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 
 interface AppState {
   books: Book[]
@@ -43,9 +44,9 @@ const defaultSettings: ReaderSettings = {
   theme: 'day',
   ttsRate: 1,
   autoScroll: true,
-  ttsVoiceZh: '',
-  ttsVoiceEn: '',
-  ttsVoiceNote: '',
+  ttsVoiceZh: DEFAULT_VOICE_ZH,
+  ttsVoiceEn: DEFAULT_VOICE_EN,
+  ttsVoiceNote: DEFAULT_VOICE_NOTE,
 }
 
 function normalizeBook(book: Book): Book {

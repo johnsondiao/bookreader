@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TocPanel } from '../components/TocPanel'
 import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
-import { createTtsController, splitSpeakSegments } from '../utils/tts'
+import { createTtsController, splitSpeakSegments, voicesForLang, VOICE_CATALOG } from '../utils/tts'
+import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -44,7 +45,9 @@ export function ReaderPage() {
   const [ttsPaused, setTtsPaused] = useState(false)
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
-  const [engineStatus, setEngineStatus] = useState('首次听书将下载本地语音模型（约 40MB），之后完全离线合成音频播放')
+  const [engineStatus, setEngineStatus] = useState(
+    '可选多音色：首次使用会下载对应模型，之后本地合成音频播放',
+  )
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
@@ -113,18 +116,40 @@ export function ReaderPage() {
   }
 
   const prepareEngine = useCallback(async () => {
+    const keys = [
+      settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+      settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+      settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+    ]
     await ttsRef.current.ensureReady((p) => {
       const pct = Math.round((p.progress || 0) * 100)
       setEngineStatus(`${p.message || p.stage} ${pct}%`)
+    }, keys)
+    setEngineStatus('所选音色已就绪：文字 → 音频 → 播放')
+  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
+
+  useEffect(() => {
+    ttsRef.current.setPrefs({
+      zhKey: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+      enKey: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+      noteKey: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
     })
-    setEngineStatus('本地引擎已就绪：文字 → 音频文件 → 播放（无需系统语音包）')
-  }, [])
+  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
 
   // #region agent log
   useEffect(() => {
+    if (!settings.ttsVoiceZh || !settings.ttsVoiceEn || !settings.ttsVoiceNote) {
+      updateSettings({
+        ttsVoiceZh: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+        ttsVoiceEn: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+        ttsVoiceNote: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+      })
+    }
     void ttsRef.current.probe().then((info) => {
-      if (info.ready) setEngineStatus('本地引擎已就绪：文字 → 音频文件 → 播放（无需系统语音包）')
+      if (info.ready) setEngineStatus('本地音色已就绪：文字 → 音频 → 播放')
     })
+    // 仅在进入书籍时补齐默认音色
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id])
   // #endregion
 
@@ -236,6 +261,9 @@ export function ReaderPage() {
             const isNote = seg.kind === 'note'
             await ttsRef.current.speak(seg.text, settings.ttsRate, {
               pitch: isNote ? 1.15 : 1,
+              voiceKey: isNote
+                ? settings.ttsVoiceNote || settings.ttsVoiceZh
+                : undefined,
               langHint: 'auto',
             })
           }
@@ -268,7 +296,7 @@ export function ReaderPage() {
         }
       }
     },
-    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.autoScroll, prepareEngine],
+    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.ttsVoiceZh, settings.ttsVoiceNote, settings.autoScroll, prepareEngine],
   )
 
   useEffect(() => {
@@ -578,10 +606,10 @@ export function ReaderPage() {
               </div>
             </div>
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-              <span>本地听书引擎</span>
+              <span>本地听书 · 多音色</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  不再使用系统语音包。听书时在本机把文字合成 WAV 音频再播放。
+                  中英文可分别选音色；注释可用另一把声音。首次使用会下载该模型，之后离线合成播放。
                 </p>
                 <p style={{ margin: '0 0 8px', fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
                 <button
@@ -590,13 +618,58 @@ export function ReaderPage() {
                   style={{ width: '100%' }}
                   onClick={() => {
                     void prepareEngine()
-                      .then(() => showToast('本地引擎已就绪'))
+                      .then(() => showToast('所选音色已就绪'))
                       .catch((e) => showToast(e instanceof Error ? e.message : '准备失败'))
                   }}
                 >
-                  预下载 / 准备本地语音
+                  预下载当前所选音色
                 </button>
               </div>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>中文音色</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceZh || DEFAULT_VOICE_ZH}
+                onChange={(e) => updateSettings({ ttsVoiceZh: e.target.value })}
+              >
+                {voicesForLang('zh').map((v) => (
+                  <option key={v.key} value={v.key}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>英文音色</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceEn || DEFAULT_VOICE_EN}
+                onChange={(e) => updateSettings({ ttsVoiceEn: e.target.value })}
+              >
+                {voicesForLang('en').map((v) => (
+                  <option key={v.key} value={v.key}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+              <span>注释音色</span>
+              <select
+                className="voice-select"
+                value={settings.ttsVoiceNote || DEFAULT_VOICE_NOTE}
+                onChange={(e) => updateSettings({ ttsVoiceNote: e.target.value })}
+              >
+                {VOICE_CATALOG.map((v) => (
+                  <option key={`note-${v.key}`} value={v.key}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </div>
