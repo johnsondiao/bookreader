@@ -322,7 +322,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
     probe,
     openLanguageInstall,
     async speak(text, rate = 1, opts) {
-      pausedText = null
       const pitch = opts?.pitch ?? 1
       const hint = opts?.langHint || 'auto'
       const lang = hint === 'auto' ? detectTextLang(text) : hint
@@ -355,7 +354,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
         status = 'paused'
         return
       }
-      pausedText = null
       void TextToSpeech.stop().catch(() => {})
       status = 'paused'
     },
@@ -381,7 +379,6 @@ export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex:
       }
       status = 'idle'
       utterance = null
-      pausedText = null
     },
     getStatus: () => status,
   }
