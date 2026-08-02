@@ -1,8 +1,18 @@
 diff --git a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
-index 3ad7683..352b39f 100644
+index 3ad7683..9cad97d 100644
 --- a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
 +++ b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeech.java
-@@ -115,9 +115,11 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+@@ -2,9 +2,6 @@ package com.getcapacitor.community.tts;
+ 
+ import android.content.Context;
+ import android.content.Intent;
+-import android.content.pm.PackageManager;
+-import android.content.pm.ResolveInfo;
+-import android.os.Build;
+ import android.os.Bundle;
+ import android.speech.tts.UtteranceProgressListener;
+ import android.speech.tts.Voice;
+@@ -115,9 +112,11 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
  
          if (voice >= 0) {
              ArrayList<Voice> supportedVoices = getSupportedVoicesOrdered();
@@ -16,7 +26,7 @@ index 3ad7683..352b39f 100644
              }
          }
          tts.speak(text, queueStrategy, ttsParams, callbackId);
-@@ -131,9 +133,13 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+@@ -131,9 +130,13 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
      public JSArray getSupportedLanguages() {
          ArrayList<String> languages = new ArrayList<>();
          Set<Locale> supportedLocales = tts.getAvailableLanguages();
@@ -33,7 +43,7 @@ index 3ad7683..352b39f 100644
          }
          JSArray result = JSArray.from(languages.toArray());
          return result;
-@@ -145,13 +151,15 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+@@ -145,13 +148,15 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
      public ArrayList<Voice> getSupportedVoicesOrdered() {
          Set<Voice> supportedVoices = tts.getVoices();
          ArrayList<Voice> orderedVoices = new ArrayList<Voice>();
@@ -54,3 +64,167 @@ index 3ad7683..352b39f 100644
          return orderedVoices;
      }
  
+@@ -166,17 +171,90 @@ public class TextToSpeech implements android.speech.tts.TextToSpeech.OnInitListe
+         return result;
+     }
+ 
+-    public void openInstall() {
+-        PackageManager packageManager = context.getPackageManager();
+-        Intent installIntent = new Intent();
+-        installIntent.setAction(android.speech.tts.TextToSpeech.Engine.ACTION_CHECK_TTS_DATA);
++    /**
++     * 打开系统「安装 TTS 语音数据」页面。
++     * 旧实现用 ACTION_CHECK_TTS_DATA，在多数机型上不会进入真正的下载安装页。
++     * @return 实际打开的入口名称，便于排查
++     */
++    public String openInstall() {
++        // 1) 真正的安装语音数据包
++        if (tryStartAction(android.speech.tts.TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA)) {
++            Log.i(LOG_TAG, "openInstall path=INSTALL_TTS_DATA");
++            return "INSTALL_TTS_DATA";
++        }
++        // 2) 兼容旧路径
++        if (tryStartAction(android.speech.tts.TextToSpeech.Engine.ACTION_CHECK_TTS_DATA)) {
++            Log.i(LOG_TAG, "openInstall path=CHECK_TTS_DATA");
++            return "CHECK_TTS_DATA";
++        }
++        // 3) 打开系统「文字转语音」设置（小米等 ROM 常只有这里能下语言包）
++        try {
++            Intent settings = new Intent();
++            settings.setAction("com.android.settings.TTS_SETTINGS");
++            settings.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            if (settings.resolveActivity(context.getPackageManager()) != null) {
++                context.startActivity(settings);
++                Log.i(LOG_TAG, "openInstall path=TTS_SETTINGS");
++                return "TTS_SETTINGS";
++            }
++        } catch (Exception e) {
++            Log.w(LOG_TAG, "openInstall TTS_SETTINGS failed", e);
++        }
++        try {
++            Intent settings = new Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS);
++            settings.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            context.startActivity(settings);
++            Log.i(LOG_TAG, "openInstall path=ACCESSIBILITY_SETTINGS");
++            return "ACCESSIBILITY_SETTINGS";
++        } catch (Exception e) {
++            Log.w(LOG_TAG, "openInstall none", e);
++            return "NONE";
++        }
++    }
+ 
+-        ResolveInfo resolveInfo = packageManager.resolveActivity(installIntent, PackageManager.MATCH_DEFAULT_ONLY);
++    /** 打开应用商店安装 Google 文字转语音引擎（很多国产机默认引擎不带中文） */
++    public String openEngineStore() {
++        String pkg = "com.google.android.tts";
++        try {
++            Intent market = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=" + pkg));
++            market.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            if (market.resolveActivity(context.getPackageManager()) != null) {
++                context.startActivity(market);
++                Log.i(LOG_TAG, "openEngineStore path=market");
++                return "market";
++            }
++        } catch (Exception e) {
++            Log.w(LOG_TAG, "openEngineStore market failed", e);
++        }
++        try {
++            Intent web = new Intent(
++                Intent.ACTION_VIEW,
++                android.net.Uri.parse("https://play.google.com/store/apps/details?id=" + pkg)
++            );
++            web.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            context.startActivity(web);
++            Log.i(LOG_TAG, "openEngineStore path=web");
++            return "web";
++        } catch (Exception e) {
++            Log.w(LOG_TAG, "openEngineStore none", e);
++            return "NONE";
++        }
++    }
+ 
+-        if (resolveInfo != null) {
+-            installIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+-            context.startActivity(installIntent);
++    private boolean tryStartAction(String action) {
++        try {
++            Intent intent = new Intent();
++            intent.setAction(action);
++            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            if (intent.resolveActivity(context.getPackageManager()) != null) {
++                context.startActivity(intent);
++                return true;
++            }
++            Log.i(LOG_TAG, "tryStartAction no activity for " + action);
++        } catch (Exception e) {
++            Log.w(LOG_TAG, "tryStartAction failed " + action, e);
+         }
++        return false;
+     }
+ 
+     public boolean isAvailable() {
+diff --git a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeechPlugin.java b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeechPlugin.java
+index 62eaf01..3e11e48 100644
+--- a/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeechPlugin.java
++++ b/node_modules/@capacitor-community/text-to-speech/android/src/main/java/com/getcapacitor/community/tts/TextToSpeechPlugin.java
+@@ -130,8 +130,22 @@ public class TextToSpeechPlugin extends Plugin {
+     @PluginMethod
+     public void openInstall(PluginCall call) {
+         try {
+-            implementation.openInstall();
+-            call.resolve();
++            String path = implementation.openInstall();
++            JSObject ret = new JSObject();
++            ret.put("path", path);
++            call.resolve(ret);
++        } catch (Exception ex) {
++            call.reject(ex.getLocalizedMessage());
++        }
++    }
++
++    @PluginMethod
++    public void openEngineStore(PluginCall call) {
++        try {
++            String path = implementation.openEngineStore();
++            JSObject ret = new JSObject();
++            ret.put("path", path);
++            call.resolve(ret);
+         } catch (Exception ex) {
+             call.reject(ex.getLocalizedMessage());
+         }
+diff --git a/node_modules/@capacitor-community/text-to-speech/dist/esm/definitions.d.ts b/node_modules/@capacitor-community/text-to-speech/dist/esm/definitions.d.ts
+index b763f72..e4bb1fb 100644
+--- a/node_modules/@capacitor-community/text-to-speech/dist/esm/definitions.d.ts
++++ b/node_modules/@capacitor-community/text-to-speech/dist/esm/definitions.d.ts
+@@ -33,7 +33,16 @@ export interface TextToSpeechPlugin {
+      *
+      * Only available for Android.
+      */
+-    openInstall(): Promise<void>;
++    openInstall(): Promise<{
++        path?: string;
++    }>;
++    /**
++     * Opens the store page for Google Text-to-speech Engine.
++     * Only available for Android (patched).
++     */
++    openEngineStore(): Promise<{
++        path?: string;
++    }>;
+     addListener(eventName: 'onRangeStart', listenerFunc: (info: {
+         start: number;
+         end: number;
+diff --git a/node_modules/@capacitor-community/text-to-speech/dist/esm/web.js b/node_modules/@capacitor-community/text-to-speech/dist/esm/web.js
+index 1972902..993f6c2 100644
+--- a/node_modules/@capacitor-community/text-to-speech/dist/esm/web.js
++++ b/node_modules/@capacitor-community/text-to-speech/dist/esm/web.js
+@@ -51,6 +51,9 @@ export class TextToSpeechWeb extends WebPlugin {
+     async openInstall() {
+         this.throwUnimplementedError();
+     }
++    async openEngineStore() {
++        this.throwUnimplementedError();
++    }
+     createSpeechSynthesisUtterance(options) {
+         const voices = this.getSpeechSynthesisVoices();
+         const utterance = new SpeechSynthesisUtterance();

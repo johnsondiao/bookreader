@@ -21,6 +21,8 @@
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/status-bar": "^8.0.3",
     "jszip": "^3.10.1",
+    "onnxruntime-web": "^1.27.0",
+    "piper-plus": "^0.6.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "uuid": "^14.0.1",

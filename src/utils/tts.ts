@@ -1,11 +1,8 @@
-import { Capacitor } from '@capacitor/core'
-import { TextToSpeech, type SpeechSynthesisVoice } from '@capacitor-community/text-to-speech'
 import { agentLog } from './agentLog'
 
-export type TtsStatus = 'idle' | 'speaking' | 'paused'
+export type TtsStatus = 'idle' | 'speaking' | 'paused' | 'loading'
 
 export type TtsVoiceRef = {
-  /** getSupportedVoices 下标，运行时解析 */
   index: number
   lang: string
   name: string
@@ -18,6 +15,12 @@ export type TtsVoicePrefs = {
   noteKey?: string
 }
 
+export type TtsProgress = {
+  stage: string
+  progress: number
+  message: string
+}
+
 export interface TtsController {
   speak: (
     text: string,
@@ -28,7 +31,9 @@ export interface TtsController {
   resume: () => void
   stop: () => void
   getStatus: () => TtsStatus
-  getEngine: () => 'native' | 'web' | 'none'
+  getEngine: () => 'local' | 'none'
+  /** 预下载并初始化本地模型（首次需联网，之后本地合成） */
+  ensureReady: (onProgress?: (p: TtsProgress) => void) => Promise<void>
   probe: () => Promise<{
     chineseOk: boolean
     englishOk: boolean
@@ -36,32 +41,23 @@ export interface TtsController {
     voices: TtsVoiceRef[]
     zhVoices: TtsVoiceRef[]
     enVoices: TtsVoiceRef[]
+    ready: boolean
   }>
-  /** 打开系统语音数据安装页（请一次勾选中文+英文等） */
-  openLanguageInstall: () => Promise<void>
   listVoices: () => Promise<TtsVoiceRef[]>
   setPrefs: (prefs: TtsVoicePrefs) => void
   getPrefs: () => TtsVoicePrefs
 }
 
-function hasWebSpeech() {
-  return typeof window !== 'undefined' && 'speechSynthesis' in window && !!window.speechSynthesis
-}
+/** 中国大陆可访问的镜像；失败时回退官方 HuggingFace */
+const MODEL_URLS = [
+  'https://hf-mirror.com/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx',
+  'https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx',
+]
 
-const ZH_LANGS = ['zh-CN', 'zh_CN', 'zh-Hans', 'zh', 'cmn-CN', 'chi', 'zh-TW', 'zh_TW', 'zh-HK']
-const EN_LANGS = ['en-US', 'en_US', 'en-GB', 'en_GB', 'en-AU', 'en', 'eng']
-
-function voiceKey(lang: string, name: string) {
-  return `${lang}||${name}`
-}
-
-function isZhLang(lang: string) {
-  return /zh|cmn|chi|chinese/i.test(lang)
-}
-
-function isEnLang(lang: string) {
-  return /^en/i.test(lang) || /english/i.test(lang)
-}
+const BUILTIN_VOICES: TtsVoiceRef[] = [
+  { index: 0, lang: 'zh-CN', name: '本地中文', key: 'local||zh' },
+  { index: 1, lang: 'en-US', name: '本地英文', key: 'local||en' },
+]
 
 function detectTextLang(text: string): 'zh' | 'en' {
   const sample = text.slice(0, 80)
@@ -70,307 +66,269 @@ function detectTextLang(text: string): 'zh' | 'en' {
   return cjk >= latin ? 'zh' : 'en'
 }
 
-function toVoiceRef(v: SpeechSynthesisVoice, index: number): TtsVoiceRef {
-  return {
-    index,
-    lang: v.lang || '',
-    name: v.name || `voice-${index}`,
-    key: voiceKey(v.lang || '', v.name || `voice-${index}`),
+type PiperInstance = {
+  synthesize: (
+    text: string,
+    opts?: { language?: string; lengthScale?: number; noiseScale?: number },
+  ) => Promise<{
+    toBlob: () => Blob
+    play: () => Promise<void>
+    duration: number
+  }>
+  dispose: () => void
+  isInitialized: boolean
+}
+
+class SpeakAborted extends Error {
+  constructor() {
+    super('aborted')
+    this.name = 'SpeakAborted'
   }
 }
 
-export function createTtsController(onEnd?: () => void, onBoundary?: (charIndex: number) => void): TtsController {
+export function createTtsController(onEnd?: () => void): TtsController {
   let status: TtsStatus = 'idle'
-  let utterance: SpeechSynthesisUtterance | null = null
-  let engine: 'native' | 'web' | 'none' = Capacitor.isNativePlatform()
-    ? 'native'
-    : hasWebSpeech()
-      ? 'web'
-      : 'none'
-  let cachedVoices: TtsVoiceRef[] = []
   let prefs: TtsVoicePrefs = {}
+  let piper: PiperInstance | null = null
+  let initPromise: Promise<void> | null = null
+  let audio: HTMLAudioElement | null = null
+  let objectUrl: string | null = null
+  let playWait: { resolve: () => void; reject: (e: Error) => void } | null = null
 
-  const pickWebVoice = (lang: 'zh' | 'en', preferredKey?: string) => {
-    if (!hasWebSpeech()) return null
-    const voices = window.speechSynthesis.getVoices()
-    if (preferredKey) {
-      const [pl, ...rest] = preferredKey.split('||')
-      const pn = rest.join('||')
-      const hit = voices.find((v) => v.lang === pl && v.name === pn)
-      if (hit) return hit
+  const cleanupAudio = () => {
+    if (audio) {
+      audio.onended = null
+      audio.onerror = null
+      audio.pause()
+      audio.src = ''
+      audio = null
     }
-    if (lang === 'zh') {
-      return (
-        voices.find((v) => v.lang.startsWith('zh') && /female|xiaoxiao|ting|hui|yao/i.test(v.name)) ||
-        voices.find((v) => v.lang.startsWith('zh-CN')) ||
-        voices.find((v) => v.lang.startsWith('zh')) ||
-        null
-      )
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl)
+      objectUrl = null
     }
-    return (
-      voices.find((v) => v.lang.startsWith('en-US')) ||
-      voices.find((v) => v.lang.startsWith('en')) ||
-      null
-    )
   }
 
-  const refreshVoices = async (): Promise<TtsVoiceRef[]> => {
-    try {
-      if (Capacitor.isNativePlatform()) {
-        const { voices } = await TextToSpeech.getSupportedVoices()
-        cachedVoices = (voices || []).map((v, i) => toVoiceRef(v, i))
-        return cachedVoices
-      }
-      if (hasWebSpeech()) {
-        const voices = window.speechSynthesis.getVoices()
-        cachedVoices = voices.map((v, i) =>
-          toVoiceRef({ lang: v.lang, name: v.name, default: v.default } as SpeechSynthesisVoice, i),
-        )
-        return cachedVoices
-      }
-    } catch (err) {
+  const finishPlayWait = (err?: Error) => {
+    const w = playWait
+    playWait = null
+    if (!w) return
+    if (err) w.reject(err)
+    else w.resolve()
+  }
+
+  const ensureReady = async (onProgress?: (p: TtsProgress) => void) => {
+    if (piper?.isInitialized) {
+      onProgress?.({ stage: 'ready', progress: 1, message: '本地引擎已就绪' })
+      return
+    }
+    if (initPromise) {
+      await initPromise
+      return
+    }
+
+    initPromise = (async () => {
+      status = 'loading'
       // #region agent log
-      agentLog(
-        'tts.ts:refreshVoices',
-        'list voices failed (ROM may return null Set)',
-        { err: err instanceof Error ? err.message : String(err) },
-        'NPE',
-      )
+      agentLog('tts.ts:ensureReady', 'local piper init start', {}, 'L1')
       // #endregion
-      cachedVoices = []
-      return cachedVoices
-    }
-    cachedVoices = []
-    return cachedVoices
-  }
-
-  const probe = async () => {
-    // #region agent log
-    agentLog('tts.ts:probe', 'probe start', { native: Capacitor.isNativePlatform() }, 'B')
-    // #endregion
-    let languages: string[] = []
-    if (Capacitor.isNativePlatform()) {
       try {
-        const r = await TextToSpeech.getSupportedLanguages()
-        languages = r.languages || []
-      } catch {
-        languages = []
+        const [{ PiperPlus }, ort] = await Promise.all([
+          import('piper-plus'),
+          import('onnxruntime-web'),
+        ])
+
+        // 交给 Vite 打包后的 wasm 资源路径；Android WebView 强制单线程更稳
+        ort.env.wasm.numThreads = 1
+        // 若打包器未内联路径，回退到 public/ort（含 simd-threaded 与 jsep）
+        if (!ort.env.wasm.wasmPaths) {
+          ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
+        }
+
+        let lastErr: unknown
+        for (const modelUrl of MODEL_URLS) {
+          try {
+            // #region agent log
+            agentLog('tts.ts:ensureReady', 'trying model url', { modelUrl }, 'L1')
+            // #endregion
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const instance = await (PiperPlus.initialize as (opts: any) => Promise<PiperInstance>)({
+              model: modelUrl,
+              ort,
+              onProgress: (p: TtsProgress) => {
+                onProgress?.(p)
+                // #region agent log
+                agentLog(
+                  'tts.ts:ensureReady',
+                  'progress',
+                  { stage: p.stage, progress: p.progress, message: p.message },
+                  'L1',
+                )
+                // #endregion
+              },
+              wasmLoader: async () => {
+                const mod = await import('piper-plus/wasm/multilingual')
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const init = (mod as any).default
+                if (typeof init === 'function') await init()
+                return mod
+              },
+            })
+            piper = instance
+            // #region agent log
+            agentLog('tts.ts:ensureReady', 'piper ready', { modelUrl }, 'L1')
+            // #endregion
+            onProgress?.({ stage: 'ready', progress: 1, message: '本地引擎已就绪' })
+            if (status === 'loading') status = 'idle'
+            return
+          } catch (err) {
+            lastErr = err
+            // #region agent log
+            agentLog(
+              'tts.ts:ensureReady',
+              'model url failed',
+              { modelUrl, err: err instanceof Error ? err.message : String(err) },
+              'L1',
+            )
+            // #endregion
+          }
+        }
+        throw lastErr instanceof Error
+          ? lastErr
+          : new Error('本地语音模型下载失败，请检查网络后重试')
+      } catch (err) {
+        initPromise = null
+        piper = null
+        status = 'idle'
+        throw err instanceof Error ? err : new Error(String(err))
       }
-    }
-    const voices = await refreshVoices()
-    const zhVoices = voices.filter((v) => isZhLang(v.lang) || /chinese|中文/i.test(v.name))
-    const enVoices = voices.filter((v) => isEnLang(v.lang) || /english|英文/i.test(v.name))
-    const chineseOk =
-      zhVoices.length > 0 ||
-      languages.some((l) => ZH_LANGS.some((z) => l.toLowerCase().startsWith(z.split('-')[0].toLowerCase()) && /zh|cmn|chi/i.test(l)))
-    const englishOk = enVoices.length > 0 || languages.some((l) => /^en/i.test(l))
+    })()
 
-    const result = { chineseOk, englishOk, languages, voices, zhVoices, enVoices }
-    // #region agent log
-    agentLog(
-      'tts.ts:probe',
-      'probe done',
-      {
-        chineseOk,
-        englishOk,
-        langCount: languages.length,
-        voiceCount: voices.length,
-        zh: zhVoices.length,
-        en: enVoices.length,
-      },
-      'B',
-    )
-    // #endregion
-    return result
+    await initPromise
   }
 
-  const openLanguageInstall = async () => {
-    if (!Capacitor.isNativePlatform()) {
-      throw new Error('请在安卓手机上安装系统语音包')
-    }
-    // #region agent log
-    agentLog('tts.ts:openLanguageInstall', 'openInstall for zh+en voices', {}, 'B')
-    // #endregion
-    try {
-      await TextToSpeech.openInstall()
-    } catch (err) {
-      // #region agent log
-      agentLog(
-        'tts.ts:openLanguageInstall',
-        'openInstall failed',
-        { err: err instanceof Error ? err.message : String(err) },
-        'B',
-      )
-      // #endregion
-      throw new Error('无法打开语音包安装页。请到：系统设置 → 语言和输入法 → 文字转语音（TTS）→ 安装语音数据')
-    }
-  }
-
-  const speakWeb = (text: string, rate: number, pitch: number, lang: 'zh' | 'en', voiceKey?: string) =>
+  const playBlob = (blob: Blob, playbackRate: number) =>
     new Promise<void>((resolve, reject) => {
-      if (!hasWebSpeech()) {
-        reject(new Error('当前浏览器不支持语音朗读'))
-        return
-      }
-      window.speechSynthesis.cancel()
-      utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = lang === 'zh' ? 'zh-CN' : 'en-US'
-      utterance.rate = rate
-      utterance.pitch = pitch
-      const voice = pickWebVoice(lang, voiceKey)
-      if (voice) utterance.voice = voice
-
-      utterance.onend = () => {
-        status = 'idle'
-        utterance = null
-        onEnd?.()
-        resolve()
-      }
-      utterance.onerror = () => {
-        status = 'idle'
-        utterance = null
-        resolve()
-      }
-      utterance.onboundary = (e) => {
-        if (e.name === 'word' || e.charIndex != null) onBoundary?.(e.charIndex)
-      }
-
+      cleanupAudio()
+      finishPlayWait()
+      objectUrl = URL.createObjectURL(blob)
+      audio = new Audio(objectUrl)
+      audio.playbackRate = Math.min(2, Math.max(0.5, playbackRate))
       status = 'speaking'
-      window.speechSynthesis.speak(utterance)
+      playWait = { resolve, reject }
+
+      audio.onended = () => {
+        status = 'idle'
+        cleanupAudio()
+        onEnd?.()
+        finishPlayWait()
+      }
+      audio.onerror = () => {
+        status = 'idle'
+        cleanupAudio()
+        finishPlayWait(new Error('音频播放失败'))
+      }
+
+      void audio.play().catch((e) => {
+        status = 'idle'
+        cleanupAudio()
+        finishPlayWait(e instanceof Error ? e : new Error(String(e)))
+      })
     })
 
-  const speakNative = async (text: string, rate: number, pitch: number, lang: 'zh' | 'en', _preferredKey?: string) => {
-    status = 'speaking'
-    // 恢复最初能播的路径：只设语言 + 语速/音调，绝不传 voice 下标。
-    // 原因：传 voice 会让插件调用 tts.getVoices()；小米等 ROM 常返回 null → Set.iterator NPE。
-    const langCode = lang === 'zh' ? 'zh-CN' : 'en-US'
-    const rateClamped = Math.min(2, Math.max(0.5, rate))
-    const alts = lang === 'zh' ? ZH_LANGS : EN_LANGS
+  const speakLocal = async (text: string, rate: number, lang: 'zh' | 'en', pitch: number) => {
+    await ensureReady()
+    if (!piper) throw new Error('本地语音引擎未就绪')
 
-    const doSpeak = (code: string) =>
-      TextToSpeech.speak({
-        text,
-        lang: code,
-        rate: rateClamped,
-        pitch,
-        volume: 1.0,
-        category: 'playback',
-        queueStrategy: 1,
-        // 故意不传 voice，避免插件遍历 null 的 voices Set
-      })
+    const trimmed = text.trim()
+    if (!trimmed) return
 
+    // piper lengthScale：越小越快；用语速反比近似
+    const lengthScale = Math.min(2.2, Math.max(0.55, 1 / rate))
     // #region agent log
     agentLog(
-      'tts.ts:speakNative',
-      'speak without voice index (Xiaomi-safe)',
-      { lang, langCode, textLen: text.length, pitch },
-      'NPE',
+      'tts.ts:speakLocal',
+      'synthesize start',
+      { lang, rate, lengthScale, pitch, textLen: trimmed.length },
+      'L2',
     )
     // #endregion
 
-    try {
-      await doSpeak(langCode)
-      // #region agent log
-      agentLog('tts.ts:speakNative', 'ok', { langCode }, 'NPE')
-      // #endregion
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      // #region agent log
-      agentLog('tts.ts:speakNative', 'failed', { langCode, err: msg }, 'NPE')
-      // #endregion
+    const result = await piper.synthesize(trimmed, {
+      language: lang,
+      lengthScale,
+      noiseScale: 0.667,
+    })
+    const blob = result.toBlob()
+    // #region agent log
+    agentLog(
+      'tts.ts:speakLocal',
+      'synthesize done, play wav',
+      { bytes: blob.size, duration: result.duration, type: blob.type },
+      'L2',
+    )
+    // #endregion
 
-      for (const alt of alts) {
-        if (alt === langCode) continue
-        try {
-          await doSpeak(alt)
-          // #region agent log
-          agentLog('tts.ts:speakNative', 'ok with alt lang', { alt }, 'NPE')
-          // #endregion
-          return
-        } catch {
-          /* try next */
-        }
-      }
-      throw new Error(
-        /iterator|null object|NullPointer/i.test(msg)
-          ? '系统朗读组件异常。请完全杀掉 App 后重开再试；若仍失败再去设置安装语音包'
-          : lang === 'zh'
-            ? '中文朗读失败。请到设置安装中文语音包后重试'
-            : '英文朗读失败。请到设置安装英文语音包后重试',
-      )
-    } finally {
-      if (status === 'speaking') status = 'idle'
-      onEnd?.()
-    }
+    // pitch：HTMLAudio 无原生 pitch，注释段用略慢/略快区分（playbackRate 微调）
+    const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
+    await playBlob(blob, playRate)
   }
 
   return {
-    getEngine: () => engine,
+    getEngine: () => (piper?.isInitialized ? 'local' : 'none'),
     setPrefs: (p) => {
       prefs = { ...prefs, ...p }
     },
     getPrefs: () => ({ ...prefs }),
-    listVoices: refreshVoices,
-    probe,
-    openLanguageInstall,
+    listVoices: async () => BUILTIN_VOICES,
+    ensureReady,
+    async probe() {
+      const ready = !!piper?.isInitialized
+      // #region agent log
+      agentLog('tts.ts:probe', 'local probe', { ready }, 'L1')
+      // #endregion
+      return {
+        chineseOk: true,
+        englishOk: true,
+        languages: ['zh', 'en'],
+        voices: BUILTIN_VOICES,
+        zhVoices: [BUILTIN_VOICES[0]],
+        enVoices: [BUILTIN_VOICES[1]],
+        ready,
+      }
+    },
     async speak(text, rate = 1, opts) {
       const pitch = opts?.pitch ?? 1
       const hint = opts?.langHint || 'auto'
       const lang = hint === 'auto' ? detectTextLang(text) : hint
-      const voiceKey =
-        opts?.voiceKey ||
-        (lang === 'zh' ? prefs.zhKey : prefs.enKey) ||
-        undefined
-
       // #region agent log
-      agentLog('tts.ts:speak', 'speak', { lang, voiceKey, rate, pitch, textLen: text.length }, 'B')
+      agentLog('tts.ts:speak', 'speak local', { lang, rate, pitch, textLen: text.length }, 'L2')
       // #endregion
-
-      if (Capacitor.isNativePlatform()) {
-        engine = 'native'
-        await speakNative(text, rate, pitch, lang, voiceKey)
-        return
+      try {
+        await speakLocal(text, rate, lang, pitch)
+      } catch (err) {
+        if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
+          return
+        }
+        throw err
+      } finally {
+        if (status === 'speaking') status = 'idle'
       }
-      if (hasWebSpeech()) {
-        engine = 'web'
-        await speakWeb(text, rate, pitch, lang, voiceKey)
-        return
-      }
-      engine = 'none'
-      throw new Error('当前环境不支持语音朗读')
     },
     pause() {
-      if (status !== 'speaking') return
-      if (engine === 'web' && hasWebSpeech()) {
-        window.speechSynthesis.pause()
-        status = 'paused'
-        return
-      }
-      void TextToSpeech.stop().catch(() => {})
+      if (status !== 'speaking' || !audio) return
+      audio.pause()
       status = 'paused'
     },
     resume() {
-      if (status !== 'paused') return
-      if (engine === 'web' && hasWebSpeech()) {
-        window.speechSynthesis.resume()
-        status = 'speaking'
-        return
-      }
+      if (status !== 'paused' || !audio) return
       status = 'speaking'
+      void audio.play().catch(() => {})
     },
     stop() {
-      try {
-        if (engine === 'native' || Capacitor.isNativePlatform()) {
-          void TextToSpeech.stop().catch(() => {})
-        }
-        if (hasWebSpeech()) {
-          window.speechSynthesis.cancel()
-        }
-      } catch {
-        /* ignore */
-      }
       status = 'idle'
-      utterance = null
+      cleanupAudio()
+      finishPlayWait(new SpeakAborted())
     },
     getStatus: () => status,
   }

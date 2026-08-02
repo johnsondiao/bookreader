@@ -6,4 +6,11 @@ export default defineConfig({
   plugins: [react()],
   // Capacitor WebView 需要相对路径
   base: './',
+  assetsInclude: ['**/*.wasm'],
+  optimizeDeps: {
+    exclude: ['piper-plus'],
+  },
+  worker: {
+    format: 'es',
+  },
 })
