@@ -1,5 +1,6 @@
 import type { Book } from '../types'
 import { parseChapters } from '../utils/chapterParser'
+import { tocFromChapters } from '../utils/epubParser'
 
 const COLORS = ['#8B3A3A', '#2F4A6B', '#3D5A3D', '#6B4F2F', '#4A3A6B', '#2F5A5A']
 
@@ -14,20 +15,28 @@ function makeBook(
 ): Book {
   const chapters = parseChapters(raw)
   const first = chapters[0]
+  const chapterIndex = Math.max(
+    0,
+    Math.min(chapters.length - 1, Math.floor((progressPercent / 100) * chapters.length)),
+  )
+  const readIds = chapters.slice(0, chapterIndex + 1).map((c) => c.id)
   return {
     id,
     title,
     author,
     coverColor,
     coverEmoji,
-    content: raw,
+    content: '',
     chapters,
+    toc: tocFromChapters(chapters),
     addedAt: Date.now() - Math.floor(Math.random() * 7) * 86400000,
     lastReadAt: progressPercent > 0 ? Date.now() - Math.floor(Math.random() * 2) * 86400000 : 0,
-    chapterId: first?.id ?? '',
+    chapterId: chapters[chapterIndex]?.id ?? first?.id ?? '',
     paragraphIndex: 0,
     charOffset: 0,
     progressPercent,
+    furthestChapterIndex: chapterIndex,
+    readChapterIds: readIds,
   }
 }
 

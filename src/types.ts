@@ -5,7 +5,22 @@ export interface Chapter {
   title: string
   startIndex: number
   content: string
+  /** EPUB spine 文件路径，用于目录跳转匹配 */
+  href?: string
 }
+
+/** 扁平化目录项（带层级），来自 EPUB nav/NCX 或由章节生成 */
+export interface TocEntry {
+  id: string
+  title: string
+  /** 0=卷/部，1=章，2=节… */
+  level: number
+  /** 对应正文章节；无法匹配时为 null */
+  chapterId: string | null
+  href: string
+}
+
+export type TocReadStatus = 'unread' | 'reading' | 'read'
 
 export interface ProgressSnapshot {
   id: string
@@ -28,13 +43,18 @@ export interface Book {
   coverEmoji: string
   content: string
   chapters: Chapter[]
+  /** 结构化目录；缺省时由 chapters 生成 */
+  toc: TocEntry[]
   addedAt: number
   lastReadAt: number
-  /** 当前阅读/朗读进度 */
   chapterId: string
   paragraphIndex: number
   charOffset: number
   progressPercent: number
+  /** 读到过的最远章节下标（含），用于目录已读着色 */
+  furthestChapterIndex: number
+  /** 实际打开过的章节 id */
+  readChapterIds: string[]
 }
 
 export interface ReaderSettings {
