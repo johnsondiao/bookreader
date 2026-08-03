@@ -18,6 +18,18 @@ const INITIAL_VISIBLE = 40
 const LOAD_MORE = 40
 const TINY_CHAPTER = 40
 
+/** 从 afterIndex 之后找下一章有可朗读段落的章节 */
+function findNextSpeakableChapterId(
+  chapters: { id: string; content: string }[],
+  afterIndex: number,
+): string | null {
+  if (afterIndex < 0) return null
+  for (let i = afterIndex + 1; i < chapters.length; i++) {
+    if (splitParagraphs(chapters[i].content || '').length > 0) return chapters[i].id
+  }
+  return null
+}
+
 function pickStartChapter(book: {
   chapterId: string
   paragraphIndex: number
@@ -61,8 +73,14 @@ export function ReaderPage() {
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
+  const pendingAutoSpeakRef = useRef(false)
+  /** 连章续读：跳过「正在准备」toast */
+  const continueQuietRef = useRef(false)
   const touchRef = useRef<{ x: number; y: number } | null>(null)
   const chapterIdRef = useRef(chapterId)
+  const speakFromRef = useRef<(start: number) => Promise<void>>(async () => {})
+  const bookRef = useRef(book)
+  bookRef.current = book
 
   const chapter = useMemo(
     () => book?.chapters.find((c) => c.id === chapterId) ?? book?.chapters[0],
@@ -134,11 +152,18 @@ export function ReaderPage() {
       settings.ttsVoiceEn || DEFAULT_VOICE_EN,
       settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
     ]
-    await ttsRef.current.ensureReady((p) => {
-      const pct = Math.round((p.progress || 0) * 100)
-      setEngineStatus(`${p.message || p.stage} ${pct}%`)
-    }, keys)
-    setEngineStatus('所选音色已就绪：文字 → 音频 → 播放')
+    try {
+      await ttsRef.current.ensureReady((p) => {
+        const pct = Math.round((p.progress || 0) * 100)
+        setEngineStatus(`${p.message || p.stage} ${pct}%`)
+      }, keys)
+      setEngineStatus('所选音色已就绪：文字 → 音频 → 播放')
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted')) return
+      const msg = err instanceof Error ? err.message : String(err)
+      setEngineStatus(`加载失败: ${msg}`)
+      showToast(msg, 8000)
+    }
   }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
 
   useEffect(() => {
@@ -212,6 +237,8 @@ export function ReaderPage() {
 
   const stopTts = useCallback(() => {
     speakingRef.current = false
+    pendingAutoSpeakRef.current = false
+    continueQuietRef.current = false
     try {
       ttsRef.current.stop()
     } catch {
@@ -226,6 +253,8 @@ export function ReaderPage() {
       // #region agent log
       agentLog('ReaderPage:jumpChapter', 'jump', { cid, wasSpeaking: speakingRef.current }, 'D')
       // #endregion
+      pendingAutoSpeakRef.current = false
+      continueQuietRef.current = false
       try {
         stopTts()
       } catch {
@@ -257,23 +286,37 @@ export function ReaderPage() {
   const speakFrom = useCallback(
     async (startIndex: number) => {
       if (!book || !chapter) return
+      const quiet = continueQuietRef.current
+      continueQuietRef.current = false
       speakingRef.current = true
       setTtsOn(true)
       setTtsPaused(false)
       setMenuOpen(true)
 
       try {
-        // 听书时只预加载当前会用到的音色，避免一次拉 3 个模型导致 Failed to fetch 直接失败
-        showToast('正在准备本地语音…', 4000)
-        const keys = [settings.ttsVoiceZh || DEFAULT_VOICE_ZH]
+        if (!quiet) showToast('正在准备本地语音…', 4000)
+        const keys = [
+          settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+          settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+          settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+        ]
         // #region agent log
-        agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex }, 'D')
+        agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex, quiet }, 'D')
         // #endregion
         await ttsRef.current.ensureReady((p) => {
+          if (quiet) return
           const pct = Math.round((p.progress || 0) * 100)
           setEngineStatus(`${p.message || p.stage} ${pct}%`)
         }, keys)
       } catch (err) {
+        if (
+          err instanceof Error &&
+          (err.name === 'SpeakAborted' || err.message === 'aborted')
+        ) {
+          speakingRef.current = false
+          setTtsOn(false)
+          return
+        }
         const hint = getLastDebugHint()
         // #region agent log
         agentLog(
@@ -292,6 +335,8 @@ export function ReaderPage() {
         setTtsOn(false)
         return
       }
+
+      if (!speakingRef.current) return
 
       for (let i = startIndex; i < paragraphs.length; i++) {
         if (!speakingRef.current) break
@@ -336,14 +381,14 @@ export function ReaderPage() {
 
       if (speakingRef.current) {
         const idx = book.chapters.findIndex((c) => c.id === chapter.id)
-        if (idx >= 0 && idx < book.chapters.length - 1) {
-          const next = book.chapters[idx + 1]
-          setChapterId(next.id)
+        const nextId = findNextSpeakableChapterId(book.chapters, idx)
+        if (nextId) {
+          continueQuietRef.current = true
+          pendingAutoSpeakRef.current = true
+          setChapterId(nextId)
           setParaIndex(0)
-          saveProgress(next.id, 0, 'tts', '进入下一章')
-          speakingRef.current = false
-          setTtsOn(false)
-          showToast('本章朗读完成，已进入下一章')
+          saveProgress(nextId, 0, 'tts', '进入下一章')
+          showToast('继续下一章…')
         } else {
           speakingRef.current = false
           setTtsOn(false)
@@ -351,8 +396,52 @@ export function ReaderPage() {
         }
       }
     },
-    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.ttsVoiceZh, settings.ttsVoiceNote, settings.autoScroll],
+    [
+      book,
+      chapter,
+      paragraphs,
+      saveProgress,
+      settings.ttsRate,
+      settings.ttsVoiceZh,
+      settings.ttsVoiceEn,
+      settings.ttsVoiceNote,
+      settings.autoScroll,
+    ],
   )
+
+  speakFromRef.current = speakFrom
+
+  // 换章后自动续读：只盯 chapterId / 段落数，避免进度写入导致 book 引用变化而重跑
+  useEffect(() => {
+    if (!pendingAutoSpeakRef.current) return
+    const b = bookRef.current
+    if (!b || !chapterId) return
+
+    if (paragraphs.length === 0) {
+      const idx = b.chapters.findIndex((c) => c.id === chapterId)
+      const nextId = findNextSpeakableChapterId(b.chapters, idx)
+      if (nextId) {
+        setChapterId(nextId)
+        setParaIndex(0)
+        saveProgress(nextId, 0, 'tts', '跳过空章')
+        return
+      }
+      pendingAutoSpeakRef.current = false
+      continueQuietRef.current = false
+      speakingRef.current = false
+      setTtsOn(false)
+      showToast('全书朗读完成')
+      return
+    }
+
+    pendingAutoSpeakRef.current = false
+    if (!speakingRef.current) {
+      speakingRef.current = true
+      setTtsOn(true)
+    }
+    void speakFromRef.current(0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 故意不依赖 book/speakFrom 引用
+  }, [chapterId, paragraphs.length, saveProgress])
 
   useEffect(() => {
     if (paraIndex >= paragraphs.length) setParaIndex(0)

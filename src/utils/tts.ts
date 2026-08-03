@@ -102,39 +102,80 @@ type PiperSession = {
   predict: (text: string) => Promise<Blob>
 }
 
+/** 相对资源 → 绝对 http(s) URL。piper-plus 只认 http(s)，相对路径会误走 HuggingFace */
+function toDirectHttpUrl(relOrUrl: string): string {
+  if (/^https?:\/\//i.test(relOrUrl)) return relOrUrl
+  try {
+    return new URL(relOrUrl, window.location.href).href
+  } catch {
+    const base = import.meta.env.BASE_URL || './'
+    return `${base}${relOrUrl.replace(/^\.\//, '').replace(/^\//, '')}`
+  }
+}
+
+/** 动态 import / wasmPaths 用相对路径，避免 Android WebView 对 https://localhost/*.mjs 失败 */
+function toRelativeAsset(rel: string): string {
+  const base = import.meta.env.BASE_URL || './'
+  return `${base}${rel.replace(/^\//, '')}`
+}
+
+const PLUS_HF_LOCAL: Record<string, string> = {
+  'ayousanz/piper-plus-tsukuyomi-chan': 'tts-models/tsukuyomi',
+  'ayousanz/piper-plus-css10-ja-6lang': 'tts-models/css10',
+}
+
 /** 把外网模型/WASM 请求改写到 APK 内置资源；调试上报地址不记入错误日志 */
 function installBundledAssetFetch() {
   const w = window as unknown as { __TTS_BUNDLE_FETCH__?: boolean }
   if (w.__TTS_BUNDLE_FETCH__) return
   w.__TTS_BUNDLE_FETCH__ = true
 
-  const toAsset = (rel: string) => {
-    // 相对路径，避免 Android WebView 对 https://localhost 动态 import 失败
-    const base = import.meta.env.BASE_URL || './'
-    return `${base}${rel.replace(/^\//, '')}`
-  }
-
   const rewrite = (raw: string): string | null => {
     let m = raw.match(/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
-    if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
+    if (m) return toRelativeAsset(`tts-models/piper-voices/${m[1]}`)
 
     if (/piper_phonemize\.wasm(\?|$)/.test(raw)) {
-      return toAsset('tts-models/piper-wasm/piper_phonemize.wasm')
+      return toRelativeAsset('tts-models/piper-wasm/piper_phonemize.wasm')
     }
     if (/piper_phonemize\.data(\?|$)/.test(raw)) {
-      return toAsset('tts-models/piper-wasm/piper_phonemize.data')
+      return toRelativeAsset('tts-models/piper-wasm/piper_phonemize.data')
     }
 
     m = raw.match(/ort-wasm-simd-threaded[^/?#]*\.(mjs|wasm)(\?|$)/)
     if (m && (raw.includes('cdnjs') || raw.includes('onnxruntime') || raw.includes('jsdelivr'))) {
       const file = raw.split('/').pop()?.split('?')[0]
-      if (file) return toAsset(`ort/${file}`)
+      if (file) return toRelativeAsset(`ort/${file}`)
+    }
+
+    m = raw.match(
+      /(?:huggingface\.co|hf-mirror\.com)\/(ayousanz\/piper-plus-[^/]+)\/resolve\/main\/(.+?)(?:\?|$)/,
+    )
+    if (m) {
+      const localDir = PLUS_HF_LOCAL[m[1]]
+      if (localDir) return toRelativeAsset(`${localDir}/${m[2]}`)
     }
 
     m = raw.match(/hf-mirror\.com\/diffusionstudio\/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
-    if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
+    if (m) return toRelativeAsset(`tts-models/piper-voices/${m[1]}`)
 
     return null
+  }
+
+  const fakeHfApi = (repo: string): Response | null => {
+    const dir = PLUS_HF_LOCAL[repo]
+    if (!dir) return null
+    // 目录内实际文件名由 VoiceDef.modelUrls 决定；API 仅作 piper-plus 兜底
+    const files =
+      repo.includes('tsukuyomi')
+        ? ['tsukuyomi-chan-6lang-fp16.onnx', 'tsukuyomi-chan-6lang-fp16.onnx.json', 'config.json']
+        : repo.includes('css10')
+          ? ['css10-ja-6lang-fp16.onnx', 'css10-ja-6lang-fp16.onnx.json', 'config.json']
+          : []
+    const siblings = files.map((r) => ({ r }))
+    return new Response(JSON.stringify({ siblings }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
   }
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -144,6 +185,11 @@ function installBundledAssetFetch() {
       url = raw
       if (raw.includes('127.0.0.1:7614') || raw.includes('/ingest/')) {
         return nativeFetch(input, init)
+      }
+      const apiHit = raw.match(/huggingface\.co\/api\/models\/(ayousanz\/piper-plus-[^/?#]+)/)
+      if (apiHit) {
+        const fake = fakeHfApi(apiHit[1])
+        if (fake) return fake
       }
       const local = rewrite(raw)
       if (local) {
@@ -216,6 +262,14 @@ export function createTtsController(onEnd?: () => void): TtsController {
   let objectUrl: string | null = null
   let playWait: { resolve: () => void; reject: (e: Error) => void } | null = null
   let anyReady = false
+  /** stop() 递增；合成/播放前检查，避免停后仍播 */
+  let speakEpoch = 0
+  /** mintplex TtsSession 单例当前绑定的音色 key */
+  let activePiperKey: string | null = null
+
+  const assertAlive = (epoch: number) => {
+    if (epoch !== speakEpoch) throw new SpeakAborted()
+  }
 
   const cleanupAudio = () => {
     if (audio) {
@@ -239,26 +293,36 @@ export function createTtsController(onEnd?: () => void): TtsController {
     else w.resolve()
   }
 
-  const loadPlus = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
-    if (plusCache.get(voice.key)?.isInitialized) return
+  const loadPlus = async (
+    voice: VoiceDef,
+    onProgress?: (p: TtsProgress) => void,
+    epoch = speakEpoch,
+  ) => {
+    if (plusCache.get(voice.key)?.isInitialized) {
+      assertAlive(epoch)
+      return
+    }
     if (loading.has(voice.key)) {
       await loading.get(voice.key)
-      return
+      assertAlive(epoch)
+      if (plusCache.get(voice.key)?.isInitialized) return
     }
     const urls = voice.modelUrls || []
     const task = (async () => {
+      assertAlive(epoch)
       status = 'loading'
       const [{ PiperPlus }, ort] = await Promise.all([import('piper-plus'), import('onnxruntime-web')])
-      // 始终用相对路径，避免 WebView 动态 import https://localhost/ort/*.mjs 失败
+      assertAlive(epoch)
       ort.env.wasm.numThreads = 1
-      ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL || './'}ort/`
+      ort.env.wasm.wasmPaths = toRelativeAsset('ort/')
       // #region agent log
       agentLog('tts.ts:loadPlus', 'ort wasmPaths', { wasmPaths: ort.env.wasm.wasmPaths }, 'C')
       // #endregion
       let lastErr: unknown
       for (const rawUrl of urls) {
-        // 内置模型保持相对路径，不要转成 https://localhost/...
-        const modelUrl = rawUrl
+        assertAlive(epoch)
+        // 必须是绝对 http(s)，否则 piper-plus 会当 HF repo 去联网
+        const modelUrl = toDirectHttpUrl(rawUrl)
         try {
           // #region agent log
           agentLog('tts.ts:loadPlus', 'load local', { key: voice.key, modelUrl, bundled: !!voice.bundled }, 'C')
@@ -267,6 +331,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
             model: modelUrl,
             ort,
             onProgress: (p: TtsProgress) => {
+              if (epoch !== speakEpoch) return
               onProgress?.({ ...p, message: `${voice.name}: ${p.message || p.stage}` })
             },
             wasmLoader: async () => {
@@ -279,12 +344,16 @@ export function createTtsController(onEnd?: () => void): TtsController {
           })
           plusCache.set(voice.key, instance)
           anyReady = true
+          assertAlive(epoch)
           // #region agent log
           agentLog('tts.ts:loadPlus', 'ready', { key: voice.key, modelUrl }, 'C')
           // #endregion
           if (status === 'loading') status = 'idle'
           return
         } catch (err) {
+          if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
+            throw err
+          }
           lastErr = err
           const errMsg = err instanceof Error ? err.message : String(err)
           // #region agent log
@@ -310,20 +379,42 @@ export function createTtsController(onEnd?: () => void): TtsController {
     }
   }
 
-  const loadPiper = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
+  const resetMintplexSingleton = (TtsSession: { _instance?: unknown | null }) => {
+    try {
+      const old = TtsSession._instance as { close?: () => void; dispose?: () => void } | null
+      old?.close?.()
+      old?.dispose?.()
+    } catch {
+      /* ignore */
+    }
+    TtsSession._instance = null
+    piperCache.clear()
+    activePiperKey = null
+  }
+
+  const loadPiper = async (
+    voice: VoiceDef,
+    onProgress?: (p: TtsProgress) => void,
+    epoch = speakEpoch,
+  ) => {
     if (!voice.voiceId) throw new Error('音色配置缺少 voiceId')
-    if (piperCache.has(voice.key)) return
-    if (loading.has(voice.key)) {
-      await loading.get(voice.key)
+    if (piperCache.has(voice.key)) {
+      assertAlive(epoch)
       return
     }
+    if (loading.has(voice.key)) {
+      await loading.get(voice.key)
+      assertAlive(epoch)
+      if (piperCache.has(voice.key)) return
+    }
     const task = (async () => {
+      assertAlive(epoch)
       status = 'loading'
       installBundledAssetFetch()
       onProgress?.({ stage: 'model', progress: 0.1, message: `加载内置音色 ${voice.name}…` })
-      // 先配置 ort 走本地相对路径（避免动态 import https://localhost/... 失败）
       const ort = await import('onnxruntime-web')
-      const ortBase = `${import.meta.env.BASE_URL || './'}ort/`
+      assertAlive(epoch)
+      const ortBase = toRelativeAsset('ort/')
       ort.env.wasm.numThreads = 1
       ort.env.wasm.wasmPaths = ortBase
       // #region agent log
@@ -331,27 +422,44 @@ export function createTtsController(onEnd?: () => void): TtsController {
       // #endregion
 
       const { TtsSession } = await import('@mintplex-labs/piper-tts-web')
-      const rel = (path: string) => `${import.meta.env.BASE_URL || './'}${path}`
+      // mintplex 是进程级单例：cache miss 时只要 _instance 还在就必须清掉
+      // （含：换音色、新 controller、上次 create 失败残留）
+      if ((TtsSession as { _instance?: unknown | null })._instance) {
+        resetMintplexSingleton(TtsSession as { _instance?: unknown | null })
+      }
+
       // #region agent log
       agentLog('tts.ts:loadPiper', 'create session local', { key: voice.key, voiceId: voice.voiceId }, 'C')
       // #endregion
-      const session = await TtsSession.create({
-        voiceId: voice.voiceId as never,
-        progress: (p) => {
-          const pct = p.total ? p.loaded / p.total : 0
-          onProgress?.({
-            stage: 'model',
-            progress: Math.min(0.95, pct),
-            message: `加载 ${voice.name} ${Math.round(pct * 100)}%`,
-          })
-        },
-        wasmPaths: {
-          onnxWasm: rel('ort/'),
-          piperData: rel('tts-models/piper-wasm/piper_phonemize.data'),
-          piperWasm: rel('tts-models/piper-wasm/piper_phonemize.wasm'),
-        },
-      })
+      assertAlive(epoch)
+      let session
+      try {
+        session = await TtsSession.create({
+          voiceId: voice.voiceId as never,
+          progress: (p) => {
+            if (epoch !== speakEpoch) return
+            const pct = p.total ? p.loaded / p.total : 0
+            onProgress?.({
+              stage: 'model',
+              progress: Math.min(0.95, pct),
+              message: `加载 ${voice.name} ${Math.round(pct * 100)}%`,
+            })
+          },
+          wasmPaths: {
+            onnxWasm: ortBase,
+            piperData: toRelativeAsset('tts-models/piper-wasm/piper_phonemize.data'),
+            piperWasm: toRelativeAsset('tts-models/piper-wasm/piper_phonemize.wasm'),
+          },
+        })
+      } catch (createErr) {
+        resetMintplexSingleton(TtsSession as { _instance?: unknown | null })
+        throw createErr
+      }
+      assertAlive(epoch)
+      // create() 会把 numThreads 改成 hardwareConcurrency，WebView 上易崩
+      ort.env.wasm.numThreads = 1
       piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
+      activePiperKey = voice.key
       anyReady = true
       // #region agent log
       agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'C')
@@ -365,6 +473,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
     } catch (err) {
       loading.delete(voice.key)
       status = 'idle'
+      if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
+        throw err
+      }
       const errMsg = err instanceof Error ? err.message : String(err)
       // #region agent log
       agentLog(
@@ -382,33 +493,48 @@ export function createTtsController(onEnd?: () => void): TtsController {
     }
   }
 
-  const ensureVoice = async (voice: VoiceDef, onProgress?: (p: TtsProgress) => void) => {
-    if (voice.engine === 'piper-plus') await loadPlus(voice, onProgress)
-    else await loadPiper(voice, onProgress)
+  const ensureVoice = async (
+    voice: VoiceDef,
+    onProgress?: (p: TtsProgress) => void,
+    epoch = speakEpoch,
+  ) => {
+    if (voice.engine === 'piper-plus') await loadPlus(voice, onProgress, epoch)
+    else await loadPiper(voice, onProgress, epoch)
   }
 
   const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
     installBundledAssetFetch()
+    const epoch = speakEpoch
     const keys =
       voiceKeys && voiceKeys.length
         ? voiceKeys
         : [prefs.zhKey || DEFAULT_VOICE_ZH, prefs.enKey || DEFAULT_VOICE_EN, prefs.noteKey || DEFAULT_VOICE_NOTE]
     const unique = [...new Set(keys.filter(Boolean))] as string[]
+    // classic piper 单例只能留一个：预载按 keys 顺序只保留第一套，其余按需加载
+    let classicPreloadKey: string | null = null
     // #region agent log
     agentLog('tts.ts:ensureReady', 'start', { keys: unique }, 'D')
     // #endregion
     for (const key of unique) {
+      assertAlive(epoch)
       const voice = getVoice(key) || pickVoice('zh', key)
-      await ensureVoice(voice, onProgress)
+      if (voice.engine === 'piper') {
+        if (classicPreloadKey && classicPreloadKey !== voice.key) continue
+        classicPreloadKey = voice.key
+      }
+      await ensureVoice(voice, onProgress, epoch)
+      assertAlive(epoch)
     }
+    assertAlive(epoch)
     onProgress?.({ stage: 'ready', progress: 1, message: '内置音色已就绪' })
     // #region agent log
-    agentLog('tts.ts:ensureReady', 'all ready', { keys: unique }, 'D')
+    agentLog('tts.ts:ensureReady', 'all ready', { keys: unique, classicPreloadKey }, 'D')
     // #endregion
   }
 
-  const playBlob = (blob: Blob, playbackRate: number) =>
+  const playBlob = (blob: Blob, playbackRate: number, epoch: number) =>
     new Promise<void>((resolve, reject) => {
+      assertAlive(epoch)
       cleanupAudio()
       finishPlayWait()
       objectUrl = URL.createObjectURL(blob)
@@ -427,55 +553,22 @@ export function createTtsController(onEnd?: () => void): TtsController {
           bytes: blob.size,
           type: blob.type,
           playbackRate: audio.playbackRate,
-          volume: audio.volume,
-          muted: audio.muted,
+          epoch,
         },
-        'B',
+        'A',
       )
       // #endregion
 
       audio.onended = () => {
-        // #region agent log
-        agentLog('tts.ts:playBlob', 'play ended', { currentTime: audio?.currentTime ?? -1 }, 'B')
-        // #endregion
-        status = 'idle'
         cleanupAudio()
-        onEnd?.()
         finishPlayWait()
+        onEnd?.()
       }
       audio.onerror = () => {
-        // #region agent log
-        agentLog('tts.ts:playBlob', 'audio element error', {}, 'B')
-        // #endregion
-        status = 'idle'
         cleanupAudio()
         finishPlayWait(new Error('音频播放失败'))
       }
-
-      void audio.play().then(() => {
-        // #region agent log
-        agentLog(
-          'tts.ts:playBlob',
-          'play() resolved',
-          {
-            paused: audio?.paused ?? true,
-            duration: audio?.duration ?? -1,
-            volume: audio?.volume ?? -1,
-            muted: audio?.muted ?? true,
-          },
-          'B',
-        )
-        // #endregion
-      }).catch((e) => {
-        // #region agent log
-        agentLog(
-          'tts.ts:playBlob',
-          'play() rejected',
-          { err: e instanceof Error ? e.message : String(e) },
-          'B',
-        )
-        // #endregion
-        status = 'idle'
+      void audio.play().catch((e) => {
         cleanupAudio()
         finishPlayWait(e instanceof Error ? e : new Error(String(e)))
       })
@@ -487,8 +580,11 @@ export function createTtsController(onEnd?: () => void): TtsController {
     lang: 'zh' | 'en',
     pitch: number,
     voice: VoiceDef,
+    epoch: number,
   ) => {
-    await ensureVoice(voice)
+    assertAlive(epoch)
+    await ensureVoice(voice, undefined, epoch)
+    assertAlive(epoch)
     const trimmed = text.trim()
     if (!trimmed) return
 
@@ -536,6 +632,8 @@ export function createTtsController(onEnd?: () => void): TtsController {
       throw err
     }
 
+    assertAlive(epoch)
+
     const silence = await probeWavSilence(blob)
     // #region agent log
     agentLog(
@@ -553,8 +651,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
     )
     // #endregion
 
+    assertAlive(epoch)
     const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
-    await playBlob(blob, playRate)
+    await playBlob(blob, playRate, epoch)
   }
 
   return {
@@ -580,6 +679,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       }
     },
     async speak(text, rate = 1, opts) {
+      const epoch = speakEpoch
       const pitch = opts?.pitch ?? 1
       const hint = opts?.langHint || 'auto'
       const lang = hint === 'auto' ? detectTextLang(text) : hint
@@ -589,14 +689,14 @@ export function createTtsController(onEnd?: () => void): TtsController {
         undefined
       const voice = pickVoice(lang, preferred)
       try {
-        await speakWithVoice(text, rate, lang, pitch, voice)
+        await speakWithVoice(text, rate, lang, pitch, voice, epoch)
       } catch (err) {
         if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
           return
         }
         throw err
       } finally {
-        if (status === 'speaking') status = 'idle'
+        if (status === 'speaking' && epoch === speakEpoch) status = 'idle'
       }
     },
     pause() {
@@ -610,6 +710,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       void audio.play().catch(() => {})
     },
     stop() {
+      speakEpoch += 1
       status = 'idle'
       cleanupAudio()
       finishPlayWait(new SpeakAborted())
