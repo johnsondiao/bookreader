@@ -152,7 +152,11 @@ export function ReaderPage() {
   // #region agent log
   useEffect(() => {
     const next = {
-      ttsVoiceZh: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+      // 华严依赖的 ort wasm 在部分 WebView 上易失败，默认改回更稳的月读
+      ttsVoiceZh:
+        !settings.ttsVoiceZh || settings.ttsVoiceZh === 'zh-huayan' || settings.ttsVoiceZh === 'zh-huayan-lite'
+          ? DEFAULT_VOICE_ZH
+          : settings.ttsVoiceZh,
       ttsVoiceEn: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
       ttsVoiceNote: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
     }

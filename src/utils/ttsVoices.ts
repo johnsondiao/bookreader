@@ -127,8 +127,8 @@ export const VOICE_CATALOG: VoiceDef[] = [
   },
 ]
 
-export const DEFAULT_VOICE_ZH = 'zh-huayan'
-export const DEFAULT_VOICE_EN = 'en-lessac'
+export const DEFAULT_VOICE_ZH = 'pp-tsukuyomi'
+export const DEFAULT_VOICE_EN = 'pp-tsukuyomi'
 export const DEFAULT_VOICE_NOTE = 'pp-css10'
 
 export function getVoice(key: string | undefined | null): VoiceDef | undefined {

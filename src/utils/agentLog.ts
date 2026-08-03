@@ -3,6 +3,10 @@ const ENDPOINT = 'http://127.0.0.1:7614/ingest/ed076610-e963-431c-bb64-17c41bdea
 const STORAGE_KEY = 'debug-18e7c1'
 const MAX_LINES = 40
 
+/** 包装 fetch 之前保留原生实现，避免调试上报被拦截/刷屏 */
+export const nativeFetch: typeof fetch =
+  typeof window !== 'undefined' ? window.fetch.bind(window) : fetch
+
 export type DebugPayload = {
   sessionId: string
   location: string
@@ -75,7 +79,7 @@ export function agentLog(
   if (ring.length > MAX_LINES) ring.length = MAX_LINES
   notify()
 
-  fetch(ENDPOINT, {
+  nativeFetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18e7c1' },
     body: JSON.stringify(payload),

@@ -1,4 +1,4 @@
-import { agentLog } from './agentLog'
+import { agentLog, nativeFetch } from './agentLog'
 import {
   DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
@@ -102,28 +102,22 @@ type PiperSession = {
   predict: (text: string) => Promise<Blob>
 }
 
-/** 把外网模型/WASM 请求改写到 APK 内置资源，运行时零下载 */
+/** 把外网模型/WASM 请求改写到 APK 内置资源；调试上报地址不记入错误日志 */
 function installBundledAssetFetch() {
   const w = window as unknown as { __TTS_BUNDLE_FETCH__?: boolean }
   if (w.__TTS_BUNDLE_FETCH__) return
   w.__TTS_BUNDLE_FETCH__ = true
-  const orig = window.fetch.bind(window)
 
   const toAsset = (rel: string) => {
-    const path = `${import.meta.env.BASE_URL}${rel.replace(/^\//, '')}`
-    try {
-      return new URL(path, window.location.href).href
-    } catch {
-      return path
-    }
+    // 相对路径，避免 Android WebView 对 https://localhost 动态 import 失败
+    const base = import.meta.env.BASE_URL || './'
+    return `${base}${rel.replace(/^\//, '')}`
   }
 
   const rewrite = (raw: string): string | null => {
-    // classic piper voices（mintplex 写死 huggingface）
     let m = raw.match(/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
     if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
 
-    // piper phonemize wasm/data
     if (/piper_phonemize\.wasm(\?|$)/.test(raw)) {
       return toAsset('tts-models/piper-wasm/piper_phonemize.wasm')
     }
@@ -131,7 +125,12 @@ function installBundledAssetFetch() {
       return toAsset('tts-models/piper-wasm/piper_phonemize.data')
     }
 
-    // 旧镜像路径兜底：若仍指向 hf，也尽量映射
+    m = raw.match(/ort-wasm-simd-threaded[^/?#]*\.(mjs|wasm)(\?|$)/)
+    if (m && (raw.includes('cdnjs') || raw.includes('onnxruntime') || raw.includes('jsdelivr'))) {
+      const file = raw.split('/').pop()?.split('?')[0]
+      if (file) return toAsset(`ort/${file}`)
+    }
+
     m = raw.match(/hf-mirror\.com\/diffusionstudio\/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
     if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
 
@@ -143,6 +142,9 @@ function installBundledAssetFetch() {
     try {
       const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       url = raw
+      if (raw.includes('127.0.0.1:7614') || raw.includes('/ingest/')) {
+        return nativeFetch(input, init)
+      }
       const local = rewrite(raw)
       if (local) {
         // #region agent log
@@ -160,7 +162,7 @@ function installBundledAssetFetch() {
       /* fall through */
     }
     try {
-      const res = await orig(input, init)
+      const res = await nativeFetch(input, init)
       if (!res.ok) {
         // #region agent log
         agentLog('tts.ts:fetch', 'fetch not ok', { url: url.slice(0, 180), status: res.status }, 'C')
@@ -171,7 +173,7 @@ function installBundledAssetFetch() {
       // #region agent log
       agentLog(
         'tts.ts:fetch',
-        'fetch threw',
+        'local asset load failed',
         { url: url.slice(0, 180), err: err instanceof Error ? err.message : String(err) },
         'C',
       )
@@ -247,22 +249,19 @@ export function createTtsController(onEnd?: () => void): TtsController {
     const task = (async () => {
       status = 'loading'
       const [{ PiperPlus }, ort] = await Promise.all([import('piper-plus'), import('onnxruntime-web')])
+      // 始终用相对路径，避免 WebView 动态 import https://localhost/ort/*.mjs 失败
       ort.env.wasm.numThreads = 1
-      if (!ort.env.wasm.wasmPaths) {
-        ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
-      }
+      ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL || './'}ort/`
+      // #region agent log
+      agentLog('tts.ts:loadPlus', 'ort wasmPaths', { wasmPaths: ort.env.wasm.wasmPaths }, 'C')
+      // #endregion
       let lastErr: unknown
       for (const rawUrl of urls) {
-        const modelUrl = (() => {
-          try {
-            return new URL(rawUrl, window.location.href).href
-          } catch {
-            return rawUrl
-          }
-        })()
+        // 内置模型保持相对路径，不要转成 https://localhost/...
+        const modelUrl = rawUrl
         try {
           // #region agent log
-          agentLog('tts.ts:loadPlus', 'load local/remote', { key: voice.key, modelUrl, bundled: !!voice.bundled }, 'C')
+          agentLog('tts.ts:loadPlus', 'load local', { key: voice.key, modelUrl, bundled: !!voice.bundled }, 'C')
           // #endregion
           const instance = await (PiperPlus.initialize as (opts: unknown) => Promise<PiperPlusInstance>)({
             model: modelUrl,
@@ -296,7 +295,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
             'C',
           )
           // #endregion
-          lastErr = new Error(`${voice.name} 加载失败: ${errMsg}\nURL=${modelUrl}`)
+          lastErr = new Error(`${voice.name} 本地加载失败: ${errMsg}\nURL=${modelUrl}`)
         }
       }
       throw lastErr instanceof Error
@@ -322,14 +321,17 @@ export function createTtsController(onEnd?: () => void): TtsController {
       status = 'loading'
       installBundledAssetFetch()
       onProgress?.({ stage: 'model', progress: 0.1, message: `加载内置音色 ${voice.name}…` })
+      // 先配置 ort 走本地相对路径（避免动态 import https://localhost/... 失败）
+      const ort = await import('onnxruntime-web')
+      const ortBase = `${import.meta.env.BASE_URL || './'}ort/`
+      ort.env.wasm.numThreads = 1
+      ort.env.wasm.wasmPaths = ortBase
+      // #region agent log
+      agentLog('tts.ts:loadPiper', 'ort wasmPaths', { ortBase }, 'C')
+      // #endregion
+
       const { TtsSession } = await import('@mintplex-labs/piper-tts-web')
-      const asset = (rel: string) => {
-        try {
-          return new URL(`${import.meta.env.BASE_URL}${rel}`, window.location.href).href
-        } catch {
-          return `${import.meta.env.BASE_URL}${rel}`
-        }
-      }
+      const rel = (path: string) => `${import.meta.env.BASE_URL || './'}${path}`
       // #region agent log
       agentLog('tts.ts:loadPiper', 'create session local', { key: voice.key, voiceId: voice.voiceId }, 'C')
       // #endregion
@@ -344,15 +346,15 @@ export function createTtsController(onEnd?: () => void): TtsController {
           })
         },
         wasmPaths: {
-          onnxWasm: asset('ort/'),
-          piperData: asset('tts-models/piper-wasm/piper_phonemize.data'),
-          piperWasm: asset('tts-models/piper-wasm/piper_phonemize.wasm'),
+          onnxWasm: rel('ort/'),
+          piperData: rel('tts-models/piper-wasm/piper_phonemize.data'),
+          piperWasm: rel('tts-models/piper-wasm/piper_phonemize.wasm'),
         },
       })
       piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
       anyReady = true
       // #region agent log
-      agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'V1')
+      agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'C')
       // #endregion
       onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
       if (status === 'loading') status = 'idle'
@@ -372,7 +374,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
         'C',
       )
       // #endregion
-      throw new Error(`${voice.name} 下载失败: ${errMsg}\nvoiceId=${voice.voiceId}`)
+      throw new Error(
+        `${voice.name} 本地加载失败（不是联网下载）: ${errMsg}\nvoiceId=${voice.voiceId}\n可先改用「月读」音色`,
+      )
     } finally {
       loading.delete(voice.key)
     }
