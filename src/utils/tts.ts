@@ -102,23 +102,70 @@ type PiperSession = {
   predict: (text: string) => Promise<Blob>
 }
 
-/** 国内访问 HuggingFace 时走镜像（mintplex 写死了 huggingface.co） */
+/** 国内访问 HuggingFace 时走镜像；并记录失败 fetch（排查 Failed to fetch） */
 function installHfMirrorFetch() {
   const w = window as unknown as { __HF_MIRROR_FETCH__?: boolean }
   if (w.__HF_MIRROR_FETCH__) return
   w.__HF_MIRROR_FETCH__ = true
   const orig = window.fetch.bind(window)
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    let url = ''
     try {
       const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      url = raw
       if (raw.includes('huggingface.co/') && !raw.includes('hf-mirror.com')) {
-        const mirrored = raw.replace('https://huggingface.co/', 'https://hf-mirror.com/')
-        return orig(mirrored, init)
+        url = raw.replace('https://huggingface.co/', 'https://hf-mirror.com/')
+        // #region agent log
+        agentLog('tts.ts:fetch', 'mirror hf url', { from: raw.slice(0, 120), url: url.slice(0, 120) }, 'E')
+        // #endregion
+        input = url
       }
     } catch {
       /* fall through */
     }
-    return orig(input, init)
+    try {
+      const res = await orig(input, init)
+      if (!res.ok) {
+        // #region agent log
+        agentLog(
+          'tts.ts:fetch',
+          'fetch not ok',
+          { url: url.slice(0, 160), status: res.status },
+          'C',
+        )
+        // #endregion
+      }
+      return res
+    } catch (err) {
+      // #region agent log
+      agentLog(
+        'tts.ts:fetch',
+        'fetch threw',
+        { url: url.slice(0, 160), err: err instanceof Error ? err.message : String(err) },
+        'C',
+      )
+      // #endregion
+      throw err
+    }
+  }
+}
+
+/** 采样 WAV 前几帧，判断是否近乎静音 */
+async function probeWavSilence(blob: Blob): Promise<{ peak: number; likelySilent: boolean }> {
+  try {
+    const buf = await blob.arrayBuffer()
+    const view = new DataView(buf)
+    // 跳过 44 字节 WAV 头（若不足则按全缓冲）
+    const start = buf.byteLength > 44 ? 44 : 0
+    let peak = 0
+    const samples = Math.min(4000, Math.floor((buf.byteLength - start) / 2))
+    for (let i = 0; i < samples; i++) {
+      const s = Math.abs(view.getInt16(start + i * 2, true))
+      if (s > peak) peak = s
+    }
+    return { peak, likelySilent: peak < 80 }
+  } catch {
+    return { peak: -1, likelySilent: false }
   }
 }
 
@@ -277,16 +324,23 @@ export function createTtsController(onEnd?: () => void): TtsController {
   }
 
   const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
+    installHfMirrorFetch()
     const keys =
       voiceKeys && voiceKeys.length
         ? voiceKeys
         : [prefs.zhKey || DEFAULT_VOICE_ZH, prefs.enKey || DEFAULT_VOICE_EN, prefs.noteKey || DEFAULT_VOICE_NOTE]
     const unique = [...new Set(keys.filter(Boolean))] as string[]
+    // #region agent log
+    agentLog('tts.ts:ensureReady', 'start', { keys: unique }, 'D')
+    // #endregion
     for (const key of unique) {
       const voice = getVoice(key) || pickVoice('zh', key)
       await ensureVoice(voice, onProgress)
     }
     onProgress?.({ stage: 'ready', progress: 1, message: '本地音色已就绪' })
+    // #region agent log
+    agentLog('tts.ts:ensureReady', 'all ready', { keys: unique }, 'D')
+    // #endregion
   }
 
   const playBlob = (blob: Blob, playbackRate: number) =>
@@ -295,23 +349,68 @@ export function createTtsController(onEnd?: () => void): TtsController {
       finishPlayWait()
       objectUrl = URL.createObjectURL(blob)
       audio = new Audio(objectUrl)
+      audio.volume = 1
+      audio.muted = false
       audio.playbackRate = Math.min(2, Math.max(0.5, playbackRate))
       status = 'speaking'
       playWait = { resolve, reject }
 
+      // #region agent log
+      agentLog(
+        'tts.ts:playBlob',
+        'play start',
+        {
+          bytes: blob.size,
+          type: blob.type,
+          playbackRate: audio.playbackRate,
+          volume: audio.volume,
+          muted: audio.muted,
+        },
+        'B',
+      )
+      // #endregion
+
       audio.onended = () => {
+        // #region agent log
+        agentLog('tts.ts:playBlob', 'play ended', { currentTime: audio?.currentTime ?? -1 }, 'B')
+        // #endregion
         status = 'idle'
         cleanupAudio()
         onEnd?.()
         finishPlayWait()
       }
       audio.onerror = () => {
+        // #region agent log
+        agentLog('tts.ts:playBlob', 'audio element error', {}, 'B')
+        // #endregion
         status = 'idle'
         cleanupAudio()
         finishPlayWait(new Error('音频播放失败'))
       }
 
-      void audio.play().catch((e) => {
+      void audio.play().then(() => {
+        // #region agent log
+        agentLog(
+          'tts.ts:playBlob',
+          'play() resolved',
+          {
+            paused: audio?.paused ?? true,
+            duration: audio?.duration ?? -1,
+            volume: audio?.volume ?? -1,
+            muted: audio?.muted ?? true,
+          },
+          'B',
+        )
+        // #endregion
+      }).catch((e) => {
+        // #region agent log
+        agentLog(
+          'tts.ts:playBlob',
+          'play() rejected',
+          { err: e instanceof Error ? e.message : String(e) },
+          'B',
+        )
+        // #endregion
         status = 'idle'
         cleanupAudio()
         finishPlayWait(e instanceof Error ? e : new Error(String(e)))
@@ -334,29 +433,60 @@ export function createTtsController(onEnd?: () => void): TtsController {
     agentLog(
       'tts.ts:speakWithVoice',
       'start',
-      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length },
-      'V2',
+      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length, preview: trimmed.slice(0, 24) },
+      'A',
     )
     // #endregion
 
     let blob: Blob
-    if (voice.engine === 'piper-plus') {
-      const piper = plusCache.get(voice.key)
-      if (!piper) throw new Error('音色引擎未就绪')
-      const result = await piper.synthesize(trimmed, {
-        language: lang,
-        lengthScale,
-        noiseScale: 0.667,
-      })
-      blob = result.toBlob()
-    } else {
-      const session = piperCache.get(voice.key)
-      if (!session) throw new Error('音色引擎未就绪')
-      blob = await session.predict(trimmed)
+    let duration = -1
+    try {
+      if (voice.engine === 'piper-plus') {
+        const piper = plusCache.get(voice.key)
+        if (!piper) throw new Error('音色引擎未就绪')
+        const result = await piper.synthesize(trimmed, {
+          language: lang,
+          lengthScale,
+          noiseScale: 0.667,
+        })
+        blob = result.toBlob()
+        duration = result.duration
+      } else {
+        const session = piperCache.get(voice.key)
+        if (!session) throw new Error('音色引擎未就绪')
+        blob = await session.predict(trimmed)
+      }
+    } catch (err) {
+      // #region agent log
+      agentLog(
+        'tts.ts:speakWithVoice',
+        'synthesize failed',
+        {
+          key: voice.key,
+          engine: voice.engine,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'C',
+      )
+      // #endregion
+      throw err
     }
 
+    const silence = await probeWavSilence(blob)
     // #region agent log
-    agentLog('tts.ts:speakWithVoice', 'play', { key: voice.key, bytes: blob.size }, 'V2')
+    agentLog(
+      'tts.ts:speakWithVoice',
+      'synth done',
+      {
+        key: voice.key,
+        bytes: blob.size,
+        type: blob.type,
+        duration,
+        peak: silence.peak,
+        likelySilent: silence.likelySilent,
+      },
+      'A',
+    )
     // #endregion
 
     const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate

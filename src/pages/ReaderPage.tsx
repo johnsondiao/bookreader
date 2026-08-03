@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
 import { createTtsController, splitSpeakSegments, voicesForLang, VOICE_CATALOG } from '../utils/tts'
 import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
+import { agentLog, getLastDebugHint } from '../utils/agentLog'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -202,6 +203,9 @@ export function ReaderPage() {
 
   const jumpChapter = useCallback(
     (cid: string) => {
+      // #region agent log
+      agentLog('ReaderPage:jumpChapter', 'jump', { cid, wasSpeaking: speakingRef.current }, 'D')
+      // #endregion
       try {
         stopTts()
       } catch {
@@ -242,7 +246,18 @@ export function ReaderPage() {
         showToast('正在准备本地语音…')
         await prepareEngine()
       } catch (err) {
-        showToast(err instanceof Error ? err.message : '本地语音引擎加载失败')
+        const hint = getLastDebugHint()
+        // #region agent log
+        agentLog(
+          'ReaderPage:speakFrom',
+          'prepareEngine failed',
+          { err: err instanceof Error ? err.message : String(err), hint },
+          'C',
+        )
+        // #endregion
+        showToast(
+          `${err instanceof Error ? err.message : '本地语音引擎加载失败'}${hint ? ` (${hint})` : ''}`,
+        )
         speakingRef.current = false
         setTtsOn(false)
         return
@@ -268,7 +283,16 @@ export function ReaderPage() {
             })
           }
         } catch (err) {
-          showToast(err instanceof Error ? err.message : '朗读失败')
+          const hint = getLastDebugHint()
+          // #region agent log
+          agentLog(
+            'ReaderPage:speakFrom',
+            'speak failed',
+            { err: err instanceof Error ? err.message : String(err), hint, para: i },
+            'C',
+          )
+          // #endregion
+          showToast(`${err instanceof Error ? err.message : '朗读失败'}${hint ? ` (${hint})` : ''}`)
           speakingRef.current = false
           setTtsOn(false)
           return
