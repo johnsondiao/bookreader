@@ -102,23 +102,59 @@ type PiperSession = {
   predict: (text: string) => Promise<Blob>
 }
 
-/** 国内访问 HuggingFace 时走镜像；并记录失败 fetch（排查 Failed to fetch） */
-function installHfMirrorFetch() {
-  const w = window as unknown as { __HF_MIRROR_FETCH__?: boolean }
-  if (w.__HF_MIRROR_FETCH__) return
-  w.__HF_MIRROR_FETCH__ = true
+/** 把外网模型/WASM 请求改写到 APK 内置资源，运行时零下载 */
+function installBundledAssetFetch() {
+  const w = window as unknown as { __TTS_BUNDLE_FETCH__?: boolean }
+  if (w.__TTS_BUNDLE_FETCH__) return
+  w.__TTS_BUNDLE_FETCH__ = true
   const orig = window.fetch.bind(window)
+
+  const toAsset = (rel: string) => {
+    const path = `${import.meta.env.BASE_URL}${rel.replace(/^\//, '')}`
+    try {
+      return new URL(path, window.location.href).href
+    } catch {
+      return path
+    }
+  }
+
+  const rewrite = (raw: string): string | null => {
+    // classic piper voices（mintplex 写死 huggingface）
+    let m = raw.match(/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
+    if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
+
+    // piper phonemize wasm/data
+    if (/piper_phonemize\.wasm(\?|$)/.test(raw)) {
+      return toAsset('tts-models/piper-wasm/piper_phonemize.wasm')
+    }
+    if (/piper_phonemize\.data(\?|$)/.test(raw)) {
+      return toAsset('tts-models/piper-wasm/piper_phonemize.data')
+    }
+
+    // 旧镜像路径兜底：若仍指向 hf，也尽量映射
+    m = raw.match(/hf-mirror\.com\/diffusionstudio\/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
+    if (m) return toAsset(`tts-models/piper-voices/${m[1]}`)
+
+    return null
+  }
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     let url = ''
     try {
       const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       url = raw
-      if (raw.includes('huggingface.co/') && !raw.includes('hf-mirror.com')) {
-        url = raw.replace('https://huggingface.co/', 'https://hf-mirror.com/')
+      const local = rewrite(raw)
+      if (local) {
         // #region agent log
-        agentLog('tts.ts:fetch', 'mirror hf url', { from: raw.slice(0, 120), url: url.slice(0, 120) }, 'E')
+        agentLog(
+          'tts.ts:fetch',
+          'rewrite to bundled asset',
+          { from: raw.slice(0, 140), url: local.slice(0, 140) },
+          'C',
+        )
         // #endregion
-        input = url
+        input = local
+        url = local
       }
     } catch {
       /* fall through */
@@ -127,12 +163,7 @@ function installHfMirrorFetch() {
       const res = await orig(input, init)
       if (!res.ok) {
         // #region agent log
-        agentLog(
-          'tts.ts:fetch',
-          'fetch not ok',
-          { url: url.slice(0, 160), status: res.status },
-          'C',
-        )
+        agentLog('tts.ts:fetch', 'fetch not ok', { url: url.slice(0, 180), status: res.status }, 'C')
         // #endregion
       }
       return res
@@ -141,7 +172,7 @@ function installHfMirrorFetch() {
       agentLog(
         'tts.ts:fetch',
         'fetch threw',
-        { url: url.slice(0, 160), err: err instanceof Error ? err.message : String(err) },
+        { url: url.slice(0, 180), err: err instanceof Error ? err.message : String(err) },
         'C',
       )
       // #endregion
@@ -221,10 +252,17 @@ export function createTtsController(onEnd?: () => void): TtsController {
         ort.env.wasm.wasmPaths = `${import.meta.env.BASE_URL}ort/`
       }
       let lastErr: unknown
-      for (const modelUrl of urls) {
+      for (const rawUrl of urls) {
+        const modelUrl = (() => {
+          try {
+            return new URL(rawUrl, window.location.href).href
+          } catch {
+            return rawUrl
+          }
+        })()
         try {
           // #region agent log
-          agentLog('tts.ts:loadPlus', 'load', { key: voice.key, modelUrl }, 'V1')
+          agentLog('tts.ts:loadPlus', 'load local/remote', { key: voice.key, modelUrl, bundled: !!voice.bundled }, 'C')
           // #endregion
           const instance = await (PiperPlus.initialize as (opts: unknown) => Promise<PiperPlusInstance>)({
             model: modelUrl,
@@ -243,21 +281,27 @@ export function createTtsController(onEnd?: () => void): TtsController {
           plusCache.set(voice.key, instance)
           anyReady = true
           // #region agent log
-          agentLog('tts.ts:loadPlus', 'ready', { key: voice.key }, 'V1')
+          agentLog('tts.ts:loadPlus', 'ready', { key: voice.key, modelUrl }, 'C')
           // #endregion
           if (status === 'loading') status = 'idle'
           return
         } catch (err) {
           lastErr = err
+          const errMsg = err instanceof Error ? err.message : String(err)
+          // #region agent log
           agentLog(
             'tts.ts:loadPlus',
             'failed url',
-            { key: voice.key, modelUrl, err: err instanceof Error ? err.message : String(err) },
-            'V1',
+            { key: voice.key, modelUrl, url: modelUrl, err: errMsg },
+            'C',
           )
+          // #endregion
+          lastErr = new Error(`${voice.name} 加载失败: ${errMsg}\nURL=${modelUrl}`)
         }
       }
-      throw lastErr instanceof Error ? lastErr : new Error(`${voice.name} 模型加载失败`)
+      throw lastErr instanceof Error
+        ? lastErr
+        : new Error(`${voice.name} 模型加载失败`)
     })()
     loading.set(voice.key, task)
     try {
@@ -276,11 +320,18 @@ export function createTtsController(onEnd?: () => void): TtsController {
     }
     const task = (async () => {
       status = 'loading'
-      installHfMirrorFetch()
-      onProgress?.({ stage: 'model', progress: 0.1, message: `下载 ${voice.name}…` })
+      installBundledAssetFetch()
+      onProgress?.({ stage: 'model', progress: 0.1, message: `加载内置音色 ${voice.name}…` })
       const { TtsSession } = await import('@mintplex-labs/piper-tts-web')
+      const asset = (rel: string) => {
+        try {
+          return new URL(`${import.meta.env.BASE_URL}${rel}`, window.location.href).href
+        } catch {
+          return `${import.meta.env.BASE_URL}${rel}`
+        }
+      }
       // #region agent log
-      agentLog('tts.ts:loadPiper', 'create session', { key: voice.key, voiceId: voice.voiceId }, 'V1')
+      agentLog('tts.ts:loadPiper', 'create session local', { key: voice.key, voiceId: voice.voiceId }, 'C')
       // #endregion
       const session = await TtsSession.create({
         voiceId: voice.voiceId as never,
@@ -289,13 +340,13 @@ export function createTtsController(onEnd?: () => void): TtsController {
           onProgress?.({
             stage: 'model',
             progress: Math.min(0.95, pct),
-            message: `下载 ${voice.name} ${Math.round(pct * 100)}%`,
+            message: `加载 ${voice.name} ${Math.round(pct * 100)}%`,
           })
         },
         wasmPaths: {
-          onnxWasm: `${import.meta.env.BASE_URL}ort/`,
-          piperData: 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.data',
-          piperWasm: 'https://cdn.jsdelivr.net/npm/@diffusionstudio/piper-wasm@1.0.0/build/piper_phonemize.wasm',
+          onnxWasm: asset('ort/'),
+          piperData: asset('tts-models/piper-wasm/piper_phonemize.data'),
+          piperWasm: asset('tts-models/piper-wasm/piper_phonemize.wasm'),
         },
       })
       piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
@@ -312,7 +363,16 @@ export function createTtsController(onEnd?: () => void): TtsController {
     } catch (err) {
       loading.delete(voice.key)
       status = 'idle'
-      throw err instanceof Error ? err : new Error(String(err))
+      const errMsg = err instanceof Error ? err.message : String(err)
+      // #region agent log
+      agentLog(
+        'tts.ts:loadPiper',
+        'failed',
+        { key: voice.key, voiceId: voice.voiceId, err: errMsg },
+        'C',
+      )
+      // #endregion
+      throw new Error(`${voice.name} 下载失败: ${errMsg}\nvoiceId=${voice.voiceId}`)
     } finally {
       loading.delete(voice.key)
     }
@@ -324,7 +384,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
   }
 
   const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
-    installHfMirrorFetch()
+    installBundledAssetFetch()
     const keys =
       voiceKeys && voiceKeys.length
         ? voiceKeys
@@ -337,7 +397,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       const voice = getVoice(key) || pickVoice('zh', key)
       await ensureVoice(voice, onProgress)
     }
-    onProgress?.({ stage: 'ready', progress: 1, message: '本地音色已就绪' })
+    onProgress?.({ stage: 'ready', progress: 1, message: '内置音色已就绪' })
     // #region agent log
     agentLog('tts.ts:ensureReady', 'all ready', { keys: unique }, 'D')
     // #endregion

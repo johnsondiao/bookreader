@@ -1016,3 +1016,55 @@ button {
   pointer-events: none;
   animation: fadeUp 0.25s ease;
 }
+
+.toast-debug {
+  max-width: 92%;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border-radius: 12px;
+  line-height: 1.35;
+  font-size: 11px;
+  bottom: 210px;
+  text-align: left;
+}
+
+.tts-debug-panel {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 70;
+  pointer-events: none;
+}
+
+.tts-debug-toggle {
+  pointer-events: auto;
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 0;
+  background: rgba(20, 20, 20, 0.75);
+  color: #9fef9f;
+}
+
+.tts-debug-panel.open .tts-debug-body {
+  display: block;
+}
+
+.tts-debug-body {
+  pointer-events: auto;
+  display: none;
+  max-height: 38vh;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(8, 12, 8, 0.92);
+  color: #b6f5b6;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

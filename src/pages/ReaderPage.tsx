@@ -4,7 +4,13 @@ import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
 import { createTtsController, splitSpeakSegments, voicesForLang, VOICE_CATALOG } from '../utils/tts'
 import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
-import { agentLog, getLastDebugHint } from '../utils/agentLog'
+import {
+  agentLog,
+  formatDebugLine,
+  getLastDebugHint,
+  subscribeDebugLog,
+  type DebugPayload,
+} from '../utils/agentLog'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -47,8 +53,10 @@ export function ReaderPage() {
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [engineStatus, setEngineStatus] = useState(
-    '可选多音色：首次使用会下载对应模型，之后本地合成音频播放',
+    '全部音色已打包进 App，听书无需联网下载模型',
   )
+  const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
+  const [debugOpen, setDebugOpen] = useState(true)
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
@@ -111,10 +119,14 @@ export function ReaderPage() {
     }
   }, [])
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, ms = 2800) => {
     setToast(msg)
-    window.setTimeout(() => setToast(''), 2800)
+    window.setTimeout(() => setToast(''), ms)
   }
+
+  // #region agent log
+  useEffect(() => subscribeDebugLog(setDebugLines), [])
+  // #endregion
 
   const prepareEngine = useCallback(async () => {
     const keys = [
@@ -139,17 +151,21 @@ export function ReaderPage() {
 
   // #region agent log
   useEffect(() => {
-    if (!settings.ttsVoiceZh || !settings.ttsVoiceEn || !settings.ttsVoiceNote) {
-      updateSettings({
-        ttsVoiceZh: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
-        ttsVoiceEn: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
-        ttsVoiceNote: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
-      })
+    const next = {
+      ttsVoiceZh: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
+      ttsVoiceEn: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+      ttsVoiceNote: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+    }
+    if (
+      next.ttsVoiceZh !== settings.ttsVoiceZh ||
+      next.ttsVoiceEn !== settings.ttsVoiceEn ||
+      next.ttsVoiceNote !== settings.ttsVoiceNote
+    ) {
+      updateSettings(next)
     }
     void ttsRef.current.probe().then((info) => {
-      if (info.ready) setEngineStatus('本地音色已就绪：文字 → 音频 → 播放')
+      if (info.ready) setEngineStatus('内置音色已就绪（完全离线）')
     })
-    // 仅在进入书籍时补齐默认音色
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id])
   // #endregion
@@ -243,8 +259,16 @@ export function ReaderPage() {
       setMenuOpen(true)
 
       try {
-        showToast('正在准备本地语音…')
-        await prepareEngine()
+        // 听书时只预加载当前会用到的音色，避免一次拉 3 个模型导致 Failed to fetch 直接失败
+        showToast('正在准备本地语音…', 4000)
+        const keys = [settings.ttsVoiceZh || DEFAULT_VOICE_ZH]
+        // #region agent log
+        agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex }, 'D')
+        // #endregion
+        await ttsRef.current.ensureReady((p) => {
+          const pct = Math.round((p.progress || 0) * 100)
+          setEngineStatus(`${p.message || p.stage} ${pct}%`)
+        }, keys)
       } catch (err) {
         const hint = getLastDebugHint()
         // #region agent log
@@ -255,8 +279,10 @@ export function ReaderPage() {
           'C',
         )
         // #endregion
+        setDebugOpen(true)
         showToast(
-          `${err instanceof Error ? err.message : '本地语音引擎加载失败'}${hint ? ` (${hint})` : ''}`,
+          `${err instanceof Error ? err.message : '本地语音引擎加载失败'}\n${hint}`,
+          12000,
         )
         speakingRef.current = false
         setTtsOn(false)
@@ -292,7 +318,8 @@ export function ReaderPage() {
             'C',
           )
           // #endregion
-          showToast(`${err instanceof Error ? err.message : '朗读失败'}${hint ? ` (${hint})` : ''}`)
+          setDebugOpen(true)
+          showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
           speakingRef.current = false
           setTtsOn(false)
           return
@@ -320,7 +347,7 @@ export function ReaderPage() {
         }
       }
     },
-    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.ttsVoiceZh, settings.ttsVoiceNote, settings.autoScroll, prepareEngine],
+    [book, chapter, paragraphs, saveProgress, settings.ttsRate, settings.ttsVoiceZh, settings.ttsVoiceNote, settings.autoScroll],
   )
 
   useEffect(() => {
@@ -633,7 +660,7 @@ export function ReaderPage() {
               <span>本地听书 · 多音色</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  中英文可分别选音色；注释可用另一把声音。首次使用会下载该模型，之后离线合成播放。
+                  目录内全部音色（月读/CSS10/华严/Lessac 等）已打包进 App，离线可用，无需访问 HuggingFace。
                 </p>
                 <p style={{ margin: '0 0 8px', fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
                 <button
@@ -646,7 +673,7 @@ export function ReaderPage() {
                       .catch((e) => showToast(e instanceof Error ? e.message : '准备失败'))
                   }}
                 >
-                  预下载当前所选音色
+                  加载当前音色（本地）
                 </button>
               </div>
             </div>
@@ -699,7 +726,20 @@ export function ReaderPage() {
         </div>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast toast-debug">{toast}</div>}
+
+      <div className={`tts-debug-panel${debugOpen ? ' open' : ''}`}>
+        <button type="button" className="tts-debug-toggle" onClick={() => setDebugOpen((v) => !v)}>
+          {debugOpen ? '收起调试' : '展开调试'} ({debugLines.length})
+        </button>
+        {debugOpen && (
+          <pre className="tts-debug-body">
+            {debugLines.length === 0
+              ? '暂无日志。点听书后这里会显示每一步（下载 URL / 错误 / 音量）。'
+              : debugLines.slice(0, 25).map(formatDebugLine).join('\n---\n')}
+          </pre>
+        )}
+      </div>
     </div>
   )
 }

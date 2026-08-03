@@ -1,4 +1,4 @@
-/** 听书音色目录：按需下载，本地合成 WAV 后播放 */
+/** 听书音色目录：全部模型已打包进 public/tts-models，运行时不访问外网 */
 
 export type VoiceLang = 'zh' | 'en' | 'both'
 
@@ -11,20 +11,20 @@ export type VoiceDef = {
   lang: VoiceLang
   gender: 'female' | 'male' | 'neutral'
   engine: VoiceEngine
-  /** piper-plus：模型直链（镜像优先） */
+  /** piper-plus：本地打包路径 */
   modelUrls?: string[]
-  /** classic piper：mintplex voiceId */
+  /** classic piper：mintplex voiceId（模型已内置） */
   voiceId?: string
+  /** 是否已内置到 APK */
+  bundled?: boolean
 }
 
-function plusUrls(repo: string, file: string) {
-  return [
-    `https://hf-mirror.com/${repo}/resolve/main/${file}`,
-    `https://huggingface.co/${repo}/resolve/main/${file}`,
-  ]
+/** Capacitor/Vite 相对路径 */
+function bundledPlus(dir: string, file: string) {
+  return [`${import.meta.env.BASE_URL}tts-models/${dir}/${file}`]
 }
 
-/** 精选音色（体积与效果平衡；首次使用会下载对应模型） */
+/** 精选音色：全部已内置打包 */
 export const VOICE_CATALOG: VoiceDef[] = [
   {
     key: 'pp-tsukuyomi',
@@ -32,10 +32,8 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'both',
     gender: 'female',
     engine: 'piper-plus',
-    modelUrls: plusUrls(
-      'ayousanz/piper-plus-tsukuyomi-chan',
-      'tsukuyomi-chan-6lang-fp16.onnx',
-    ),
+    bundled: true,
+    modelUrls: bundledPlus('tsukuyomi', 'tsukuyomi-chan-6lang-fp16.onnx'),
   },
   {
     key: 'pp-css10',
@@ -43,7 +41,8 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'both',
     gender: 'female',
     engine: 'piper-plus',
-    modelUrls: plusUrls('ayousanz/piper-plus-css10-ja-6lang', 'css10-ja-6lang-fp16.onnx'),
+    bundled: true,
+    modelUrls: bundledPlus('css10', 'css10-ja-6lang-fp16.onnx'),
   },
   {
     key: 'zh-huayan',
@@ -51,6 +50,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'zh',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'zh_CN-huayan-medium',
   },
   {
@@ -59,6 +59,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'zh',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'zh_CN-huayan-x_low',
   },
   {
@@ -67,6 +68,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_US-lessac-medium',
   },
   {
@@ -75,6 +77,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_US-amy-medium',
   },
   {
@@ -83,6 +86,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_US-hfc_female-medium',
   },
   {
@@ -91,6 +95,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'male',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_US-hfc_male-medium',
   },
   {
@@ -99,6 +104,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'male',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_US-ryan-medium',
   },
   {
@@ -107,6 +113,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'female',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_GB-alba-medium',
   },
   {
@@ -115,11 +122,12 @@ export const VOICE_CATALOG: VoiceDef[] = [
     lang: 'en',
     gender: 'male',
     engine: 'piper',
+    bundled: true,
     voiceId: 'en_GB-alan-medium',
   },
 ]
 
-export const DEFAULT_VOICE_ZH = 'pp-tsukuyomi'
+export const DEFAULT_VOICE_ZH = 'zh-huayan'
 export const DEFAULT_VOICE_EN = 'en-lessac'
 export const DEFAULT_VOICE_NOTE = 'pp-css10'
 
@@ -137,7 +145,7 @@ export function pickVoice(lang: 'zh' | 'en', preferredKey?: string): VoiceDef {
   if (hit && (hit.lang === lang || hit.lang === 'both')) return hit
   const list = voicesForLang(lang)
   if (lang === 'zh') {
-    return list.find((v) => v.key === DEFAULT_VOICE_ZH) || list[0]
+    return list.find((v) => v.key === DEFAULT_VOICE_ZH) || list.find((v) => v.bundled) || list[0]
   }
-  return list.find((v) => v.key === DEFAULT_VOICE_EN) || list[0]
+  return list.find((v) => v.key === DEFAULT_VOICE_EN) || list.find((v) => v.bundled) || list[0]
 }
