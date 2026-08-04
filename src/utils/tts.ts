@@ -264,8 +264,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
   let anyReady = false
   /** stop() 递增；合成/播放前检查，避免停后仍播 */
   let speakEpoch = 0
-  /** mintplex TtsSession 单例当前绑定的音色 key */
-  let activePiperKey: string | null = null
 
   const assertAlive = (epoch: number) => {
     if (epoch !== speakEpoch) throw new SpeakAborted()
@@ -389,7 +387,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
     }
     TtsSession._instance = null
     piperCache.clear()
-    activePiperKey = null
   }
 
   const loadPiper = async (
@@ -459,7 +456,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
       // create() 会把 numThreads 改成 hardwareConcurrency，WebView 上易崩
       ort.env.wasm.numThreads = 1
       piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
-      activePiperKey = voice.key
       anyReady = true
       // #region agent log
       agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'C')
