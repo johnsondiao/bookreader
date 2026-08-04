@@ -1,4 +1,4 @@
-/** 听书音色目录：全部模型已打包进 public/tts-models，运行时不访问外网 */
+/** 听书音色目录：仅打包中文相关音色（月读/CSS10 为多语模型，可顺带读英文） */
 
 export type VoiceLang = 'zh' | 'en' | 'both'
 
@@ -24,11 +24,11 @@ function bundledPlus(dir: string, file: string) {
   return [`${import.meta.env.BASE_URL}tts-models/${dir}/${file}`]
 }
 
-/** 精选音色：全部已内置打包 */
+/** 精简音色：只保留中文相关，去掉专用英文包以减小 APK */
 export const VOICE_CATALOG: VoiceDef[] = [
   {
     key: 'pp-tsukuyomi',
-    name: '月读 · 女声（中英）',
+    name: '月读 · 女声（中文）',
     lang: 'both',
     gender: 'female',
     engine: 'piper-plus',
@@ -37,7 +37,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
   },
   {
     key: 'pp-css10',
-    name: 'CSS10 · 女声（中英）',
+    name: 'CSS10 · 女声（中文）',
     lang: 'both',
     gender: 'female',
     engine: 'piper-plus',
@@ -62,74 +62,28 @@ export const VOICE_CATALOG: VoiceDef[] = [
     bundled: true,
     voiceId: 'zh_CN-huayan-x_low',
   },
-  {
-    key: 'en-lessac',
-    name: 'Lessac · 女声（英文）',
-    lang: 'en',
-    gender: 'female',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_US-lessac-medium',
-  },
-  {
-    key: 'en-amy',
-    name: 'Amy · 女声（英文）',
-    lang: 'en',
-    gender: 'female',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_US-amy-medium',
-  },
-  {
-    key: 'en-hfc-f',
-    name: 'HFC · 女声（英文）',
-    lang: 'en',
-    gender: 'female',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_US-hfc_female-medium',
-  },
-  {
-    key: 'en-hfc-m',
-    name: 'HFC · 男声（英文）',
-    lang: 'en',
-    gender: 'male',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_US-hfc_male-medium',
-  },
-  {
-    key: 'en-ryan',
-    name: 'Ryan · 男声（英文）',
-    lang: 'en',
-    gender: 'male',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_US-ryan-medium',
-  },
-  {
-    key: 'en-alba',
-    name: 'Alba · 女声（英式）',
-    lang: 'en',
-    gender: 'female',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_GB-alba-medium',
-  },
-  {
-    key: 'en-alan',
-    name: 'Alan · 男声（英式）',
-    lang: 'en',
-    gender: 'male',
-    engine: 'piper',
-    bundled: true,
-    voiceId: 'en_GB-alan-medium',
-  },
 ]
 
 export const DEFAULT_VOICE_ZH = 'pp-tsukuyomi'
 export const DEFAULT_VOICE_EN = 'pp-tsukuyomi'
 export const DEFAULT_VOICE_NOTE = 'pp-css10'
+
+const REMOVED_EN_VOICE_KEYS = new Set([
+  'en-lessac',
+  'en-amy',
+  'en-hfc-f',
+  'en-hfc-m',
+  'en-ryan',
+  'en-alba',
+  'en-alan',
+])
+
+/** 已下架的英文专用音色 → 回落到默认中文多语音色 */
+export function migrateVoiceKey(key: string | undefined | null): string | undefined {
+  if (!key) return undefined
+  if (REMOVED_EN_VOICE_KEYS.has(key)) return DEFAULT_VOICE_EN
+  return key
+}
 
 export function getVoice(key: string | undefined | null): VoiceDef | undefined {
   if (!key) return undefined
@@ -141,7 +95,8 @@ export function voicesForLang(lang: 'zh' | 'en'): VoiceDef[] {
 }
 
 export function pickVoice(lang: 'zh' | 'en', preferredKey?: string): VoiceDef {
-  const hit = getVoice(preferredKey)
+  const preferred = migrateVoiceKey(preferredKey)
+  const hit = getVoice(preferred)
   if (hit && (hit.lang === lang || hit.lang === 'both')) return hit
   const list = voicesForLang(lang)
   if (lang === 'zh') {

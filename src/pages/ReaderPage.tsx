@@ -3,7 +3,7 @@ import { TocPanel } from '../components/TocPanel'
 import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
 import { createTtsController, splitSpeakSegments, voicesForLang, VOICE_CATALOG } from '../utils/tts'
-import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
+import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH, migrateVoiceKey } from '../utils/ttsVoices'
 import {
   agentLog,
   formatDebugLine,
@@ -65,7 +65,7 @@ export function ReaderPage() {
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [engineStatus, setEngineStatus] = useState(
-    '全部音色已打包进 App，听书无需联网下载模型',
+    '已精简为中文音色包，听书无需联网下载模型',
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
@@ -177,13 +177,13 @@ export function ReaderPage() {
   // #region agent log
   useEffect(() => {
     const next = {
-      // 华严依赖的 ort wasm 在部分 WebView 上易失败，默认改回更稳的月读
+      // 华严在部分 WebView 上易失败，默认改回更稳的月读；已下架的英文专用音色也回落
       ttsVoiceZh:
         !settings.ttsVoiceZh || settings.ttsVoiceZh === 'zh-huayan' || settings.ttsVoiceZh === 'zh-huayan-lite'
           ? DEFAULT_VOICE_ZH
-          : settings.ttsVoiceZh,
-      ttsVoiceEn: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
-      ttsVoiceNote: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+          : migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
+      ttsVoiceEn: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
+      ttsVoiceNote: migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
     }
     if (
       next.ttsVoiceZh !== settings.ttsVoiceZh ||
@@ -750,10 +750,10 @@ export function ReaderPage() {
               </div>
             </div>
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-              <span>本地听书 · 多音色</span>
+              <span>本地听书 · 中文音色</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  目录内全部音色（月读/CSS10/华严/Lessac 等）已打包进 App，离线可用，无需访问 HuggingFace。
+                  已精简为中文音色（月读 / CSS10 / 华严），模型打进 App，离线可用。
                 </p>
                 <p style={{ margin: '0 0 8px', fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
                 <button
@@ -787,7 +787,7 @@ export function ReaderPage() {
             </div>
 
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-              <span>英文音色</span>
+              <span>英文片段音色</span>
               <select
                 className="voice-select"
                 value={settings.ttsVoiceEn || DEFAULT_VOICE_EN}
@@ -799,6 +799,7 @@ export function ReaderPage() {
                   </option>
                 ))}
               </select>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>已去掉专用英文语音包，用中文多语模型朗读英文</span>
             </div>
 
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
