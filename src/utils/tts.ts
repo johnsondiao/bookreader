@@ -75,6 +75,44 @@ function detectTextLang(text: string): 'zh' | 'en' {
   return cjk >= latin ? 'zh' : 'en'
 }
 
+/**
+ * 按句末标点分割文本。piper 对短句的合成质量和速度都远优于整段：
+ * - ONNX 推理时间随音素数量近似线性增长，整段 200 字推理要数秒
+ * - 长文本的注意力衰减导致韵律变差、声调漂移
+ *
+ * 分割策略：先按 。！？；\n 切句，超过 50 字的再按 ，, 追加切分。
+ */
+function splitIntoSentences(text: string): string[] {
+  const parts = text
+    .split(/(?<=[。！？；\n])/g)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  const result: string[] = []
+  for (const s of parts) {
+    if (s.length <= 50) {
+      result.push(s)
+    } else {
+      const sub = s
+        .split(/(?<=[，,])/g)
+        .map((t) => t.trim())
+        .filter(Boolean)
+      // 合并过短的逗号分句，避免单句太短造成韵律断裂
+      let buf = ''
+      for (const t of sub) {
+        if (buf && buf.length + t.length > 50) {
+          result.push(buf)
+          buf = t
+        } else {
+          buf += t
+        }
+      }
+      if (buf) result.push(buf)
+    }
+  }
+  return result
+}
+
 function toRef(v: VoiceDef, index: number): TtsVoiceRef {
   return {
     index,
@@ -537,65 +575,70 @@ export function createTtsController(onEnd?: () => void): TtsController {
     const trimmed = text.trim()
     if (!trimmed) return
 
+    const sentences = splitIntoSentences(trimmed)
+    if (sentences.length === 0) return
+
     // #region agent log
     agentLog(
       'tts.ts:speakWithVoice',
       'start',
-      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length, preview: trimmed.slice(0, 24) },
+      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length, sentences: sentences.length, preview: trimmed.slice(0, 24) },
       'A',
     )
     // #endregion
 
-    let blob: Blob
-    const duration = -1
+    const session = piperCache.get(voice.key)
+    if (!session) throw new Error('音色引擎未就绪')
+
+    const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
+
+    // 双缓冲：先合成第一句，播放第一句的同时在后台合成下一句
+    let nextBlobPromise: Promise<Blob> | null = null
     try {
-      const session = piperCache.get(voice.key)
-      if (!session) throw new Error('音色引擎未就绪')
-      blob = await session.predict(trimmed)
+      nextBlobPromise = session.predict(sentences[0])
     } catch (err) {
-      // #region agent log
-      agentLog(
-        'tts.ts:speakWithVoice',
-        'synthesize failed',
-        {
-          key: voice.key,
-          engine: voice.engine,
-          err: err instanceof Error ? err.message : String(err),
-        },
-        'C',
-      )
-      // #endregion
+      agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, err: err instanceof Error ? err.message : String(err) }, 'C')
       throw err
     }
 
-    assertAlive(epoch)
+    for (let i = 0; i < sentences.length; i++) {
+      assertAlive(epoch)
 
-    const silence = await probeWavSilence(blob)
-    // #region agent log
-    agentLog(
-      'tts.ts:speakWithVoice',
-      'synth done',
-      {
-        key: voice.key,
-        bytes: blob.size,
-        type: blob.type,
-        duration,
-        peak: silence.peak,
-        likelySilent: silence.likelySilent,
-      },
-      'A',
-    )
-    // #endregion
+      // 等待当前句合成完成
+      let blob: Blob
+      try {
+        blob = await nextBlobPromise!
+      } catch (err) {
+        agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, sentence: i, err: err instanceof Error ? err.message : String(err) }, 'C')
+        throw err
+      }
 
-    if (silence.likelySilent) {
-      throw new Error(
-        `合成结果为静音（peak=${silence.peak}）。可能是 WASM/Data 加载失败或模型不匹配。`,
+      // 如果还有下一句，立即开始后台合成（与当前句播放并行）
+      if (i + 1 < sentences.length) {
+        nextBlobPromise = session.predict(sentences[i + 1])
+      } else {
+        nextBlobPromise = null
+      }
+
+      assertAlive(epoch)
+
+      const silence = await probeWavSilence(blob)
+      // #region agent log
+      agentLog(
+        'tts.ts:speakWithVoice',
+        'synth done',
+        { key: voice.key, sentence: i, sentences: sentences.length, bytes: blob.size, peak: silence.peak, likelySilent: silence.likelySilent },
+        'A',
       )
-    }
+      // #endregion
 
-    assertAlive(epoch)
-    const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
-    await playBlob(blob, playRate, epoch)
+      if (silence.likelySilent) {
+        throw new Error(`合成结果为静音（peak=${silence.peak}，句 ${i + 1}/${sentences.length}）。`)
+      }
+
+      assertAlive(epoch)
+      await playBlob(blob, playRate, epoch)
+    }
   }
 
   return {
