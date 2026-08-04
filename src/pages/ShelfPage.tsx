@@ -13,6 +13,7 @@ export function ShelfPage() {
   const books = useAppStore((s) => s.books)
   const showImportHint = useAppStore((s) => s.showImportHint)
   const openBook = useAppStore((s) => s.openBook)
+  const removeBook = useAppStore((s) => s.removeBook)
   const importTextBook = useAppStore((s) => s.importTextBook)
   const importParsedBook = useAppStore((s) => s.importParsedBook)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -122,7 +123,7 @@ export function ShelfPage() {
       ) : (
         <div className="shelf-grid">
           {books.map((b) => (
-            <BookCard key={b.id} book={b} onOpen={openBook} />
+            <BookCard key={b.id} book={b} onOpen={openBook} onRemove={removeBook} />
           ))}
         </div>
       )}

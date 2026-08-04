@@ -77,13 +77,13 @@ export function MePage() {
       {books.length > 0 && (
         <div className="setting-list">
           <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-            长按删除请在下方点选（演示）
+            书籍管理 · 仅从书架移除，不会删除原文件
           </div>
           {books.map((b) => (
             <button key={b.id} type="button" className="setting-row" onClick={() => removeBook(b.id)}>
-              <span>删除「{b.title}」</span>
+              <span>移除「{b.title}」</span>
               <span className="val" style={{ color: 'var(--accent)' }}>
-                删除
+                移除
               </span>
             </button>
           ))}
