@@ -150,10 +150,12 @@ export function ReaderPage() {
     // 已下架的 pp-* / en-* key 可能仍残留在 localStorage，这里必须再过一次
     // migrateVoiceKey，否则旧 key 会被原样传给 ensureReady，触发对已下架
     // tsukuyomi 模型及其外部拼音字典（pinyin_*.json）的加载 → 404。
+    // 注释段不再使用独立音色（单例限制），note key 直接用 zh key 避免预载 lite。
+    const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
     const keys = [
-      migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
+      zhKey,
       migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
-      migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
+      zhKey,
     ]
     try {
       await ttsRef.current.ensureReady((p) => {
@@ -170,10 +172,12 @@ export function ReaderPage() {
   }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
 
   useEffect(() => {
+    // 注释段不再使用独立音色：noteKey = zhKey，避免单例切换导致模型重载
+    const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
     ttsRef.current.setPrefs({
-      zhKey: settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
-      enKey: settings.ttsVoiceEn || DEFAULT_VOICE_EN,
-      noteKey: settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+      zhKey,
+      enKey: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
+      noteKey: zhKey,
     })
   }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
 
@@ -295,11 +299,12 @@ export function ReaderPage() {
 
       try {
         if (!quiet) showToast('正在准备本地语音…', 4000)
-        // 同 prepareEngine：防止 localStorage 残留的 pp-* 旧 key 触发已下架模型加载
+        // 同 prepareEngine：注释段不再使用独立音色，note key 用 zh key 避免预载 lite
+        const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
         const keys = [
-          migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
-          migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
+          zhKey,
           migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
+          zhKey,
         ]
         // #region agent log
         agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex, quiet }, 'D')
@@ -352,9 +357,10 @@ export function ReaderPage() {
             const isNote = seg.kind === 'note'
             await ttsRef.current.speak(seg.text, settings.ttsRate, {
               pitch: isNote ? 1.15 : 1,
-              voiceKey: isNote
-                ? settings.ttsVoiceNote || settings.ttsVoiceZh
-                : undefined,
+              // 注释段不切换音色：mintplex TtsSession 是进程级单例，
+              // 换音色会清空缓存并重新加载模型（数秒延迟 + 可能破坏音素化）。
+              // 用 pitch 1.15 调高注释段即可区分。
+              voiceKey: undefined,
               langHint: 'auto',
             })
           }

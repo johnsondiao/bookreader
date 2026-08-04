@@ -50,7 +50,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
 
 export const DEFAULT_VOICE_ZH = 'zh-huayan'
 export const DEFAULT_VOICE_EN = 'zh-huayan'
-export const DEFAULT_VOICE_NOTE = 'zh-huayan-lite'
+export const DEFAULT_VOICE_NOTE = 'zh-huayan'
 
 /**
  * 已下架的音色 key → 回落到默认。包含早期专用英文音色，以及移除的 piper-plus
