@@ -7,9 +7,6 @@ export default defineConfig({
   // Capacitor WebView 需要相对路径
   base: './',
   assetsInclude: ['**/*.wasm'],
-  optimizeDeps: {
-    exclude: ['piper-plus'],
-  },
   worker: {
     format: 'es',
   },

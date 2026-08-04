@@ -85,32 +85,9 @@ function toRef(v: VoiceDef, index: number): TtsVoiceRef {
   }
 }
 
-type PiperPlusInstance = {
-  synthesize: (
-    text: string,
-    opts?: { language?: string; lengthScale?: number; noiseScale?: number },
-  ) => Promise<{
-    toBlob: () => Blob
-    duration: number
-  }>
-  dispose: () => void
-  isInitialized: boolean
-}
-
 type PiperSession = {
   voiceId: string
   predict: (text: string) => Promise<Blob>
-}
-
-/** 相对资源 → 绝对 http(s) URL。piper-plus 只认 http(s)，相对路径会误走 HuggingFace */
-function toDirectHttpUrl(relOrUrl: string): string {
-  if (/^https?:\/\//i.test(relOrUrl)) return relOrUrl
-  try {
-    return new URL(relOrUrl, window.location.href).href
-  } catch {
-    const base = import.meta.env.BASE_URL || './'
-    return `${base}${relOrUrl.replace(/^\.\//, '').replace(/^\//, '')}`
-  }
 }
 
 /** 动态 import / wasmPaths 用相对路径，避免 Android WebView 对 https://localhost/*.mjs 失败 */
@@ -139,11 +116,6 @@ function toAbsoluteAssetUrl(rel: string): string {
   }
 }
 
-const PLUS_HF_LOCAL: Record<string, string> = {
-  'ayousanz/piper-plus-tsukuyomi-chan': 'tts-models/tsukuyomi',
-  'ayousanz/piper-plus-css10-ja-6lang': 'tts-models/css10',
-}
-
 /** 把外网模型/WASM 请求改写到 APK 内置资源；调试上报地址不记入错误日志 */
 function installBundledAssetFetch() {
   const w = window as unknown as { __TTS_BUNDLE_FETCH__?: boolean }
@@ -167,35 +139,10 @@ function installBundledAssetFetch() {
       if (file) return toRelativeAsset(`ort/${file}`)
     }
 
-    m = raw.match(
-      /(?:huggingface\.co|hf-mirror\.com)\/(ayousanz\/piper-plus-[^/]+)\/resolve\/main\/(.+?)(?:\?|$)/,
-    )
-    if (m) {
-      const localDir = PLUS_HF_LOCAL[m[1]]
-      if (localDir) return toRelativeAsset(`${localDir}/${m[2]}`)
-    }
-
     m = raw.match(/hf-mirror\.com\/diffusionstudio\/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
     if (m) return toRelativeAsset(`tts-models/piper-voices/${m[1]}`)
 
     return null
-  }
-
-  const fakeHfApi = (repo: string): Response | null => {
-    const dir = PLUS_HF_LOCAL[repo]
-    if (!dir) return null
-    // 目录内实际文件名由 VoiceDef.modelUrls 决定；API 仅作 piper-plus 兜底
-    const files =
-      repo.includes('tsukuyomi')
-        ? ['tsukuyomi-chan-6lang-fp16.onnx', 'tsukuyomi-chan-6lang-fp16.onnx.json', 'config.json']
-        : repo.includes('css10')
-          ? ['css10-ja-6lang-fp16.onnx', 'css10-ja-6lang-fp16.onnx.json', 'config.json']
-          : []
-    const siblings = files.map((r) => ({ r }))
-    return new Response(JSON.stringify({ siblings }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    })
   }
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -205,11 +152,6 @@ function installBundledAssetFetch() {
       url = raw
       if (raw.includes('127.0.0.1:7614') || raw.includes('/ingest/')) {
         return nativeFetch(input, init)
-      }
-      const apiHit = raw.match(/huggingface\.co\/api\/models\/(ayousanz\/piper-plus-[^/?#]+)/)
-      if (apiHit) {
-        const fake = fakeHfApi(apiHit[1])
-        if (fake) return fake
       }
       const local = rewrite(raw)
       if (local) {
@@ -275,7 +217,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
     enKey: DEFAULT_VOICE_EN,
     noteKey: DEFAULT_VOICE_NOTE,
   }
-  const plusCache = new Map<string, PiperPlusInstance>()
   const piperCache = new Map<string, PiperSession>()
   const loading = new Map<string, Promise<void>>()
   let audio: HTMLAudioElement | null = null
@@ -309,94 +250,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
     if (!w) return
     if (err) w.reject(err)
     else w.resolve()
-  }
-
-  const loadPlus = async (
-    voice: VoiceDef,
-    onProgress?: (p: TtsProgress) => void,
-    epoch = speakEpoch,
-  ) => {
-    if (plusCache.get(voice.key)?.isInitialized) {
-      assertAlive(epoch)
-      return
-    }
-    if (loading.has(voice.key)) {
-      await loading.get(voice.key)
-      assertAlive(epoch)
-      if (plusCache.get(voice.key)?.isInitialized) return
-    }
-    const urls = voice.modelUrls || []
-    const task = (async () => {
-      assertAlive(epoch)
-      status = 'loading'
-      const [{ PiperPlus }, ort] = await Promise.all([import('piper-plus'), import('onnxruntime-web')])
-      assertAlive(epoch)
-      ort.env.wasm.numThreads = 1
-      // ORT 内部用 import() 加载 .mjs，相对路径以 import.meta.url 为 base，
-      // 必须用绝对 URL 才能命中 dist/ort/（详见 toAbsoluteAssetUrl 注释）
-      ort.env.wasm.wasmPaths = toAbsoluteAssetUrl('ort/')
-      // #region agent log
-      agentLog('tts.ts:loadPlus', 'ort wasmPaths', { wasmPaths: ort.env.wasm.wasmPaths }, 'C')
-      // #endregion
-      let lastErr: unknown
-      for (const rawUrl of urls) {
-        assertAlive(epoch)
-        // 必须是绝对 http(s)，否则 piper-plus 会当 HF repo 去联网
-        const modelUrl = toDirectHttpUrl(rawUrl)
-        try {
-          // #region agent log
-          agentLog('tts.ts:loadPlus', 'load local', { key: voice.key, modelUrl, bundled: !!voice.bundled }, 'C')
-          // #endregion
-          const instance = await (PiperPlus.initialize as (opts: unknown) => Promise<PiperPlusInstance>)({
-            model: modelUrl,
-            ort,
-            onProgress: (p: TtsProgress) => {
-              if (epoch !== speakEpoch) return
-              onProgress?.({ ...p, message: `${voice.name}: ${p.message || p.stage}` })
-            },
-            wasmLoader: async () => {
-              const mod = await import('piper-plus/wasm/multilingual')
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const init = (mod as any).default
-              if (typeof init === 'function') await init()
-              return mod
-            },
-          })
-          plusCache.set(voice.key, instance)
-          anyReady = true
-          assertAlive(epoch)
-          // #region agent log
-          agentLog('tts.ts:loadPlus', 'ready', { key: voice.key, modelUrl }, 'C')
-          // #endregion
-          if (status === 'loading') status = 'idle'
-          return
-        } catch (err) {
-          if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
-            throw err
-          }
-          lastErr = err
-          const errMsg = err instanceof Error ? err.message : String(err)
-          // #region agent log
-          agentLog(
-            'tts.ts:loadPlus',
-            'failed url',
-            { key: voice.key, modelUrl, url: modelUrl, err: errMsg },
-            'C',
-          )
-          // #endregion
-          lastErr = new Error(`${voice.name} 本地加载失败: ${errMsg}\nURL=${modelUrl}`)
-        }
-      }
-      throw lastErr instanceof Error
-        ? lastErr
-        : new Error(`${voice.name} 模型加载失败`)
-    })()
-    loading.set(voice.key, task)
-    try {
-      await task
-    } finally {
-      loading.delete(voice.key)
-    }
   }
 
   const resetMintplexSingleton = (TtsSession: { _instance?: unknown | null }) => {
@@ -506,7 +359,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       )
       // #endregion
       throw new Error(
-        `${voice.name} 本地加载失败（不是联网下载）: ${errMsg}\nvoiceId=${voice.voiceId}\n可先改用「月读」音色`,
+        `${voice.name} 本地加载失败（不是联网下载）: ${errMsg}\nvoiceId=${voice.voiceId}`,
       )
     } finally {
       loading.delete(voice.key)
@@ -518,8 +371,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
     onProgress?: (p: TtsProgress) => void,
     epoch = speakEpoch,
   ) => {
-    if (voice.engine === 'piper-plus') await loadPlus(voice, onProgress, epoch)
-    else await loadPiper(voice, onProgress, epoch)
+    await loadPiper(voice, onProgress, epoch)
   }
 
   const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
@@ -608,7 +460,6 @@ export function createTtsController(onEnd?: () => void): TtsController {
     const trimmed = text.trim()
     if (!trimmed) return
 
-    const lengthScale = Math.min(2.2, Math.max(0.55, 1 / rate))
     // #region agent log
     agentLog(
       'tts.ts:speakWithVoice',
@@ -619,23 +470,11 @@ export function createTtsController(onEnd?: () => void): TtsController {
     // #endregion
 
     let blob: Blob
-    let duration = -1
+    const duration = -1
     try {
-      if (voice.engine === 'piper-plus') {
-        const piper = plusCache.get(voice.key)
-        if (!piper) throw new Error('音色引擎未就绪')
-        const result = await piper.synthesize(trimmed, {
-          language: lang,
-          lengthScale,
-          noiseScale: 0.667,
-        })
-        blob = result.toBlob()
-        duration = result.duration
-      } else {
-        const session = piperCache.get(voice.key)
-        if (!session) throw new Error('音色引擎未就绪')
-        blob = await session.predict(trimmed)
-      }
+      const session = piperCache.get(voice.key)
+      if (!session) throw new Error('音色引擎未就绪')
+      blob = await session.predict(trimmed)
     } catch (err) {
       // #region agent log
       agentLog(

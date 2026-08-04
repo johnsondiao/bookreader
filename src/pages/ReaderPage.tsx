@@ -147,10 +147,13 @@ export function ReaderPage() {
   // #endregion
 
   const prepareEngine = useCallback(async () => {
+    // 已下架的 pp-* / en-* key 可能仍残留在 localStorage，这里必须再过一次
+    // migrateVoiceKey，否则旧 key 会被原样传给 ensureReady，触发对已下架
+    // tsukuyomi 模型及其外部拼音字典（pinyin_*.json）的加载 → 404。
     const keys = [
-      settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
-      settings.ttsVoiceEn || DEFAULT_VOICE_EN,
-      settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
+      migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
+      migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
+      migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
     ]
     try {
       await ttsRef.current.ensureReady((p) => {
@@ -176,12 +179,9 @@ export function ReaderPage() {
 
   // #region agent log
   useEffect(() => {
+    // 已下架的音色（piper-plus pp-* 系列 + 早期英文专用音色）回落到默认华严
     const next = {
-      // 华严在部分 WebView 上易失败，默认改回更稳的月读；已下架的英文专用音色也回落
-      ttsVoiceZh:
-        !settings.ttsVoiceZh || settings.ttsVoiceZh === 'zh-huayan' || settings.ttsVoiceZh === 'zh-huayan-lite'
-          ? DEFAULT_VOICE_ZH
-          : migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
+      ttsVoiceZh: migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
       ttsVoiceEn: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
       ttsVoiceNote: migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
     }
@@ -295,10 +295,11 @@ export function ReaderPage() {
 
       try {
         if (!quiet) showToast('正在准备本地语音…', 4000)
+        // 同 prepareEngine：防止 localStorage 残留的 pp-* 旧 key 触发已下架模型加载
         const keys = [
-          settings.ttsVoiceZh || DEFAULT_VOICE_ZH,
-          settings.ttsVoiceNote || DEFAULT_VOICE_NOTE,
-          settings.ttsVoiceEn || DEFAULT_VOICE_EN,
+          migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
+          migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
+          migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
         ]
         // #region agent log
         agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex, quiet }, 'D')

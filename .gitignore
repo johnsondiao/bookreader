@@ -34,3 +34,6 @@ android/.idea
 *.aab
 *.keystore
 !debug.keystore
+
+# TRAE local workspace metadata
+.evolver/
