@@ -119,6 +119,26 @@ function toRelativeAsset(rel: string): string {
   return `${base}${rel.replace(/^\//, '')}`
 }
 
+/**
+ * ort wasmPaths 必须用绝对 URL。
+ *
+ * ORT 内部 `dynamicImportDefault()` 走 ES module 动态 `import()`，相对路径会以
+ * **当前模块 URL**（即编译后的 `assets/ort.bundle.min-*.js`）为 base 解析，
+ * 而不是页面 URL。若传 `'./ort/'`，会被解析成 `https://localhost/assets/ort/...`，
+ * 但 ort 的 .mjs/.wasm 实际在 `https://localhost/ort/...`，导致 `Failed to fetch
+ * dynamically imported module` 与 `wasm: no available backend found`。
+ *
+ * 用绝对 URL 后，无论 ORT 内部用哪个 base，都能命中正确路径。
+ */
+function toAbsoluteAssetUrl(rel: string): string {
+  const rel2 = rel.replace(/^\//, '')
+  try {
+    return new URL(`./${rel2}`, window.location.href).href
+  } catch {
+    return toRelativeAsset(rel)
+  }
+}
+
 const PLUS_HF_LOCAL: Record<string, string> = {
   'ayousanz/piper-plus-tsukuyomi-chan': 'tts-models/tsukuyomi',
   'ayousanz/piper-plus-css10-ja-6lang': 'tts-models/css10',
@@ -312,7 +332,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
       const [{ PiperPlus }, ort] = await Promise.all([import('piper-plus'), import('onnxruntime-web')])
       assertAlive(epoch)
       ort.env.wasm.numThreads = 1
-      ort.env.wasm.wasmPaths = toRelativeAsset('ort/')
+      // ORT 内部用 import() 加载 .mjs，相对路径以 import.meta.url 为 base，
+      // 必须用绝对 URL 才能命中 dist/ort/（详见 toAbsoluteAssetUrl 注释）
+      ort.env.wasm.wasmPaths = toAbsoluteAssetUrl('ort/')
       // #region agent log
       agentLog('tts.ts:loadPlus', 'ort wasmPaths', { wasmPaths: ort.env.wasm.wasmPaths }, 'C')
       // #endregion
@@ -411,7 +433,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
       onProgress?.({ stage: 'model', progress: 0.1, message: `加载内置音色 ${voice.name}…` })
       const ort = await import('onnxruntime-web')
       assertAlive(epoch)
-      const ortBase = toRelativeAsset('ort/')
+      // onnxWasm 必须用绝对 URL：mintplex 会把它写入 ort.env.wasm.wasmPaths，
+      // ORT 内部 import() 以 import.meta.url 为 base 解析相对路径（详见 toAbsoluteAssetUrl）
+      const ortBase = toAbsoluteAssetUrl('ort/')
       ort.env.wasm.numThreads = 1
       ort.env.wasm.wasmPaths = ortBase
       // #region agent log
