@@ -145,6 +145,27 @@ function installBundledAssetFetch() {
     return null
   }
 
+  const safeRewrite = (raw: string): string => {
+    try {
+      const local = rewrite(raw)
+      if (local && local !== raw) {
+        // #region agent log
+        agentLog(
+          'tts.ts:rewrite',
+          'rewrite to bundled asset',
+          { from: raw.slice(0, 140), url: local.slice(0, 140) },
+          'C',
+        )
+        // #endregion
+        return local
+      }
+    } catch {
+      /* fall through */
+    }
+    return raw
+  }
+
+  // 拦截 fetch（ORT 动态 import / piper-tts-web 的 fetch 路径）
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     let url = ''
     try {
@@ -153,16 +174,8 @@ function installBundledAssetFetch() {
       if (raw.includes('127.0.0.1:7614') || raw.includes('/ingest/')) {
         return nativeFetch(input, init)
       }
-      const local = rewrite(raw)
-      if (local) {
-        // #region agent log
-        agentLog(
-          'tts.ts:fetch',
-          'rewrite to bundled asset',
-          { from: raw.slice(0, 140), url: local.slice(0, 140) },
-          'C',
-        )
-        // #endregion
+      const local = safeRewrite(raw)
+      if (local !== raw) {
         input = local
         url = local
       }
@@ -189,6 +202,42 @@ function installBundledAssetFetch() {
       throw err
     }
   }
+
+  // 拦截 XMLHttpRequest：piper-o91UDS6e.js 是 Emscripten 产物，
+  // 默认用 XHR 加载 .wasm / .data（见 Emscripten 的 getBinary / fetchRemotePackage），
+  // 之前只拦了 fetch，XHR 绕过改写 → CDN 404 或相对路径在 WebView 下解析失败。
+  const OrigXHR = window.XMLHttpRequest
+  const PatchedXHR = function XMLHttpRequestPatched() {
+    const xhr: any = new OrigXHR()
+    let _url: string | null = null
+    const origOpen: (...args: any[]) => void = xhr.open.bind(xhr)
+    xhr.open = function (this: any, ...args: any[]) {
+      const raw = typeof args[1] === 'string' ? args[1] : args[1] instanceof URL ? args[1].href : String(args[1] ?? '')
+      _url = raw
+      const local = safeRewrite(raw)
+      const finalUrl = local !== raw ? local : raw
+      // #region agent log
+      agentLog(
+        'tts.ts:xhr',
+        'open',
+        { method: args[0], from: raw.slice(0, 140), to: finalUrl.slice(0, 140) },
+        'D',
+      )
+      // #endregion
+      args[1] = finalUrl
+      return origOpen.apply(this, args)
+    }
+    const origSend: (...args: any[]) => void = xhr.send.bind(xhr)
+    xhr.send = function (this: any, ...args: any[]) {
+      // #region agent log
+      agentLog('tts.ts:xhr', 'send', { url: (_url ?? '').slice(0, 140) }, 'D')
+      // #endregion
+      return origSend.apply(this, args)
+    }
+    return xhr
+  } as unknown as typeof XMLHttpRequest
+  PatchedXHR.prototype = OrigXHR.prototype
+  window.XMLHttpRequest = PatchedXHR
 }
 
 /** 采样 WAV 前几帧，判断是否近乎静音 */
@@ -426,24 +475,52 @@ export function createTtsController(onEnd?: () => void): TtsController {
           type: blob.type,
           playbackRate: audio.playbackRate,
           epoch,
+          objectUrl: objectUrl.slice(0, 80),
         },
         'A',
       )
       // #endregion
 
+      audio.oncanplay = () => {
+        // #region agent log
+        agentLog('tts.ts:playBlob', 'oncanplay', { readyState: audio?.readyState }, 'D')
+        // #endregion
+      }
       audio.onended = () => {
+        // #region agent log
+        agentLog('tts.ts:playBlob', 'onended', {}, 'A')
+        // #endregion
         cleanupAudio()
         finishPlayWait()
         onEnd?.()
       }
       audio.onerror = () => {
+        const errMsg = audio?.error?.message ?? '未知错误'
+        // #region agent log
+        agentLog('tts.ts:playBlob', 'onerror', { message: errMsg }, 'C')
+        // #endregion
         cleanupAudio()
-        finishPlayWait(new Error('音频播放失败'))
+        finishPlayWait(new Error(`音频播放失败: ${errMsg}`))
       }
-      void audio.play().catch((e) => {
-        cleanupAudio()
-        finishPlayWait(e instanceof Error ? e : new Error(String(e)))
-      })
+      void audio.play().then(
+        () => {
+          // #region agent log
+          agentLog('tts.ts:playBlob', 'play() resolved', {}, 'D')
+          // #endregion
+        },
+        (e) => {
+          // #region agent log
+          agentLog(
+            'tts.ts:playBlob',
+            'play() rejected',
+            { err: e instanceof Error ? e.message : String(e) },
+            'C',
+          )
+          // #endregion
+          cleanupAudio()
+          finishPlayWait(e instanceof Error ? e : new Error(String(e)))
+        },
+      )
     })
 
   const speakWithVoice = async (
@@ -509,6 +586,12 @@ export function createTtsController(onEnd?: () => void): TtsController {
       'A',
     )
     // #endregion
+
+    if (silence.likelySilent) {
+      throw new Error(
+        `合成结果为静音（peak=${silence.peak}）。可能是 WASM/Data 加载失败或模型不匹配。`,
+      )
+    }
 
     assertAlive(epoch)
     const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
