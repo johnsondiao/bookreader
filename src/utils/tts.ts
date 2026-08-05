@@ -1,4 +1,5 @@
 import { agentLog, nativeFetch } from './agentLog'
+import { SherpaTtsWorker, type SherpaProgress } from './sherpaTts'
 import {
   DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
@@ -297,6 +298,41 @@ async function probeWavSilence(blob: Blob): Promise<{ peak: number; likelySilent
   }
 }
 
+/**
+ * 把 sherpa-onnx 返回的 Float32 PCM 样本转成 16-bit PCM WAV Blob，
+ * 与 piper 输出的 WAV 一致，复用现有 playBlob 链路。
+ */
+function floatSamplesToWavBlob(samples: Float32Array, sampleRate: number): Blob {
+  const int16 = new Int16Array(samples.length)
+  for (let i = 0; i < samples.length; i++) {
+    let s = samples[i]
+    if (s >= 1) s = 1
+    else if (s <= -1) s = -1
+    int16[i] = s * 32767
+  }
+  const buf = new ArrayBuffer(44 + int16.length * 2)
+  const view = new DataView(buf)
+  view.setUint32(0, 0x46464952, true) // 'RIFF'
+  view.setUint32(4, 36 + int16.length * 2, true)
+  view.setUint32(8, 0x45564157, true) // 'WAVE'
+  view.setUint32(12, 0x20746d66, true) // 'fmt '
+  view.setUint32(16, 16, true)
+  view.setUint32(20, 1, true) // PCM
+  view.setUint16(22, 1, true) // mono
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  view.setUint32(36, 0x61746164, true) // 'data'
+  view.setUint32(40, int16.length * 2, true)
+  let offset = 44
+  for (let i = 0; i < int16.length; i++) {
+    view.setInt16(offset, int16[i], true)
+    offset += 2
+  }
+  return new Blob([view], { type: 'audio/wav' })
+}
+
 export function createTtsController(onEnd?: () => void): TtsController {
   let status: TtsStatus = 'idle'
   let prefs: TtsVoicePrefs = {
@@ -305,6 +341,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
     noteKey: DEFAULT_VOICE_NOTE,
   }
   const piperCache = new Map<string, PiperSession>()
+  const sherpaCache = new Map<string, SherpaTtsWorker>()
   const loading = new Map<string, Promise<void>>()
   let audio: HTMLAudioElement | null = null
   let objectUrl: string | null = null
@@ -458,7 +495,11 @@ export function createTtsController(onEnd?: () => void): TtsController {
     onProgress?: (p: TtsProgress) => void,
     epoch = speakEpoch,
   ) => {
-    await loadPiper(voice, onProgress, epoch)
+    if (voice.engine === 'sherpa-onnx-matcha') {
+      await loadSherpa(voice, onProgress, epoch)
+    } else {
+      await loadPiper(voice, onProgress, epoch)
+    }
   }
 
   const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
@@ -489,6 +530,82 @@ export function createTtsController(onEnd?: () => void): TtsController {
     // #region agent log
     agentLog('tts.ts:ensureReady', 'all ready', { keys: unique, classicPreloadKey }, 'D')
     // #endregion
+  }
+
+  const loadSherpa = async (
+    voice: VoiceDef,
+    onProgress?: (p: TtsProgress) => void,
+    epoch = speakEpoch,
+  ) => {
+    if (!voice.modelBase) throw new Error('sherpa 音色缺少 modelBase')
+    if (sherpaCache.has(voice.key)) {
+      assertAlive(epoch)
+      return
+    }
+    if (loading.has(voice.key)) {
+      await loading.get(voice.key)
+      assertAlive(epoch)
+      if (sherpaCache.has(voice.key)) return
+    }
+    const task = (async () => {
+      assertAlive(epoch)
+      status = 'loading'
+      installBundledAssetFetch()
+      onProgress?.({ stage: 'model', progress: 0.05, message: `启动 Sherpa ${voice.name}…` })
+
+      const sherpaProgress = (p: SherpaProgress) => {
+        if (epoch !== speakEpoch) return
+        if (p.stage === 'wasm') {
+          onProgress?.({ stage: 'model', progress: 0.1 + p.progress * 0.5, message: p.message })
+        } else if (p.stage === 'init') {
+          onProgress?.({ stage: 'model', progress: 0.6, message: p.message })
+        } else if (p.stage === 'ready') {
+          onProgress?.({ stage: 'model', progress: 0.95, message: p.message })
+        }
+      }
+
+      const w = new SherpaTtsWorker({
+        modelBase: voice.modelBase,
+        onProgress: sherpaProgress,
+      })
+      try {
+        await w.init()
+        assertAlive(epoch)
+        sherpaCache.set(voice.key, w)
+        anyReady = true
+        // #region agent log
+        agentLog('tts.ts:loadSherpa', 'ready', { key: voice.key, modelBase: voice.modelBase }, 'C')
+        // #endregion
+        onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
+        if (status === 'loading') status = 'idle'
+      } catch (err) {
+        w.terminate()
+        const msg = err instanceof Error ? err.message : String(err)
+        // #region agent log
+        agentLog('tts.ts:loadSherpa', 'failed', { key: voice.key, err: msg }, 'C')
+        // #endregion
+        // 友好提示：模型未下载 vs 真实失败
+        if (/404|not found|fetch|download/i.test(msg)) {
+          throw new Error(
+            `${voice.name} 加载失败：模型或 WASM 文件未找到。\n请运行 scripts/download-sherpa-models.ps1 下载资源后重试。\n原始错误: ${msg}`,
+          )
+        }
+        throw new Error(`${voice.name} 加载失败: ${msg}`)
+      }
+    })()
+    loading.set(voice.key, task)
+    try {
+      await task
+    } catch (err) {
+      loading.delete(voice.key)
+      status = 'idle'
+      if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
+        throw err
+      }
+      throw err
+    } finally {
+      loading.delete(voice.key)
+    }
   }
 
   const playBlob = (blob: Blob, playbackRate: number, epoch: number) =>
@@ -587,57 +704,79 @@ export function createTtsController(onEnd?: () => void): TtsController {
     )
     // #endregion
 
-    const session = piperCache.get(voice.key)
-    if (!session) throw new Error('音色引擎未就绪')
-
     const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
+
+    // 工厂：返回当前 voice 对应引擎的「合成一句 → WAV Blob」函数
+    // sherpa 合成端不调速（speed=1.0），语速统一由 playBlob 的 playbackRate 控制，
+    // 避免与播放端双重加速（实际 = playRate²）
+    const synthOne = (sentence: string): Promise<Blob> => {
+      if (voice.engine === 'sherpa-onnx-matcha') {
+        const w = sherpaCache.get(voice.key)
+        if (!w) throw new Error('sherpa 引擎未就绪')
+        return w.generate(sentence, voice.sid ?? 0, 1.0).then((audio) =>
+          floatSamplesToWavBlob(audio.samples, audio.sampleRate),
+        )
+      }
+      const session = piperCache.get(voice.key)
+      if (!session) throw new Error('音色引擎未就绪')
+      return session.predict(sentence)
+    }
 
     // 双缓冲：先合成第一句，播放第一句的同时在后台合成下一句
     let nextBlobPromise: Promise<Blob> | null = null
     try {
-      nextBlobPromise = session.predict(sentences[0])
+      nextBlobPromise = synthOne(sentences[0])
     } catch (err) {
       agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, err: err instanceof Error ? err.message : String(err) }, 'C')
       throw err
     }
 
-    for (let i = 0; i < sentences.length; i++) {
-      assertAlive(epoch)
+    try {
+      for (let i = 0; i < sentences.length; i++) {
+        assertAlive(epoch)
 
-      // 等待当前句合成完成
-      let blob: Blob
-      try {
-        blob = await nextBlobPromise!
-      } catch (err) {
-        agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, sentence: i, err: err instanceof Error ? err.message : String(err) }, 'C')
-        throw err
+        // 等待当前句合成完成
+        let blob: Blob
+        try {
+          blob = await nextBlobPromise!
+        } catch (err) {
+          agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, sentence: i, err: err instanceof Error ? err.message : String(err) }, 'C')
+          throw err
+        }
+
+        // 如果还有下一句，立即开始后台合成（与当前句播放并行）
+        if (i + 1 < sentences.length) {
+          nextBlobPromise = synthOne(sentences[i + 1])
+        } else {
+          nextBlobPromise = null
+        }
+
+        assertAlive(epoch)
+
+        const silence = await probeWavSilence(blob)
+        // #region agent log
+        agentLog(
+          'tts.ts:speakWithVoice',
+          'synth done',
+          { key: voice.key, sentence: i, sentences: sentences.length, bytes: blob.size, peak: silence.peak, likelySilent: silence.likelySilent },
+          'A',
+        )
+        // #endregion
+
+        if (silence.likelySilent) {
+          throw new Error(`合成结果为静音（peak=${silence.peak}，句 ${i + 1}/${sentences.length}）。`)
+        }
+
+        assertAlive(epoch)
+        await playBlob(blob, playRate, epoch)
       }
-
-      // 如果还有下一句，立即开始后台合成（与当前句播放并行）
-      if (i + 1 < sentences.length) {
-        nextBlobPromise = session.predict(sentences[i + 1])
-      } else {
-        nextBlobPromise = null
+    } finally {
+      // 兜底：若中途因 stop/abort 异常退出，预合成的下一句 nextBlobPromise 可能尚未 await。
+      // worker 仍会跑完该句并 reject（abortCurrent 立即 reject），未消费的 reject 会变成
+      // unhandled rejection，故在此挂 catch 吞掉。正常退出时 nextBlobPromise 为 null 不影响。
+      if (nextBlobPromise) {
+        nextBlobPromise.catch(() => {})
       }
-
-      assertAlive(epoch)
-
-      const silence = await probeWavSilence(blob)
-      // #region agent log
-      agentLog(
-        'tts.ts:speakWithVoice',
-        'synth done',
-        { key: voice.key, sentence: i, sentences: sentences.length, bytes: blob.size, peak: silence.peak, likelySilent: silence.likelySilent },
-        'A',
-      )
-      // #endregion
-
-      if (silence.likelySilent) {
-        throw new Error(`合成结果为静音（peak=${silence.peak}，句 ${i + 1}/${sentences.length}）。`)
-      }
-
-      assertAlive(epoch)
-      await playBlob(blob, playRate, epoch)
     }
   }
 
@@ -676,7 +815,9 @@ export function createTtsController(onEnd?: () => void): TtsController {
       try {
         await speakWithVoice(text, rate, lang, pitch, voice, epoch)
       } catch (err) {
-        if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
+        // SpeakAborted：用户 stop/abort；sherpa abortCurrent 也抛 name='SpeakAborted'
+        // 兜底 err.message==='aborted' 以防外部直接抛裸 Error
+        if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return
         }
         throw err
@@ -699,6 +840,8 @@ export function createTtsController(onEnd?: () => void): TtsController {
       status = 'idle'
       cleanupAudio()
       finishPlayWait(new SpeakAborted())
+      // 让 sherpa 当前 pending 的 generate 立刻 reject
+      for (const w of sherpaCache.values()) w.abortCurrent()
     },
     getStatus: () => status,
   }

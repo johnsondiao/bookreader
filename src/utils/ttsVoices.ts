@@ -1,12 +1,13 @@
-/** 听书音色目录：仅保留 mintplex 内置的中文音色（华严系列，基于 espeak-ng 拼音，无需外部字典） */
+/** 听书音色目录：保留 mintplex 内置的中文音色（华严系列）和 sherpa-onnx matcha 中英音色 */
 
 export type VoiceLang = 'zh' | 'en' | 'both'
 
 /**
- * 引擎类型。保留 'piper-plus' 字面量是为了 migrateVoiceKey 能识别旧 localStorage
- * 里残留的 pp-* key 并回落；catalog 里已不再出现该引擎。
+ * 引擎类型：
+ * - piper / piper-plus（兼容旧 key）
+ * - sherpa-onnx-matcha：基于 sherpa-onnx WASM + matcha-icefall-zh-en 模型
  */
-export type VoiceEngine = 'piper-plus' | 'piper'
+export type VoiceEngine = 'piper-plus' | 'piper' | 'sherpa-onnx-matcha'
 
 export type VoiceDef = {
   key: string
@@ -17,6 +18,10 @@ export type VoiceDef = {
   engine: VoiceEngine
   /** classic piper：mintplex voiceId（模型已内置） */
   voiceId?: string
+  /** sherpa 引擎：模型文件所在 URL 基础路径（相对站点根目录，必须以 / 结尾） */
+  modelBase?: string
+  /** sherpa 引擎：说话人 id（matcha-zh-en 默认 0） */
+  sid?: number
   /** 是否已内置到 APK */
   bundled?: boolean
 }
@@ -29,8 +34,18 @@ export type VoiceDef = {
  */
 export const VOICE_CATALOG: VoiceDef[] = [
   {
+    key: 'sherpa-matcha-zh-en',
+    name: 'Matcha · 中英女声（推荐）',
+    lang: 'both',
+    gender: 'female',
+    engine: 'sherpa-onnx-matcha',
+    modelBase: '/sherpa/models/matcha-zh-en/',
+    sid: 0,
+    bundled: true,
+  },
+  {
     key: 'zh-huayan',
-    name: '华严 · 女声（中文）',
+    name: '华严 · 女声（兜底）',
     lang: 'both',
     gender: 'female',
     engine: 'piper',
@@ -39,7 +54,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
   },
   {
     key: 'zh-huayan-lite',
-    name: '华严轻量 · 女声（中文）',
+    name: '华严轻量 · 女声（兜底）',
     lang: 'both',
     gender: 'female',
     engine: 'piper',
@@ -48,6 +63,7 @@ export const VOICE_CATALOG: VoiceDef[] = [
   },
 ]
 
+/** 默认仍走 piper 华严（兜底稳定）；sherpa-matcha-zh-en 作为可选项需先下载资源 */
 export const DEFAULT_VOICE_ZH = 'zh-huayan'
 export const DEFAULT_VOICE_EN = 'zh-huayan'
 export const DEFAULT_VOICE_NOTE = 'zh-huayan'
