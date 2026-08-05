@@ -538,6 +538,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
     epoch = speakEpoch,
   ) => {
     if (!voice.modelBase) throw new Error('sherpa 音色缺少 modelBase')
+    const modelBase: string = voice.modelBase
     if (sherpaCache.has(voice.key)) {
       assertAlive(epoch)
       return
@@ -565,7 +566,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       }
 
       const w = new SherpaTtsWorker({
-        modelBase: voice.modelBase,
+        modelBase,
         onProgress: sherpaProgress,
       })
       try {
@@ -574,7 +575,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
         sherpaCache.set(voice.key, w)
         anyReady = true
         // #region agent log
-        agentLog('tts.ts:loadSherpa', 'ready', { key: voice.key, modelBase: voice.modelBase }, 'C')
+        agentLog('tts.ts:loadSherpa', 'ready', { key: voice.key, modelBase }, 'C')
         // #endregion
         onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
         if (status === 'loading') status = 'idle'
