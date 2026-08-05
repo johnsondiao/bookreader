@@ -9,20 +9,16 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "cap:sync": "npm run build && npx cap sync android",
-    "android:add": "npx cap add android",
-    "postinstall": "patch-package"
+    "android:add": "npx cap add android"
   },
   "dependencies": {
-    "@capacitor-community/text-to-speech": "^8.0.2",
     "@capacitor/android": "^8.4.2",
     "@capacitor/app": "^8.1.1",
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/filesystem": "^8.1.2",
     "@capacitor/status-bar": "^8.0.3",
-    "@mintplex-labs/piper-tts-web": "^1.0.4",
     "jszip": "^3.10.1",
-    "onnxruntime-web": "^1.27.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "uuid": "^14.0.1",
@@ -36,7 +32,6 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^6.0.4",
     "oxlint": "^1.75.0",
-    "patch-package": "^8.0.1",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
   }

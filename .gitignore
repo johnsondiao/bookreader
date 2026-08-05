@@ -35,9 +35,8 @@ android/.idea
 *.keystore
 !debug.keystore
 
-# Sherpa-ONNX 大模型文件：由 scripts/download-sherpa-models.ps1 本地下载，不入库
-public/sherpa/sherpa-onnx-wasm-main-tts.*
-public/sherpa/models/
+# 本地密钥文件（MiniMax API key），绝不入库
+key.env
 
 # TRAE local workspace metadata
 .evolver/

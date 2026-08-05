@@ -2,8 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TocPanel } from '../components/TocPanel'
 import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
-import { createTtsController, splitSpeakSegments, voicesForLang, VOICE_CATALOG } from '../utils/tts'
-import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH, migrateVoiceKey } from '../utils/ttsVoices'
+import {
+  createTtsController,
+  DEFAULT_VOICE_EN,
+  DEFAULT_VOICE_NOTE,
+  DEFAULT_VOICE_ZH,
+  voicesForLang,
+  VOICE_CATALOG,
+} from '../utils/tts'
+import { migrateVoiceKey } from '../utils/ttsVoices'
 import {
   agentLog,
   formatDebugLine,
@@ -65,7 +72,7 @@ export function ReaderPage() {
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [engineStatus, setEngineStatus] = useState(
-    '已精简为中文音色包，听书无需联网下载模型',
+    '在线语音 · MiniMax speech-2.8-turbo（首次合成需联网，之后缓存）',
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
@@ -146,48 +153,12 @@ export function ReaderPage() {
   useEffect(() => subscribeDebugLog(setDebugLines), [])
   // #endregion
 
-  const prepareEngine = useCallback(async () => {
-    // 已下架的 pp-* / en-* key 可能仍残留在 localStorage，这里必须再过一次
-    // migrateVoiceKey，否则旧 key 会被原样传给 ensureReady，触发对已下架
-    // tsukuyomi 模型及其外部拼音字典（pinyin_*.json）的加载 → 404。
-    // 注释段不再使用独立音色（单例限制），note key 直接用 zh key 避免预载 lite。
-    const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
-    const keys = [
-      zhKey,
-      migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
-      zhKey,
-    ]
-    try {
-      await ttsRef.current.ensureReady((p) => {
-        const pct = Math.round((p.progress || 0) * 100)
-        setEngineStatus(`${p.message || p.stage} ${pct}%`)
-      }, keys)
-      setEngineStatus('所选音色已就绪：文字 → 音频 → 播放')
-    } catch (err) {
-      if (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted')) return
-      const msg = err instanceof Error ? err.message : String(err)
-      setEngineStatus(`加载失败: ${msg}`)
-      showToast(msg, 8000)
-    }
-  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
-
+  // 旧版本残留的本地音色 key（华严 / sherpa / 早期英文音色）迁移到默认在线音色
   useEffect(() => {
-    // 注释段不再使用独立音色：noteKey = zhKey，避免单例切换导致模型重载
-    const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
-    ttsRef.current.setPrefs({
-      zhKey,
-      enKey: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
-      noteKey: zhKey,
-    })
-  }, [settings.ttsVoiceZh, settings.ttsVoiceEn, settings.ttsVoiceNote])
-
-  // #region agent log
-  useEffect(() => {
-    // 已下架的音色（piper-plus pp-* 系列 + 早期英文专用音色）回落到默认华严
     const next = {
       ttsVoiceZh: migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
-      ttsVoiceEn: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
-      ttsVoiceNote: migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE,
+      ttsVoiceEn: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_ZH,
+      ttsVoiceNote: migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_ZH,
     }
     if (
       next.ttsVoiceZh !== settings.ttsVoiceZh ||
@@ -196,12 +167,9 @@ export function ReaderPage() {
     ) {
       updateSettings(next)
     }
-    void ttsRef.current.probe().then((info) => {
-      if (info.ready) setEngineStatus('内置音色已就绪（完全离线）')
-    })
+    setEngineStatus('在线语音 · MiniMax speech-2.8-turbo（首次合成需联网，之后缓存）')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id])
-  // #endregion
 
   const saveProgress = useCallback(
     (cid: string, pIndex: number, source: 'read' | 'tts', note?: string, recordSnapshot = true) => {
@@ -297,110 +265,80 @@ export function ReaderPage() {
       setTtsPaused(false)
       setMenuOpen(true)
 
+      const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
+      // #region agent log
+      agentLog('ReaderPage:speakFrom', 'start', { zhKey, startIndex, quiet, chapterId: chapter.id }, 'D')
+      // #endregion
+
+      if (!quiet) showToast('正在准备语音…', 4000)
+
       try {
-        if (!quiet) showToast('正在准备本地语音…', 4000)
-        // 同 prepareEngine：注释段不再使用独立音色，note key 用 zh key 避免预载 lite
-        const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
-        const keys = [
-          zhKey,
-          migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_EN,
-          zhKey,
-        ]
-        // #region agent log
-        agentLog('ReaderPage:speakFrom', 'prepare start', { keys, startIndex, quiet }, 'D')
-        // #endregion
-        await ttsRef.current.ensureReady((p) => {
-          if (quiet) return
-          const pct = Math.round((p.progress || 0) * 100)
-          setEngineStatus(`${p.message || p.stage} ${pct}%`)
-        }, keys)
+        await ttsRef.current.playChapter({
+          bookId: book.id,
+          chapterId: chapter.id,
+          paragraphs,
+          startParagraphIndex: startIndex,
+          voiceKey: zhKey,
+          rate: settings.ttsRate,
+          onParagraph: (i) => {
+            if (!speakingRef.current) return
+            setParaIndex(i)
+            scrollToPara(i)
+            saveProgress(chapter.id, i, 'tts', '朗读进度', true)
+          },
+          onStatus: (s, msg) => {
+            if (quiet) return
+            if (s === 'loading') setEngineStatus(msg || '正在准备语音…')
+            else if (s === 'speaking') {
+              setEngineStatus('正在朗读…')
+              setTtsPaused(false)
+            } else if (s === 'idle') setEngineStatus(msg || '')
+          },
+          onSynthProgress: (p) => {
+            if (quiet) return
+            const pct = Math.round((p.progress || 0) * 100)
+            setEngineStatus(`${p.message || p.stage} ${pct}%`)
+          },
+        })
       } catch (err) {
         if (
           err instanceof Error &&
           (err.name === 'SpeakAborted' || err.message === 'aborted')
         ) {
-          speakingRef.current = false
-          setTtsOn(false)
+          // 用户 stop / 切换段落，正常中止
           return
         }
         const hint = getLastDebugHint()
         // #region agent log
         agentLog(
           'ReaderPage:speakFrom',
-          'prepareEngine failed',
+          'playChapter failed',
           { err: err instanceof Error ? err.message : String(err), hint },
           'C',
         )
         // #endregion
         setDebugOpen(true)
-        showToast(
-          `${err instanceof Error ? err.message : '本地语音引擎加载失败'}\n${hint}`,
-          12000,
-        )
+        showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
         speakingRef.current = false
         setTtsOn(false)
         return
       }
 
+      // playChapter 正常 resolve → 本章播放完毕，进入下一章
       if (!speakingRef.current) return
-
-      for (let i = startIndex; i < paragraphs.length; i++) {
-        if (!speakingRef.current) break
-        setParaIndex(i)
-        scrollToPara(i)
-        saveProgress(chapter.id, i, 'tts', '朗读进度', true)
-
-        try {
-          const segments = splitSpeakSegments(paragraphs[i])
-          for (const seg of segments) {
-            if (!speakingRef.current) break
-            const isNote = seg.kind === 'note'
-            await ttsRef.current.speak(seg.text, settings.ttsRate, {
-              pitch: isNote ? 1.15 : 1,
-              // 注释段不切换音色：mintplex TtsSession 是进程级单例，
-              // 换音色会清空缓存并重新加载模型（数秒延迟 + 可能破坏音素化）。
-              // 用 pitch 1.15 调高注释段即可区分。
-              voiceKey: undefined,
-              langHint: 'auto',
-            })
-          }
-        } catch (err) {
-          const hint = getLastDebugHint()
-          // #region agent log
-          agentLog(
-            'ReaderPage:speakFrom',
-            'speak failed',
-            { err: err instanceof Error ? err.message : String(err), hint, para: i },
-            'C',
-          )
-          // #endregion
-          setDebugOpen(true)
-          showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
-          speakingRef.current = false
-          setTtsOn(false)
-          return
-        }
-
-        while (speakingRef.current && ttsRef.current.getStatus() === 'paused') {
-          await new Promise((r) => setTimeout(r, 200))
-        }
-      }
-
-      if (speakingRef.current) {
-        const idx = book.chapters.findIndex((c) => c.id === chapter.id)
-        const nextId = findNextSpeakableChapterId(book.chapters, idx)
-        if (nextId) {
-          continueQuietRef.current = true
-          pendingAutoSpeakRef.current = true
-          setChapterId(nextId)
-          setParaIndex(0)
-          saveProgress(nextId, 0, 'tts', '进入下一章')
-          showToast('继续下一章…')
-        } else {
-          speakingRef.current = false
-          setTtsOn(false)
-          showToast('全书朗读完成')
-        }
+      const idx = book.chapters.findIndex((c) => c.id === chapter.id)
+      const nextId = findNextSpeakableChapterId(book.chapters, idx)
+      if (nextId) {
+        continueQuietRef.current = true
+        pendingAutoSpeakRef.current = true
+        setChapterId(nextId)
+        setParaIndex(0)
+        saveProgress(nextId, 0, 'tts', '进入下一章')
+        showToast('继续下一章…')
+      } else {
+        speakingRef.current = false
+        setTtsOn(false)
+        showToast('全书朗读完成')
       }
     },
     [
@@ -410,8 +348,6 @@ export function ReaderPage() {
       saveProgress,
       settings.ttsRate,
       settings.ttsVoiceZh,
-      settings.ttsVoiceEn,
-      settings.ttsVoiceNote,
       settings.autoScroll,
     ],
   )
@@ -757,24 +693,12 @@ export function ReaderPage() {
               </div>
             </div>
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-              <span>本地听书 · 中文音色</span>
+              <span>在线语音 · MiniMax</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  已精简为中文音色（月读 / CSS10 / 华严），模型打进 App，离线可用。
+                  在线语音合成（speech-2.8-turbo）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。
                 </p>
-                <p style={{ margin: '0 0 8px', fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  style={{ width: '100%' }}
-                  onClick={() => {
-                    void prepareEngine()
-                      .then(() => showToast('所选音色已就绪'))
-                      .catch((e) => showToast(e instanceof Error ? e.message : '准备失败'))
-                  }}
-                >
-                  加载当前音色（本地）
-                </button>
+                <p style={{ margin: 0, fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
               </div>
             </div>
 

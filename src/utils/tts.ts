@@ -1,11 +1,24 @@
-import { agentLog, nativeFetch } from './agentLog'
-import { SherpaTtsWorker, type SherpaProgress } from './sherpaTts'
+/**
+ * TTS 总调度器 —— MiniMax 在线整章合成 + 本地缓存播放。
+ *
+ * 工作模式（替代旧的本地 piper/sherpa 逐句合成）：
+ *   - 打开一章时，把整章正文按段落边界切成 ≤ 4.8 万字的块，
+ *     每块调用 MiniMax 异步 T2A（speech-2.8-turbo）合成一次 mp3。
+ *   - 合成结果（分块 Blob）存入 IndexedDB，键为 bookId:chapterId:voiceKey，
+ *     并用 textHash 校验；已缓存的章节直接播放，绝不重复花钱合成。
+ *   - 播放时按「字符比例」把当前播放位置映射到段落，回调高亮当前段。
+ *
+ * 同步粒度为段落级（与旧实现一致）：整章音频按段落字符占比估算当前位置，
+ * 对中文朗读足够准确；不依赖 MiniMax 字幕（v2 接口未稳定返回字幕）。
+ */
+import { agentLog } from './agentLog'
+import { synthesizeChunk, type SynthProgress } from './minimaxTts'
+import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
   DEFAULT_VOICE_ZH,
   getVoice,
-  pickVoice,
   VOICE_CATALOG,
   voicesForLang,
   type VoiceDef,
@@ -21,97 +34,50 @@ export type TtsVoiceRef = {
   gender?: string
 }
 
-export type TtsVoicePrefs = {
-  zhKey?: string
-  enKey?: string
-  noteKey?: string
-}
-
 export type TtsProgress = {
   stage: string
   progress: number
   message: string
 }
 
+export interface PlayChapterOpts {
+  bookId: string
+  chapterId: string
+  /** 章节正文按段切好的数组（已 trim、过滤空段） */
+  paragraphs: string[]
+  /** 从第几段开始播放（点击段落定位 / 上段下段时使用） */
+  startParagraphIndex?: number
+  /** 音色 key（应用内稳定 key，对应 VoiceDef.key） */
+  voiceKey?: string
+  /** 播放倍速 */
+  rate?: number
+  /** 当前段落变化时回调（用于高亮 + 滚动 + 记进度） */
+  onParagraph?: (index: number) => void
+  /** 状态变化回调 */
+  onStatus?: (status: TtsStatus, message?: string) => void
+  /** 合成阶段进度回调 */
+  onSynthProgress?: (p: TtsProgress) => void
+}
+
 export interface TtsController {
-  speak: (
-    text: string,
-    rate?: number,
-    opts?: { pitch?: number; voiceKey?: string; langHint?: 'zh' | 'en' | 'auto' },
-  ) => Promise<void>
+  playChapter: (opts: PlayChapterOpts) => Promise<void>
   pause: () => void
   resume: () => void
   stop: () => void
   getStatus: () => TtsStatus
-  getEngine: () => 'local' | 'none'
-  /** 预下载并初始化指定/默认音色 */
-  ensureReady: (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => Promise<void>
-  probe: () => Promise<{
-    chineseOk: boolean
-    englishOk: boolean
-    languages: string[]
-    voices: TtsVoiceRef[]
-    zhVoices: TtsVoiceRef[]
-    enVoices: TtsVoiceRef[]
-    ready: boolean
-  }>
   listVoices: () => Promise<TtsVoiceRef[]>
-  setPrefs: (prefs: TtsVoicePrefs) => void
-  getPrefs: () => TtsVoicePrefs
 }
 
 export { VOICE_CATALOG, voicesForLang, DEFAULT_VOICE_ZH, DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE }
+
+/** MiniMax 单次 t2a_async_v2 的 text 字段上限 5 万字，留余量按 4.8 万切块 */
+const MAX_CHUNK_CHARS = 48000
 
 class SpeakAborted extends Error {
   constructor() {
     super('aborted')
     this.name = 'SpeakAborted'
   }
-}
-
-function detectTextLang(text: string): 'zh' | 'en' {
-  const sample = text.slice(0, 80)
-  const latin = (sample.match(/[A-Za-z]/g) || []).length
-  const cjk = (sample.match(/[\u4e00-\u9fff]/g) || []).length
-  return cjk >= latin ? 'zh' : 'en'
-}
-
-/**
- * 按句末标点分割文本。piper 对短句的合成质量和速度都远优于整段：
- * - ONNX 推理时间随音素数量近似线性增长，整段 200 字推理要数秒
- * - 长文本的注意力衰减导致韵律变差、声调漂移
- *
- * 分割策略：先按 。！？；\n 切句，超过 50 字的再按 ，, 追加切分。
- */
-function splitIntoSentences(text: string): string[] {
-  const parts = text
-    .split(/(?<=[。！？；\n])/g)
-    .map((s) => s.trim())
-    .filter(Boolean)
-
-  const result: string[] = []
-  for (const s of parts) {
-    if (s.length <= 50) {
-      result.push(s)
-    } else {
-      const sub = s
-        .split(/(?<=[，,])/g)
-        .map((t) => t.trim())
-        .filter(Boolean)
-      // 合并过短的逗号分句，避免单句太短造成韵律断裂
-      let buf = ''
-      for (const t of sub) {
-        if (buf && buf.length + t.length > 50) {
-          result.push(buf)
-          buf = t
-        } else {
-          buf += t
-        }
-      }
-      if (buf) result.push(buf)
-    }
-  }
-  return result
 }
 
 function toRef(v: VoiceDef, index: number): TtsVoiceRef {
@@ -124,230 +90,50 @@ function toRef(v: VoiceDef, index: number): TtsVoiceRef {
   }
 }
 
-type PiperSession = {
-  voiceId: string
-  predict: (text: string) => Promise<Blob>
+interface CharRange {
+  start: number
+  end: number
 }
 
-/** 动态 import / wasmPaths 用相对路径，避免 Android WebView 对 https://localhost/*.mjs 失败 */
-function toRelativeAsset(rel: string): string {
-  const base = import.meta.env.BASE_URL || './'
-  return `${base}${rel.replace(/^\//, '')}`
+/** 把段落拼接成全文（段间用 \n），并记录每段在全文中的字符区间 */
+function buildTextAndRanges(paras: string[]): { fullText: string; paraRanges: CharRange[] } {
+  let fullText = ''
+  const paraRanges: CharRange[] = []
+  for (const p of paras) {
+    const start = fullText.length
+    fullText += p
+    paraRanges.push({ start, end: fullText.length })
+    fullText += '\n'
+  }
+  return { fullText, paraRanges }
 }
 
-/**
- * ort wasmPaths 必须用绝对 URL。
- *
- * ORT 内部 `dynamicImportDefault()` 走 ES module 动态 `import()`，相对路径会以
- * **当前模块 URL**（即编译后的 `assets/ort.bundle.min-*.js`）为 base 解析，
- * 而不是页面 URL。若传 `'./ort/'`，会被解析成 `https://localhost/assets/ort/...`，
- * 但 ort 的 .mjs/.wasm 实际在 `https://localhost/ort/...`，导致 `Failed to fetch
- * dynamically imported module` 与 `wasm: no available backend found`。
- *
- * 用绝对 URL 后，无论 ORT 内部用哪个 base，都能命中正确路径。
- */
-function toAbsoluteAssetUrl(rel: string): string {
-  const rel2 = rel.replace(/^\//, '')
-  try {
-    return new URL(`./${rel2}`, window.location.href).href
-  } catch {
-    return toRelativeAsset(rel)
+/** 按段落边界规划分块，每块 ≤ MAX_CHUNK_CHARS 字 */
+function planChunks(paras: string[], paraRanges: CharRange[]): { firstPara: number; lastPara: number; charStart: number; charEnd: number }[] {
+  const out: { firstPara: number; lastPara: number; charStart: number; charEnd: number }[] = []
+  let i = 0
+  while (i < paras.length) {
+    let j = i
+    let acc = 0
+    while (j < paras.length && acc + paras[j].length + 1 <= MAX_CHUNK_CHARS) {
+      acc += paras[j].length + 1
+      j++
+    }
+    if (j === i) j = i + 1 // 单段超长时强制至少一段
+    out.push({ firstPara: i, lastPara: j - 1, charStart: paraRanges[i].start, charEnd: paraRanges[j - 1].end })
+    i = j
   }
+  return out
 }
 
-/** 把外网模型/WASM 请求改写到 APK 内置资源；调试上报地址不记入错误日志 */
-function installBundledAssetFetch() {
-  const w = window as unknown as { __TTS_BUNDLE_FETCH__?: boolean }
-  if (w.__TTS_BUNDLE_FETCH__) return
-  w.__TTS_BUNDLE_FETCH__ = true
+const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 
-  const rewrite = (raw: string): string | null => {
-    let m = raw.match(/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
-    if (m) return toRelativeAsset(`tts-models/piper-voices/${m[1]}`)
-
-    if (/piper_phonemize\.wasm(\?|$)/.test(raw)) {
-      return toRelativeAsset('tts-models/piper-wasm/piper_phonemize.wasm')
-    }
-    if (/piper_phonemize\.data(\?|$)/.test(raw)) {
-      return toRelativeAsset('tts-models/piper-wasm/piper_phonemize.data')
-    }
-
-    m = raw.match(/ort-wasm-simd-threaded[^/?#]*\.(mjs|wasm)(\?|$)/)
-    if (m && (raw.includes('cdnjs') || raw.includes('onnxruntime') || raw.includes('jsdelivr'))) {
-      const file = raw.split('/').pop()?.split('?')[0]
-      if (file) return toRelativeAsset(`ort/${file}`)
-    }
-
-    m = raw.match(/hf-mirror\.com\/diffusionstudio\/piper-voices\/resolve\/main\/(.+?)(?:\?|$)/)
-    if (m) return toRelativeAsset(`tts-models/piper-voices/${m[1]}`)
-
-    return null
-  }
-
-  const safeRewrite = (raw: string): string => {
-    try {
-      const local = rewrite(raw)
-      if (local && local !== raw) {
-        // #region agent log
-        agentLog(
-          'tts.ts:rewrite',
-          'rewrite to bundled asset',
-          { from: raw.slice(0, 140), url: local.slice(0, 140) },
-          'C',
-        )
-        // #endregion
-        return local
-      }
-    } catch {
-      /* fall through */
-    }
-    return raw
-  }
-
-  // 拦截 fetch（ORT 动态 import / piper-tts-web 的 fetch 路径）
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    let url = ''
-    try {
-      const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      url = raw
-      if (raw.includes('127.0.0.1:7614') || raw.includes('/ingest/')) {
-        return nativeFetch(input, init)
-      }
-      const local = safeRewrite(raw)
-      if (local !== raw) {
-        input = local
-        url = local
-      }
-    } catch {
-      /* fall through */
-    }
-    try {
-      const res = await nativeFetch(input, init)
-      if (!res.ok) {
-        // #region agent log
-        agentLog('tts.ts:fetch', 'fetch not ok', { url: url.slice(0, 180), status: res.status }, 'C')
-        // #endregion
-      }
-      return res
-    } catch (err) {
-      // #region agent log
-      agentLog(
-        'tts.ts:fetch',
-        'local asset load failed',
-        { url: url.slice(0, 180), err: err instanceof Error ? err.message : String(err) },
-        'C',
-      )
-      // #endregion
-      throw err
-    }
-  }
-
-  // 拦截 XMLHttpRequest：piper-o91UDS6e.js 是 Emscripten 产物，
-  // 默认用 XHR 加载 .wasm / .data（见 Emscripten 的 getBinary / fetchRemotePackage），
-  // 之前只拦了 fetch，XHR 绕过改写 → CDN 404 或相对路径在 WebView 下解析失败。
-  const OrigXHR = window.XMLHttpRequest
-  const PatchedXHR = function XMLHttpRequestPatched() {
-    const xhr: any = new OrigXHR()
-    let _url: string | null = null
-    const origOpen: (...args: any[]) => void = xhr.open.bind(xhr)
-    xhr.open = function (this: any, ...args: any[]) {
-      const raw = typeof args[1] === 'string' ? args[1] : args[1] instanceof URL ? args[1].href : String(args[1] ?? '')
-      _url = raw
-      const local = safeRewrite(raw)
-      const finalUrl = local !== raw ? local : raw
-      // #region agent log
-      agentLog(
-        'tts.ts:xhr',
-        'open',
-        { method: args[0], from: raw.slice(0, 140), to: finalUrl.slice(0, 140) },
-        'D',
-      )
-      // #endregion
-      args[1] = finalUrl
-      return origOpen.apply(this, args)
-    }
-    const origSend: (...args: any[]) => void = xhr.send.bind(xhr)
-    xhr.send = function (this: any, ...args: any[]) {
-      // #region agent log
-      agentLog('tts.ts:xhr', 'send', { url: (_url ?? '').slice(0, 140) }, 'D')
-      // #endregion
-      return origSend.apply(this, args)
-    }
-    return xhr
-  } as unknown as typeof XMLHttpRequest
-  PatchedXHR.prototype = OrigXHR.prototype
-  window.XMLHttpRequest = PatchedXHR
-}
-
-/** 采样 WAV 前几帧，判断是否近乎静音 */
-async function probeWavSilence(blob: Blob): Promise<{ peak: number; likelySilent: boolean }> {
-  try {
-    const buf = await blob.arrayBuffer()
-    const view = new DataView(buf)
-    // 跳过 44 字节 WAV 头（若不足则按全缓冲）
-    const start = buf.byteLength > 44 ? 44 : 0
-    let peak = 0
-    const samples = Math.min(4000, Math.floor((buf.byteLength - start) / 2))
-    for (let i = 0; i < samples; i++) {
-      const s = Math.abs(view.getInt16(start + i * 2, true))
-      if (s > peak) peak = s
-    }
-    return { peak, likelySilent: peak < 80 }
-  } catch {
-    return { peak: -1, likelySilent: false }
-  }
-}
-
-/**
- * 把 sherpa-onnx 返回的 Float32 PCM 样本转成 16-bit PCM WAV Blob，
- * 与 piper 输出的 WAV 一致，复用现有 playBlob 链路。
- */
-function floatSamplesToWavBlob(samples: Float32Array, sampleRate: number): Blob {
-  const int16 = new Int16Array(samples.length)
-  for (let i = 0; i < samples.length; i++) {
-    let s = samples[i]
-    if (s >= 1) s = 1
-    else if (s <= -1) s = -1
-    int16[i] = s * 32767
-  }
-  const buf = new ArrayBuffer(44 + int16.length * 2)
-  const view = new DataView(buf)
-  view.setUint32(0, 0x46464952, true) // 'RIFF'
-  view.setUint32(4, 36 + int16.length * 2, true)
-  view.setUint32(8, 0x45564157, true) // 'WAVE'
-  view.setUint32(12, 0x20746d66, true) // 'fmt '
-  view.setUint32(16, 16, true)
-  view.setUint32(20, 1, true) // PCM
-  view.setUint16(22, 1, true) // mono
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  view.setUint32(36, 0x61746164, true) // 'data'
-  view.setUint32(40, int16.length * 2, true)
-  let offset = 44
-  for (let i = 0; i < int16.length; i++) {
-    view.setInt16(offset, int16[i], true)
-    offset += 2
-  }
-  return new Blob([view], { type: 'audio/wav' })
-}
-
-export function createTtsController(onEnd?: () => void): TtsController {
+export function createTtsController(): TtsController {
   let status: TtsStatus = 'idle'
-  let prefs: TtsVoicePrefs = {
-    zhKey: DEFAULT_VOICE_ZH,
-    enKey: DEFAULT_VOICE_EN,
-    noteKey: DEFAULT_VOICE_NOTE,
-  }
-  const piperCache = new Map<string, PiperSession>()
-  const sherpaCache = new Map<string, SherpaTtsWorker>()
-  const loading = new Map<string, Promise<void>>()
   let audio: HTMLAudioElement | null = null
   let objectUrl: string | null = null
   let playWait: { resolve: () => void; reject: (e: Error) => void } | null = null
-  let anyReady = false
-  /** stop() 递增；合成/播放前检查，避免停后仍播 */
+  /** stop() / 新 playChapter() 递增；异步流程中校验以中止旧会话 */
   let speakEpoch = 0
 
   const assertAlive = (epoch: number) => {
@@ -376,456 +162,239 @@ export function createTtsController(onEnd?: () => void): TtsController {
     else w.resolve()
   }
 
-  const resetMintplexSingleton = (TtsSession: { _instance?: unknown | null }) => {
-    try {
-      const old = TtsSession._instance as { close?: () => void; dispose?: () => void } | null
-      old?.close?.()
-      old?.dispose?.()
-    } catch {
-      /* ignore */
-    }
-    TtsSession._instance = null
-    piperCache.clear()
-  }
-
-  const loadPiper = async (
-    voice: VoiceDef,
-    onProgress?: (p: TtsProgress) => void,
-    epoch = speakEpoch,
-  ) => {
-    if (!voice.voiceId) throw new Error('音色配置缺少 voiceId')
-    if (piperCache.has(voice.key)) {
+  /** 合成整章：按块逐个调用 MiniMax，返回分块音频 */
+  const synthesizeChapter = async (
+    fullText: string,
+    paras: string[],
+    paraRanges: CharRange[],
+    voiceId: string,
+    onSynthProgress: ((p: TtsProgress) => void) | undefined,
+    epoch: number,
+  ): Promise<AudioChunk[]> => {
+    const plans = planChunks(paras, paraRanges)
+    const chunks: AudioChunk[] = []
+    for (let i = 0; i < plans.length; i++) {
       assertAlive(epoch)
-      return
-    }
-    if (loading.has(voice.key)) {
-      await loading.get(voice.key)
-      assertAlive(epoch)
-      if (piperCache.has(voice.key)) return
-    }
-    const task = (async () => {
-      assertAlive(epoch)
-      status = 'loading'
-      installBundledAssetFetch()
-      onProgress?.({ stage: 'model', progress: 0.1, message: `加载内置音色 ${voice.name}…` })
-      const ort = await import('onnxruntime-web')
-      assertAlive(epoch)
-      // onnxWasm 必须用绝对 URL：mintplex 会把它写入 ort.env.wasm.wasmPaths，
-      // ORT 内部 import() 以 import.meta.url 为 base 解析相对路径（详见 toAbsoluteAssetUrl）
-      const ortBase = toAbsoluteAssetUrl('ort/')
-      ort.env.wasm.numThreads = 1
-      ort.env.wasm.wasmPaths = ortBase
-      // #region agent log
-      agentLog('tts.ts:loadPiper', 'ort wasmPaths', { ortBase }, 'C')
-      // #endregion
-
-      const { TtsSession } = await import('@mintplex-labs/piper-tts-web')
-      // mintplex 是进程级单例：cache miss 时只要 _instance 还在就必须清掉
-      // （含：换音色、新 controller、上次 create 失败残留）
-      if ((TtsSession as { _instance?: unknown | null })._instance) {
-        resetMintplexSingleton(TtsSession as { _instance?: unknown | null })
-      }
-
-      // #region agent log
-      agentLog('tts.ts:loadPiper', 'create session local', { key: voice.key, voiceId: voice.voiceId }, 'C')
-      // #endregion
-      assertAlive(epoch)
-      let session
-      try {
-        session = await TtsSession.create({
-          voiceId: voice.voiceId as never,
-          progress: (p) => {
-            if (epoch !== speakEpoch) return
-            const pct = p.total ? p.loaded / p.total : 0
-            onProgress?.({
-              stage: 'model',
-              progress: Math.min(0.95, pct),
-              message: `加载 ${voice.name} ${Math.round(pct * 100)}%`,
-            })
-          },
-          wasmPaths: {
-            onnxWasm: ortBase,
-            piperData: toRelativeAsset('tts-models/piper-wasm/piper_phonemize.data'),
-            piperWasm: toRelativeAsset('tts-models/piper-wasm/piper_phonemize.wasm'),
-          },
-        })
-      } catch (createErr) {
-        resetMintplexSingleton(TtsSession as { _instance?: unknown | null })
-        throw createErr
-      }
-      assertAlive(epoch)
-      // create() 会把 numThreads 改成 hardwareConcurrency，WebView 上易崩
-      ort.env.wasm.numThreads = 1
-      piperCache.set(voice.key, { voiceId: voice.voiceId!, predict: (t) => session.predict(t) })
-      anyReady = true
-      // #region agent log
-      agentLog('tts.ts:loadPiper', 'ready', { key: voice.key }, 'C')
-      // #endregion
-      onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
-      if (status === 'loading') status = 'idle'
-    })()
-    loading.set(voice.key, task)
-    try {
-      await task
-    } catch (err) {
-      loading.delete(voice.key)
-      status = 'idle'
-      if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
-        throw err
-      }
-      const errMsg = err instanceof Error ? err.message : String(err)
-      // #region agent log
-      agentLog(
-        'tts.ts:loadPiper',
-        'failed',
-        { key: voice.key, voiceId: voice.voiceId, err: errMsg },
-        'C',
-      )
-      // #endregion
-      throw new Error(
-        `${voice.name} 本地加载失败（不是联网下载）: ${errMsg}\nvoiceId=${voice.voiceId}`,
-      )
-    } finally {
-      loading.delete(voice.key)
-    }
-  }
-
-  const ensureVoice = async (
-    voice: VoiceDef,
-    onProgress?: (p: TtsProgress) => void,
-    epoch = speakEpoch,
-  ) => {
-    if (voice.engine === 'sherpa-onnx-matcha') {
-      await loadSherpa(voice, onProgress, epoch)
-    } else {
-      await loadPiper(voice, onProgress, epoch)
-    }
-  }
-
-  const ensureReady = async (onProgress?: (p: TtsProgress) => void, voiceKeys?: string[]) => {
-    installBundledAssetFetch()
-    const epoch = speakEpoch
-    const keys =
-      voiceKeys && voiceKeys.length
-        ? voiceKeys
-        : [prefs.zhKey || DEFAULT_VOICE_ZH, prefs.enKey || DEFAULT_VOICE_EN, prefs.noteKey || DEFAULT_VOICE_NOTE]
-    const unique = [...new Set(keys.filter(Boolean))] as string[]
-    // classic piper 单例只能留一个：预载按 keys 顺序只保留第一套，其余按需加载
-    let classicPreloadKey: string | null = null
-    // #region agent log
-    agentLog('tts.ts:ensureReady', 'start', { keys: unique }, 'D')
-    // #endregion
-    for (const key of unique) {
-      assertAlive(epoch)
-      const voice = getVoice(key) || pickVoice('zh', key)
-      if (voice.engine === 'piper') {
-        if (classicPreloadKey && classicPreloadKey !== voice.key) continue
-        classicPreloadKey = voice.key
-      }
-      await ensureVoice(voice, onProgress, epoch)
-      assertAlive(epoch)
-    }
-    assertAlive(epoch)
-    onProgress?.({ stage: 'ready', progress: 1, message: '内置音色已就绪' })
-    // #region agent log
-    agentLog('tts.ts:ensureReady', 'all ready', { keys: unique, classicPreloadKey }, 'D')
-    // #endregion
-  }
-
-  const loadSherpa = async (
-    voice: VoiceDef,
-    onProgress?: (p: TtsProgress) => void,
-    epoch = speakEpoch,
-  ) => {
-    if (!voice.modelBase) throw new Error('sherpa 音色缺少 modelBase')
-    const modelBase: string = voice.modelBase
-    if (sherpaCache.has(voice.key)) {
-      assertAlive(epoch)
-      return
-    }
-    if (loading.has(voice.key)) {
-      await loading.get(voice.key)
-      assertAlive(epoch)
-      if (sherpaCache.has(voice.key)) return
-    }
-    const task = (async () => {
-      assertAlive(epoch)
-      status = 'loading'
-      installBundledAssetFetch()
-      onProgress?.({ stage: 'model', progress: 0.05, message: `启动 Sherpa ${voice.name}…` })
-
-      const sherpaProgress = (p: SherpaProgress) => {
-        if (epoch !== speakEpoch) return
-        if (p.stage === 'wasm') {
-          onProgress?.({ stage: 'model', progress: 0.1 + p.progress * 0.5, message: p.message })
-        } else if (p.stage === 'init') {
-          onProgress?.({ stage: 'model', progress: 0.6, message: p.message })
-        } else if (p.stage === 'ready') {
-          onProgress?.({ stage: 'model', progress: 0.95, message: p.message })
-        }
-      }
-
-      const w = new SherpaTtsWorker({
-        modelBase,
-        onProgress: sherpaProgress,
+      const plan = plans[i]
+      const text = fullText.slice(plan.charStart, plan.charEnd)
+      onSynthProgress?.({
+        stage: 'synth',
+        progress: i / plans.length,
+        message: `在线合成中…（第 ${i + 1}/${plans.length} 段，${text.length} 字）`,
       })
-      try {
-        await w.init()
-        assertAlive(epoch)
-        sherpaCache.set(voice.key, w)
-        anyReady = true
-        // #region agent log
-        agentLog('tts.ts:loadSherpa', 'ready', { key: voice.key, modelBase }, 'C')
-        // #endregion
-        onProgress?.({ stage: 'ready', progress: 1, message: `${voice.name} 已就绪` })
-        if (status === 'loading') status = 'idle'
-      } catch (err) {
-        w.terminate()
-        const msg = err instanceof Error ? err.message : String(err)
-        // #region agent log
-        agentLog('tts.ts:loadSherpa', 'failed', { key: voice.key, err: msg }, 'C')
-        // #endregion
-        // 友好提示：模型未下载 vs 真实失败
-        if (/404|not found|fetch|download/i.test(msg)) {
-          throw new Error(
-            `${voice.name} 加载失败：模型或 WASM 文件未找到。\n请运行 scripts/download-sherpa-models.ps1 下载资源后重试。\n原始错误: ${msg}`,
-          )
-        }
-        throw new Error(`${voice.name} 加载失败: ${msg}`)
-      }
-    })()
-    loading.set(voice.key, task)
-    try {
-      await task
-    } catch (err) {
-      loading.delete(voice.key)
-      status = 'idle'
-      if (err instanceof SpeakAborted || (err instanceof Error && err.name === 'SpeakAborted')) {
-        throw err
-      }
-      throw err
-    } finally {
-      loading.delete(voice.key)
+      // #region agent log
+      agentLog('tts.ts:synthesizeChapter', 'chunk start', { chunk: i + 1, total: plans.length, chars: text.length }, 'C')
+      // #endregion
+      const blob = await synthesizeChunk(
+        text,
+        voiceId,
+        (p: SynthProgress) => {
+          const overall = (i + p.progress) / plans.length
+          onSynthProgress?.({
+            stage: p.stage,
+            progress: Math.min(0.99, overall),
+            message: p.message,
+          })
+        },
+        () => assertAlive(epoch),
+      )
+      chunks.push({ charStart: plan.charStart, charEnd: plan.charEnd, blob })
     }
+    return chunks
   }
 
-  const playBlob = (blob: Blob, playbackRate: number, epoch: number) =>
-    new Promise<void>((resolve, reject) => {
-      assertAlive(epoch)
-      cleanupAudio()
-      finishPlayWait()
-      objectUrl = URL.createObjectURL(blob)
-      audio = new Audio(objectUrl)
-      audio.volume = 1
-      audio.muted = false
-      audio.playbackRate = Math.min(2, Math.max(0.5, playbackRate))
-      status = 'speaking'
-      playWait = { resolve, reject }
-
-      // #region agent log
-      agentLog(
-        'tts.ts:playBlob',
-        'play start',
-        {
-          bytes: blob.size,
-          type: blob.type,
-          playbackRate: audio.playbackRate,
-          epoch,
-          objectUrl: objectUrl.slice(0, 80),
-        },
-        'A',
-      )
-      // #endregion
-
-      audio.oncanplay = () => {
-        // #region agent log
-        agentLog('tts.ts:playBlob', 'oncanplay', { readyState: audio?.readyState }, 'D')
-        // #endregion
+  const waitForMetadata = (el: HTMLAudioElement, epoch: number) =>
+    new Promise<void>((resolve) => {
+      if (isFinite(el.duration) && el.duration > 0) return resolve()
+      const onMeta = () => {
+        el.removeEventListener('loadedmetadata', onMeta)
+        resolve()
       }
-      audio.onended = () => {
-        // #region agent log
-        agentLog('tts.ts:playBlob', 'onended', {}, 'A')
-        // #endregion
+      const onErr = () => {
+        el.removeEventListener('error', onErr)
+        resolve()
+      }
+      el.addEventListener('loadedmetadata', onMeta)
+      el.addEventListener('error', onErr)
+      // 兜底：blob 元数据偶尔不触发，5s 后强制继续
+      window.setTimeout(() => {
+        if (epoch === speakEpoch) resolve()
+      }, 5000)
+    })
+
+  /** 播放单个块直至 ended；stop/换块时通过 finishPlayWait 结束 */
+  const playChunkToEnd = (el: HTMLAudioElement, epoch: number) =>
+    new Promise<void>((resolve, reject) => {
+      playWait = { resolve, reject }
+      const onEnded = () => {
         cleanupAudio()
         finishPlayWait()
-        onEnd?.()
       }
-      audio.onerror = () => {
-        const errMsg = audio?.error?.message ?? '未知错误'
-        // #region agent log
-        agentLog('tts.ts:playBlob', 'onerror', { message: errMsg }, 'C')
-        // #endregion
+      const onErr = () => {
         cleanupAudio()
-        finishPlayWait(new Error(`音频播放失败: ${errMsg}`))
+        finishPlayWait(new Error(`音频播放失败: ${el.error?.message ?? '未知错误'}`))
       }
-      void audio.play().then(
+      el.addEventListener('ended', onEnded, { once: true })
+      el.addEventListener('error', onErr, { once: true })
+      void el.play().then(
         () => {
           // #region agent log
-          agentLog('tts.ts:playBlob', 'play() resolved', {}, 'D')
+          agentLog('tts.ts:playChunk', 'play() resolved', { epoch, rate: el.playbackRate }, 'D')
           // #endregion
         },
         (e) => {
-          // #region agent log
-          agentLog(
-            'tts.ts:playBlob',
-            'play() rejected',
-            { err: e instanceof Error ? e.message : String(e) },
-            'C',
-          )
-          // #endregion
+          el.removeEventListener('ended', onEnded)
+          el.removeEventListener('error', onErr)
           cleanupAudio()
           finishPlayWait(e instanceof Error ? e : new Error(String(e)))
         },
       )
     })
 
-  const speakWithVoice = async (
-    text: string,
-    rate: number,
-    lang: 'zh' | 'en',
-    pitch: number,
-    voice: VoiceDef,
+  /** 顺序播放所有分块，按字符比例回调当前段落 */
+  const playChunks = async (
+    clip: ChapterAudio,
+    paraRanges: CharRange[],
+    opts: PlayChapterOpts,
     epoch: number,
   ) => {
-    assertAlive(epoch)
-    await ensureVoice(voice, undefined, epoch)
-    assertAlive(epoch)
-    const trimmed = text.trim()
-    if (!trimmed) return
+    const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
+    const startChar = paraRanges[startIndex].start
+    let startChunkIdx = clip.chunks.findIndex((c) => startChar >= c.charStart && startChar < c.charEnd)
+    if (startChunkIdx < 0) startChunkIdx = 0
 
-    const sentences = splitIntoSentences(trimmed)
-    if (sentences.length === 0) return
+    for (let ci = startChunkIdx; ci < clip.chunks.length; ci++) {
+      assertAlive(epoch)
+      const chunk = clip.chunks[ci]
+      objectUrl = URL.createObjectURL(chunk.blob)
+      const el = new Audio(objectUrl)
+      audio = el
+      el.playbackRate = clampRate(opts.rate ?? 1)
+      el.volume = 1
 
-    // #region agent log
-    agentLog(
-      'tts.ts:speakWithVoice',
-      'start',
-      { key: voice.key, engine: voice.engine, lang, rate, textLen: trimmed.length, sentences: sentences.length, preview: trimmed.slice(0, 24) },
-      'A',
-    )
-    // #endregion
+      await waitForMetadata(el, epoch)
+      assertAlive(epoch)
 
-    const playRate = pitch > 1.05 ? rate * 1.08 : pitch < 0.95 ? rate * 0.92 : rate
-
-    // 工厂：返回当前 voice 对应引擎的「合成一句 → WAV Blob」函数
-    // sherpa 合成端不调速（speed=1.0），语速统一由 playBlob 的 playbackRate 控制，
-    // 避免与播放端双重加速（实际 = playRate²）
-    const synthOne = (sentence: string): Promise<Blob> => {
-      if (voice.engine === 'sherpa-onnx-matcha') {
-        const w = sherpaCache.get(voice.key)
-        if (!w) throw new Error('sherpa 引擎未就绪')
-        return w.generate(sentence, voice.sid ?? 0, 1.0).then((audio) =>
-          floatSamplesToWavBlob(audio.samples, audio.sampleRate),
-        )
+      let lastReported = -1
+      const reportAt = (force?: number) => {
+        const dur = el.duration
+        let charOff = chunk.charStart
+        if (isFinite(dur) && dur > 0) {
+          charOff = chunk.charStart + (el.currentTime / dur) * (chunk.charEnd - chunk.charStart)
+          if (charOff >= chunk.charEnd) charOff = chunk.charEnd - 1
+        }
+        let p = 0
+        for (let k = 0; k < paraRanges.length; k++) {
+          if (paraRanges[k].start <= charOff) p = k
+          else break
+        }
+        if (force !== undefined) p = force
+        if (p !== lastReported) {
+          lastReported = p
+          opts.onParagraph?.(p)
+        }
       }
-      const session = piperCache.get(voice.key)
-      if (!session) throw new Error('音色引擎未就绪')
-      return session.predict(sentence)
+      const onTime = () => {
+        if (epoch !== speakEpoch) return
+        reportAt()
+      }
+      el.addEventListener('timeupdate', onTime)
+
+      // 首块定位到起始段落
+      if (ci === startChunkIdx) {
+        const ps = paraRanges[startIndex].start
+        if (ps > chunk.charStart && isFinite(el.duration) && el.duration > 0) {
+          const ratio = (ps - chunk.charStart) / (chunk.charEnd - chunk.charStart)
+          try {
+            el.currentTime = Math.max(0, ratio * el.duration)
+          } catch {
+            /* ignore */
+          }
+        }
+        reportAt(startIndex)
+      }
+
+      status = 'speaking'
+      opts.onStatus?.('speaking')
+      // #region agent log
+      agentLog(
+        'tts.ts:playChunks',
+        'chunk play start',
+        { chunk: ci + 1, total: clip.chunks.length, bytes: chunk.blob.size, duration: el.duration },
+        'A',
+      )
+      // #endregion
+
+      try {
+        await playChunkToEnd(el, epoch)
+      } finally {
+        el.removeEventListener('timeupdate', onTime)
+      }
+      assertAlive(epoch)
     }
 
-    // 双缓冲：先合成第一句，播放第一句的同时在后台合成下一句
-    let nextBlobPromise: Promise<Blob> | null = null
-    try {
-      nextBlobPromise = synthOne(sentences[0])
-    } catch (err) {
-      agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, err: err instanceof Error ? err.message : String(err) }, 'C')
-      throw err
-    }
-
-    try {
-      for (let i = 0; i < sentences.length; i++) {
-        assertAlive(epoch)
-
-        // 等待当前句合成完成
-        let blob: Blob
-        try {
-          blob = await nextBlobPromise!
-        } catch (err) {
-          agentLog('tts.ts:speakWithVoice', 'synthesize failed', { key: voice.key, sentence: i, err: err instanceof Error ? err.message : String(err) }, 'C')
-          throw err
-        }
-
-        // 如果还有下一句，立即开始后台合成（与当前句播放并行）
-        if (i + 1 < sentences.length) {
-          nextBlobPromise = synthOne(sentences[i + 1])
-        } else {
-          nextBlobPromise = null
-        }
-
-        assertAlive(epoch)
-
-        const silence = await probeWavSilence(blob)
-        // #region agent log
-        agentLog(
-          'tts.ts:speakWithVoice',
-          'synth done',
-          { key: voice.key, sentence: i, sentences: sentences.length, bytes: blob.size, peak: silence.peak, likelySilent: silence.likelySilent },
-          'A',
-        )
-        // #endregion
-
-        if (silence.likelySilent) {
-          throw new Error(`合成结果为静音（peak=${silence.peak}，句 ${i + 1}/${sentences.length}）。`)
-        }
-
-        assertAlive(epoch)
-        await playBlob(blob, playRate, epoch)
-      }
-    } finally {
-      // 兜底：若中途因 stop/abort 异常退出，预合成的下一句 nextBlobPromise 可能尚未 await。
-      // worker 仍会跑完该句并 reject（abortCurrent 立即 reject），未消费的 reject 会变成
-      // unhandled rejection，故在此挂 catch 吞掉。正常退出时 nextBlobPromise 为 null 不影响。
-      if (nextBlobPromise) {
-        nextBlobPromise.catch(() => {})
-      }
-    }
+    status = 'idle'
+    opts.onStatus?.('idle')
   }
 
   return {
-    getEngine: () => (anyReady ? 'local' : 'none'),
-    setPrefs: (p) => {
-      prefs = { ...prefs, ...p }
-    },
-    getPrefs: () => ({ ...prefs }),
     listVoices: async () => VOICE_CATALOG.map(toRef),
-    ensureReady,
-    async probe() {
-      const voices = VOICE_CATALOG.map(toRef)
-      const zhVoices = voicesForLang('zh').map(toRef)
-      const enVoices = voicesForLang('en').map(toRef)
-      return {
-        chineseOk: true,
-        englishOk: true,
-        languages: ['zh', 'en'],
-        voices,
-        zhVoices,
-        enVoices,
-        ready: anyReady,
+
+    async playChapter(opts) {
+      const epoch = ++speakEpoch
+      cleanupAudio()
+      status = 'loading'
+      opts.onStatus?.('loading', '正在准备语音…')
+
+      const voice = getVoice(opts.voiceKey) || VOICE_CATALOG[0]
+      const paras = opts.paragraphs.map((p) => p.trim()).filter(Boolean)
+      if (paras.length === 0) {
+        status = 'idle'
+        opts.onStatus?.('idle', '本章无可朗读内容')
+        return
       }
-    },
-    async speak(text, rate = 1, opts) {
-      const epoch = speakEpoch
-      const pitch = opts?.pitch ?? 1
-      const hint = opts?.langHint || 'auto'
-      const lang = hint === 'auto' ? detectTextLang(text) : hint
-      const preferred =
-        opts?.voiceKey ||
-        (lang === 'zh' ? prefs.zhKey : prefs.enKey) ||
-        undefined
-      const voice = pickVoice(lang, preferred)
+
+      const { fullText, paraRanges } = buildTextAndRanges(paras)
+      const textHash = hashText(fullText)
+      const cacheKey = `${opts.bookId}__${opts.chapterId}__${voice.key}`
+
+      let clip = await getClip(cacheKey)
+      if (!clip || clip.textHash !== textHash || !clip.chunks?.length) {
+        status = 'loading'
+        opts.onStatus?.('loading', '正在在线合成整章语音（首次需联网，之后缓存）…')
+        // #region agent log
+        agentLog(
+          'tts.ts:playChapter',
+          'synth start',
+          { cacheKey, voice: voice.key, chars: fullText.length, hit: false },
+          'A',
+        )
+        // #endregion
+        const chunks = await synthesizeChapter(fullText, paras, paraRanges, voice.voiceId, opts.onSynthProgress, epoch)
+        assertAlive(epoch)
+        clip = { chunks, textHash, voiceKey: voice.key, createdAt: Date.now() }
+        await putClip(cacheKey, clip)
+        opts.onStatus?.('loading', '合成完成，准备播放…')
+      } else {
+        // #region agent log
+        agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, voice: voice.key, chunks: clip.chunks.length }, 'A')
+        // #endregion
+        opts.onStatus?.('loading', '已缓存，直接播放…')
+      }
+
+      assertAlive(epoch)
       try {
-        await speakWithVoice(text, rate, lang, pitch, voice, epoch)
+        await playChunks(clip, paraRanges, opts, epoch)
       } catch (err) {
-        // SpeakAborted：用户 stop/abort；sherpa abortCurrent 也抛 name='SpeakAborted'
-        // 兜底 err.message==='aborted' 以防外部直接抛裸 Error
         if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return
         }
         throw err
       } finally {
-        if (status === 'speaking' && epoch === speakEpoch) status = 'idle'
+        if (epoch === speakEpoch && (status as TtsStatus) !== 'paused') status = 'idle'
       }
     },
+
     pause() {
       if (status !== 'speaking' || !audio) return
       audio.pause()
@@ -841,27 +410,7 @@ export function createTtsController(onEnd?: () => void): TtsController {
       status = 'idle'
       cleanupAudio()
       finishPlayWait(new SpeakAborted())
-      // 让 sherpa 当前 pending 的 generate 立刻 reject
-      for (const w of sherpaCache.values()) w.abortCurrent()
     },
     getStatus: () => status,
   }
-}
-
-/** 注释片段：脚注、括号注、以「注」开头等 */
-export function splitSpeakSegments(text: string): { text: string; kind: 'body' | 'note' }[] {
-  const parts = text.split(/(（注[^）]*）|\(注[^)]*\)|〔[^〕]*〕|【注[^】]*】)/g).filter((p) => p && p.trim())
-  if (parts.length <= 1) {
-    const t = text.trim()
-    if (!t) return []
-    if (/^(注[:：]|注释[:：]|——注)/.test(t) || /^\*.+\*$/.test(t)) {
-      return [{ text: t, kind: 'note' }]
-    }
-    return [{ text: t, kind: 'body' }]
-  }
-  return parts.map((p) => {
-    const s = p.trim()
-    const note = /^（注/.test(s) || /^\(注/.test(s) || /^〔/.test(s) || /^【注/.test(s)
-    return { text: s, kind: note ? ('note' as const) : ('body' as const) }
-  })
 }
