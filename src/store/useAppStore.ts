@@ -5,7 +5,7 @@ import { createSampleBooks } from '../data/sampleBooks'
 import type { Book, Chapter, ProgressSnapshot, ReaderSettings, Screen, TabId, TocEntry } from '../types'
 import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
-import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphs } from '../utils/chapterParser'
+import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
 import { createIdbStorage } from '../utils/idbStorage'
 import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 
@@ -184,7 +184,7 @@ export const useAppStore = create<AppState>()(
         const chapterIndex = book.chapters.findIndex((c) => c.id === chapterId)
         const chapter = book.chapters[chapterIndex]
         if (!chapter) return
-        const paras = splitParagraphs(chapter.content)
+        const paras = splitParagraphTexts(chapter.content)
         const progressPercent = calcProgress(chapterIndex, book.chapters.length, paragraphIndex, paras.length)
 
         // 仅在真正读过（非仅跳转到章首）时记入已读

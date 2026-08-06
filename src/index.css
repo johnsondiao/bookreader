@@ -669,6 +669,23 @@ button {
   background: rgba(255, 213, 79, 0.15);
 }
 
+/* 注释段视觉提示：与正文略区分，不改变朗读内容 */
+.reader-content p.note-para {
+  padding-left: 0.5em;
+  border-left: 3px solid rgba(60, 120, 180, 0.35);
+  margin-left: -0.5em;
+  text-indent: 0;
+}
+.reader.theme-night .reader-content p.note-para {
+  border-left-color: rgba(130, 190, 255, 0.45);
+}
+.reader-content p.note-para.active-para {
+  background: rgba(60, 120, 180, 0.14);
+}
+.reader.theme-night .reader-content p.note-para.active-para {
+  background: rgba(130, 190, 255, 0.18);
+}
+
 .reader-topbar,
 .reader-menubar {
   position: absolute;

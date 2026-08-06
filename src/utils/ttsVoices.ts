@@ -71,7 +71,8 @@ export const VOICE_CATALOG: VoiceDef[] = [
 /** 默认音色：新闻女声。旧 key（华严 / sherpa 等）会经 migrateVoiceKey 回落到此。 */
 export const DEFAULT_VOICE_ZH = 'minimax-news-female'
 export const DEFAULT_VOICE_EN = 'minimax-news-female'
-export const DEFAULT_VOICE_NOTE = 'minimax-news-female'
+/** 注释段默认音色：精英青年（与正文播报区分） */
+export const DEFAULT_VOICE_NOTE = 'minimax-jingying'
 
 /** 已下架的旧音色 key → 回落到默认。含 piper 华严系列、sherpa matcha、早期英文音色。 */
 const REMOVED_VOICE_KEYS = new Set([

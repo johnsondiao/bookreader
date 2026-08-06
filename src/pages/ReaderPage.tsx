@@ -4,7 +4,6 @@ import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs } from '../utils/chapterParser'
 import {
   createTtsController,
-  DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
   DEFAULT_VOICE_ZH,
   voicesForLang,
@@ -32,7 +31,8 @@ function findNextSpeakableChapterId(
 ): string | null {
   if (afterIndex < 0) return null
   for (let i = afterIndex + 1; i < chapters.length; i++) {
-    if (splitParagraphs(chapters[i].content || '').length > 0) return chapters[i].id
+    const arr = splitParagraphs(chapters[i].content || '')
+    if (arr.length > 0) return chapters[i].id
   }
   return null
 }
@@ -266,8 +266,9 @@ export function ReaderPage() {
       setMenuOpen(true)
 
       const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
+      const noteKey = migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE
       // #region agent log
-      agentLog('ReaderPage:speakFrom', 'start', { zhKey, startIndex, quiet, chapterId: chapter.id }, 'D')
+      agentLog('ReaderPage:speakFrom', 'start', { zhKey, noteKey, startIndex, quiet, chapterId: chapter.id }, 'D')
       // #endregion
 
       if (!quiet) showToast('正在准备语音…', 4000)
@@ -279,6 +280,7 @@ export function ReaderPage() {
           paragraphs,
           startParagraphIndex: startIndex,
           voiceKey: zhKey,
+          noteVoiceKey: noteKey,
           rate: settings.ttsRate,
           onParagraph: (i) => {
             if (!speakingRef.current) return
@@ -348,6 +350,7 @@ export function ReaderPage() {
       saveProgress,
       settings.ttsRate,
       settings.ttsVoiceZh,
+      settings.ttsVoiceNote,
       settings.autoScroll,
     ],
   )
@@ -482,7 +485,9 @@ export function ReaderPage() {
               ref={(el) => {
                 paraRefs.current[i] = el
               }}
-              className={i === paraIndex ? 'active-para' : undefined}
+              className={
+                (i === paraIndex ? 'active-para' : '') + (p.kind === 'note' ? ' note-para' : '')
+              }
               onClick={(e) => {
                 e.stopPropagation()
                 setParaIndex(i)
@@ -493,7 +498,7 @@ export function ReaderPage() {
                 }
               }}
             >
-              {p}
+              {p.text}
             </p>
           ))
         )}
@@ -718,23 +723,10 @@ export function ReaderPage() {
             </div>
 
             <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-              <span>英文片段音色</span>
-              <select
-                className="voice-select"
-                value={settings.ttsVoiceEn || DEFAULT_VOICE_EN}
-                onChange={(e) => updateSettings({ ttsVoiceEn: e.target.value })}
-              >
-                {voicesForLang('en').map((v) => (
-                  <option key={v.key} value={v.key}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-              <span style={{ fontSize: 12, opacity: 0.7 }}>已去掉专用英文语音包，用中文多语模型朗读英文</span>
-            </div>
-
-            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
               <span>注释音色</span>
+              <span style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
+                识别*开头、[n]编号、数字编号的注释段，自动切换到此音色朗读。
+              </span>
               <select
                 className="voice-select"
                 value={settings.ttsVoiceNote || DEFAULT_VOICE_NOTE}
