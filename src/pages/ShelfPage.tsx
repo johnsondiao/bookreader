@@ -114,7 +114,7 @@ export function ShelfPage() {
 
       {showImportHint && !busy && (
         <div className="import-banner">
-          已预置 3 本示例书。可导入手机上的 TXT 或 EPUB；朗读位置与阅读进度会自动记录。
+          可导入手机上的 TXT 或 EPUB；朗读位置与阅读进度会自动记录。
         </div>
       )}
 

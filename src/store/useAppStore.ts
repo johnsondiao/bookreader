@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
-import { createSampleBooks } from '../data/sampleBooks'
 import type { Book, Chapter, ProgressSnapshot, ReaderSettings, Screen, TabId, TocEntry } from '../types'
 import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
@@ -123,7 +122,7 @@ function buildBook(parsed: {
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
-      books: createSampleBooks(),
+      books: [],
       snapshots: [],
       settings: defaultSettings,
       tab: 'shelf',
