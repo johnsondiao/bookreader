@@ -1166,3 +1166,139 @@ button {
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* 语音解锁弹窗：首次朗读时要求输入密码解密 MiniMax key */
+.tts-unlock-mask {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.tts-unlock-modal {
+  width: 100%;
+  max-width: 320px;
+  margin: 0;
+  padding: 20px 18px 16px;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+}
+
+.tts-unlock-modal h3 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  color: #1a1a1a;
+}
+
+.tts-unlock-desc {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #6b6b6b;
+}
+
+.tts-unlock-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 16px; /* >=16px 避免 iOS 自动缩放 */
+  border: 1px solid #d6d6d6;
+  border-radius: 8px;
+  outline: none;
+  background: #fff;
+  color: #1a1a1a;
+  transition: border-color 0.15s;
+}
+
+.tts-unlock-input:focus {
+  border-color: #4a7cff;
+}
+
+.tts-unlock-input:disabled {
+  background: #f3f3f3;
+  color: #999;
+}
+
+.tts-unlock-error {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #e53935;
+}
+
+.tts-unlock-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.tts-unlock-btn {
+  flex: 1;
+  padding: 10px 0;
+  font-size: 14px;
+  border-radius: 8px;
+  border: 0;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.tts-unlock-btn.cancel {
+  background: #f0f0f0;
+  color: #555;
+}
+
+.tts-unlock-btn.cancel:not(:disabled):active {
+  background: #e3e3e3;
+}
+
+.tts-unlock-btn.ok {
+  background: #4a7cff;
+  color: #fff;
+}
+
+.tts-unlock-btn.ok:not(:disabled):active {
+  background: #3a6ae8;
+}
+
+.tts-unlock-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 夜间主题适配 */
+.reader.theme-night .tts-unlock-modal {
+  background: #23262d;
+}
+
+.reader.theme-night .tts-unlock-modal h3 {
+  color: #f0f0f0;
+}
+
+.reader.theme-night .tts-unlock-desc {
+  color: #a0a0a0;
+}
+
+.reader.theme-night .tts-unlock-input {
+  background: #2c2f37;
+  border-color: #3a3e47;
+  color: #f0f0f0;
+}
+
+.reader.theme-night .tts-unlock-input:focus {
+  border-color: #4a7cff;
+}
+
+.reader.theme-night .tts-unlock-btn.cancel {
+  background: #3a3e47;
+  color: #d0d0d0;
+}
+
+.reader.theme-night .tts-unlock-btn.cancel:not(:disabled):active {
+  background: #444953;
+}

@@ -13,9 +13,7 @@
  */
 import { Capacitor, CapacitorHttp } from '@capacitor/core'
 import { agentLog } from './agentLog'
-
-/** 构建期由 vite.config.ts 的 define 注入（读取自 key.env） */
-declare const MINMAXKEY: string
+import { getTtsKey } from './ttsKeyStore'
 
 const API_BASE = 'https://api.minimaxi.com'
 const MODEL = 'speech-2.8-turbo'
@@ -44,18 +42,14 @@ interface RetrieveResp extends BaseResp {
   file?: { file_id: string; download_url: string; filename?: string; bytes?: number }
 }
 
-function assertKey() {
-  if (!MINMAXKEY) throw new Error('未配置 MINMAXKEY，无法调用 MiniMax 在线语音。')
-}
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** 原生用 CapacitorHttp（绕 CORS），Web 用 fetch */
 async function httpJson(method: string, path: string, body?: unknown): Promise<any> {
-  assertKey()
+  const key = await getTtsKey() // 未解锁时抛 TtsKeyLockedError，由上层弹密码框
   const url = `${API_BASE}${path}`
   const headers = {
-    Authorization: `Bearer ${MINMAXKEY}`,
+    Authorization: `Bearer ${key}`,
     'Content-Type': 'application/json',
   }
   if (Capacitor.isNativePlatform()) {

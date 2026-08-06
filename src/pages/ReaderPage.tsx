@@ -10,6 +10,7 @@ import {
   VOICE_CATALOG,
 } from '../utils/tts'
 import { migrateVoiceKey } from '../utils/ttsVoices'
+import { hasTtsKey, unlockTtsKey, TtsKeyLockedError } from '../utils/ttsKeyStore'
 import {
   agentLog,
   formatDebugLine,
@@ -76,6 +77,11 @@ export function ReaderPage() {
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
+  /** 语音解锁弹窗：首次朗读时要求输入密码，解密 MiniMax key */
+  const [unlockOpen, setUnlockOpen] = useState(false)
+  const [unlockError, setUnlockError] = useState('')
+  const [unlockLoading, setUnlockLoading] = useState(false)
+  const unlockResolverRef = useRef<((ok: boolean) => void) | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
@@ -148,6 +154,48 @@ export function ReaderPage() {
     setToast(msg)
     window.setTimeout(() => setToast(''), ms)
   }
+
+  /**
+   * 弹出语音解锁框，返回是否解锁成功。
+   * speakFrom 调用：未解锁时 await，用户输对密码后自动继续朗读。
+   */
+  const requestUnlock = useCallback((): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      setUnlockError('')
+      unlockResolverRef.current = resolve
+      setUnlockOpen(true)
+    })
+  }, [])
+
+  /** 弹窗内：提交密码尝试解锁 */
+  const onSubmitUnlock = useCallback(
+    async (password: string) => {
+      setUnlockLoading(true)
+      setUnlockError('')
+      try {
+        const ok = await unlockTtsKey(password)
+        if (ok) {
+          setUnlockOpen(false)
+          unlockResolverRef.current?.(true)
+          unlockResolverRef.current = null
+        } else {
+          setUnlockError('密码错误，请重试')
+        }
+      } catch {
+        setUnlockError('解锁失败，请重试')
+      } finally {
+        setUnlockLoading(false)
+      }
+    },
+    [],
+  )
+
+  /** 弹窗内：取消 */
+  const onCancelUnlock = useCallback(() => {
+    setUnlockOpen(false)
+    unlockResolverRef.current?.(false)
+    unlockResolverRef.current = null
+  }, [])
 
   // #region agent log
   useEffect(() => subscribeDebugLog(setDebugLines), [])
@@ -258,6 +306,13 @@ export function ReaderPage() {
   const speakFrom = useCallback(
     async (startIndex: number) => {
       if (!book || !chapter) return
+
+      // 首次朗读需解锁语音（输入密码解密 MiniMax key）；已解锁则跳过
+      if (!(await hasTtsKey())) {
+        const ok = await requestUnlock()
+        if (!ok) return // 用户取消
+      }
+
       const quiet = continueQuietRef.current
       continueQuietRef.current = false
       speakingRef.current = true
@@ -303,27 +358,87 @@ export function ReaderPage() {
           },
         })
       } catch (err) {
-        if (
+        // 合成时 key 被清/读不到 → 弹解锁框，解锁成功后重试一次
+        if (err instanceof TtsKeyLockedError) {
+          const ok = await requestUnlock()
+          if (!ok) {
+            speakingRef.current = false
+            setTtsOn(false)
+            return
+          }
+          // 解锁成功，重试一次（不再递归避免无限循环）
+          try {
+            await ttsRef.current.playChapter({
+              bookId: book.id,
+              chapterId: chapter.id,
+              paragraphs,
+              startParagraphIndex: startIndex,
+              voiceKey: zhKey,
+              noteVoiceKey: noteKey,
+              rate: settings.ttsRate,
+              onParagraph: (i) => {
+                if (!speakingRef.current) return
+                setParaIndex(i)
+                scrollToPara(i)
+                saveProgress(chapter.id, i, 'tts', '朗读进度', true)
+              },
+              onStatus: (s, msg) => {
+                if (quiet) return
+                if (s === 'loading') setEngineStatus(msg || '正在准备语音…')
+                else if (s === 'speaking') {
+                  setEngineStatus('正在朗读…')
+                  setTtsPaused(false)
+                } else if (s === 'idle') setEngineStatus(msg || '')
+              },
+              onSynthProgress: (p) => {
+                if (quiet) return
+                const pct = Math.round((p.progress || 0) * 100)
+                setEngineStatus(`${p.message || p.stage} ${pct}%`)
+              },
+            })
+          } catch (err2) {
+            if (
+              err2 instanceof Error &&
+              (err2.name === 'SpeakAborted' || err2.message === 'aborted')
+            ) {
+              return
+            }
+            const hint2 = getLastDebugHint()
+            agentLog(
+              'ReaderPage:speakFrom',
+              'playChapter retry failed',
+              { err: err2 instanceof Error ? err2.message : String(err2), hint: hint2 },
+              'C',
+            )
+            setDebugOpen(true)
+            showToast(`${err2 instanceof Error ? err2.message : '朗读失败'}\n${hint2}`, 12000)
+            speakingRef.current = false
+            setTtsOn(false)
+            return
+          }
+          // 重试成功 → 走正常结束流程（跳到下方「本章播放完毕」逻辑）
+        } else if (
           err instanceof Error &&
           (err.name === 'SpeakAborted' || err.message === 'aborted')
         ) {
           // 用户 stop / 切换段落，正常中止
           return
+        } else {
+          const hint = getLastDebugHint()
+          // #region agent log
+          agentLog(
+            'ReaderPage:speakFrom',
+            'playChapter failed',
+            { err: err instanceof Error ? err.message : String(err), hint },
+            'C',
+          )
+          // #endregion
+          setDebugOpen(true)
+          showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
+          speakingRef.current = false
+          setTtsOn(false)
+          return
         }
-        const hint = getLastDebugHint()
-        // #region agent log
-        agentLog(
-          'ReaderPage:speakFrom',
-          'playChapter failed',
-          { err: err instanceof Error ? err.message : String(err), hint },
-          'C',
-        )
-        // #endregion
-        setDebugOpen(true)
-        showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
-        speakingRef.current = false
-        setTtsOn(false)
-        return
       }
 
       // playChapter 正常 resolve → 本章播放完毕，进入下一章
@@ -745,6 +860,15 @@ export function ReaderPage() {
 
       {toast && <div className="toast toast-debug">{toast}</div>}
 
+      {unlockOpen && (
+        <UnlockModal
+          error={unlockError}
+          loading={unlockLoading}
+          onSubmit={onSubmitUnlock}
+          onCancel={onCancelUnlock}
+        />
+      )}
+
       <div className={`tts-debug-panel${debugOpen ? ' open' : ''}`}>
         <button type="button" className="tts-debug-toggle" onClick={() => setDebugOpen((v) => !v)}>
           {debugOpen ? '收起调试' : '展开调试'} ({debugLines.length})
@@ -757,6 +881,55 @@ export function ReaderPage() {
           </pre>
         )}
       </div>
+    </div>
+  )
+}
+
+/** 语音解锁弹窗：首次朗读时要求输入密码，解密 MiniMax key */
+function UnlockModal(props: {
+  error: string
+  loading: boolean
+  onSubmit: (password: string) => void
+  onCancel: () => void
+}) {
+  const { error, loading, onSubmit, onCancel } = props
+  const [password, setPassword] = useState('')
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault()
+    if (!password || loading) return
+    onSubmit(password)
+  }
+
+  return (
+    <div className="tts-unlock-mask" onClick={onCancel}>
+      <form
+        className="tts-unlock-modal"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+      >
+        <h3>语音功能解锁</h3>
+        <p className="tts-unlock-desc">首次使用在线语音需输入密码，验证后自动保存，之后不再询问。</p>
+        <input
+          className="tts-unlock-input"
+          type="password"
+          autoFocus
+          autoComplete="off"
+          placeholder="请输入密码"
+          value={password}
+          disabled={loading}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        {error && <span className="tts-unlock-error">{error}</span>}
+        <div className="tts-unlock-buttons">
+          <button type="button" className="tts-unlock-btn cancel" onClick={onCancel} disabled={loading}>
+            取消
+          </button>
+          <button type="submit" className="tts-unlock-btn ok" disabled={loading || !password}>
+            {loading ? '解锁中…' : '解锁'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
