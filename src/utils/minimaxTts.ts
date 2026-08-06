@@ -16,10 +16,15 @@ import { agentLog } from './agentLog'
 import { getTtsKey } from './ttsKeyStore'
 
 const API_BASE = 'https://api.minimaxi.com'
-/** 标准版 TTS：¥2 / 百万字（长文本异步）。turbo 版计费更高且队列慢。 */
+/**
+ * Turbo 系列模型：用于异步长文本合成，速度快、性价比高。
+ * 官方定价见 https://platform.minimaxi.com/document/Price
+ *   Turbo: ¥400 / 200万字符 = ¥200/百万字符 = ¥2/万字
+ *   HD:    ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
+ */
 const MODEL = 'speech-2.8'
-/** 单价：¥2 每百万字符 */
-export const TTS_COST_PER_MILLION = 2
+/** Turbo 系列单价：¥200 每百万字符（=¥2/万字） */
+export const TTS_COST_PER_MILLION = 200
 
 export function estimateTtsCost(charCount: number): number {
   return (charCount / 1_000_000) * TTS_COST_PER_MILLION
