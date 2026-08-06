@@ -16,7 +16,14 @@ import { agentLog } from './agentLog'
 import { getTtsKey } from './ttsKeyStore'
 
 const API_BASE = 'https://api.minimaxi.com'
-const MODEL = 'speech-2.8-turbo'
+/** 标准版 TTS：¥2 / 百万字（长文本异步）。turbo 版计费更高且队列慢。 */
+const MODEL = 'speech-2.8'
+/** 单价：¥2 每百万字符 */
+export const TTS_COST_PER_MILLION = 2
+
+export function estimateTtsCost(charCount: number): number {
+  return (charCount / 1_000_000) * TTS_COST_PER_MILLION
+}
 
 export type SynthStage = 'create' | 'polling' | 'downloading' | 'done'
 export type SynthProgress = {

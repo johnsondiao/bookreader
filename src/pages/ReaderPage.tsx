@@ -73,7 +73,7 @@ export function ReaderPage() {
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [engineStatus, setEngineStatus] = useState(
-    '在线语音 · MiniMax speech-2.8-turbo（首次合成需联网，之后缓存）',
+    '在线语音 · MiniMax speech-2.8（¥2/百万字，首次合成需联网，之后缓存）',
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
@@ -82,6 +82,11 @@ export function ReaderPage() {
   const [unlockError, setUnlockError] = useState('')
   const [unlockLoading, setUnlockLoading] = useState(false)
   const unlockResolverRef = useRef<((ok: boolean) => void) | null>(null)
+  /** 费用预估弹窗：合成前提示预计花费 */
+  const [costOpen, setCostOpen] = useState(false)
+  const [costChars, setCostChars] = useState(0)
+  const [costYuan, setCostYuan] = useState(0)
+  const costResolverRef = useRef<((ok: boolean) => void) | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
   const ttsRef = useRef(createTtsController())
@@ -197,6 +202,31 @@ export function ReaderPage() {
     unlockResolverRef.current = null
   }, [])
 
+  /** 费用预估弹窗：请求用户确认，返回是否同意付费 */
+  const requestCostConfirm = useCallback(
+    (chars: number, costY: number): Promise<boolean> => {
+      return new Promise<boolean>((resolve) => {
+        setCostChars(chars)
+        setCostYuan(costY)
+        costResolverRef.current = resolve
+        setCostOpen(true)
+      })
+    },
+    [],
+  )
+
+  const onConfirmCost = useCallback(() => {
+    setCostOpen(false)
+    costResolverRef.current?.(true)
+    costResolverRef.current = null
+  }, [])
+
+  const onCancelCost = useCallback(() => {
+    setCostOpen(false)
+    costResolverRef.current?.(false)
+    costResolverRef.current = null
+  }, [])
+
   // #region agent log
   useEffect(() => subscribeDebugLog(setDebugLines), [])
   // #endregion
@@ -215,7 +245,7 @@ export function ReaderPage() {
     ) {
       updateSettings(next)
     }
-    setEngineStatus('在线语音 · MiniMax speech-2.8-turbo（首次合成需联网，之后缓存）')
+    setEngineStatus('在线语音 · MiniMax speech-2.8（首次合成需联网，之后缓存）')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id])
 
@@ -356,6 +386,7 @@ export function ReaderPage() {
             const pct = Math.round((p.progress || 0) * 100)
             setEngineStatus(`${p.message || p.stage} ${pct}%`)
           },
+          onCostEstimate: requestCostConfirm,
         })
       } catch (err) {
         // 合成时 key 被清/读不到 → 弹解锁框，解锁成功后重试一次
@@ -395,6 +426,7 @@ export function ReaderPage() {
                 const pct = Math.round((p.progress || 0) * 100)
                 setEngineStatus(`${p.message || p.stage} ${pct}%`)
               },
+              onCostEstimate: requestCostConfirm,
             })
           } catch (err2) {
             if (
@@ -816,7 +848,7 @@ export function ReaderPage() {
               <span>在线语音 · MiniMax</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  在线语音合成（speech-2.8-turbo）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。
+                  在线语音合成（speech-2.8）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。
                 </p>
                 <p style={{ margin: 0, fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
               </div>
@@ -866,6 +898,15 @@ export function ReaderPage() {
           loading={unlockLoading}
           onSubmit={onSubmitUnlock}
           onCancel={onCancelUnlock}
+        />
+      )}
+
+      {costOpen && (
+        <CostModal
+          chars={costChars}
+          costYuan={costYuan}
+          onConfirm={onConfirmCost}
+          onCancel={onCancelCost}
         />
       )}
 
@@ -930,6 +971,42 @@ function UnlockModal(props: {
           </button>
         </div>
       </form>
+    </div>
+  )
+}
+
+/** 费用预估弹窗：合成前告知预计花费，用户确认后才继续 */
+function CostModal(props: {
+  chars: number
+  costYuan: number
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const { chars, costYuan, onConfirm, onCancel } = props
+  const displayChars = chars >= 10_000 ? `${(chars / 10_000).toFixed(1)}万` : `${chars}`
+  const displayCost = costYuan < 0.01 ? '不到 1 分' : `¥${costYuan.toFixed(2)}`
+
+  return (
+    <div className="tts-unlock-mask" onClick={onCancel}>
+      <div className="tts-unlock-modal" onClick={(e) => e.stopPropagation()}>
+        <h3>在线语音合成</h3>
+        <p className="tts-unlock-desc">
+          本章需在线合成 <strong>{displayChars}</strong> 字，
+          预计花费 <strong style={{ color: '#e67e22' }}>{displayCost}</strong>
+          （¥2 / 百万字）。
+        </p>
+        <p className="tts-unlock-desc" style={{ fontSize: 13, opacity: 0.75 }}>
+          合成后自动缓存，重复朗读本章不再扣费。
+        </p>
+        <div className="tts-unlock-buttons">
+          <button type="button" className="tts-unlock-btn cancel" onClick={onCancel}>
+            取消
+          </button>
+          <button type="button" className="tts-unlock-btn ok" onClick={onConfirm}>
+            确认合成
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
