@@ -24,17 +24,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Write key.env from secret
-        env:
-          MINMAXKEY: ${{ secrets.MINMAXKEY }}
-        run: |
-          if [ -n "$MINMAXKEY" ]; then
-            printf 'MINMAXKEY=%s\n' "$MINMAXKEY" > key.env
-            echo "key.env written ($(wc -c < key.env) bytes)"
-          else
-            echo "::warning::MINMAXKEY secret 未设置，编译出的 APK 语音解锁将失效"
-          fi
-
       - name: Build web
         run: npm run build
 

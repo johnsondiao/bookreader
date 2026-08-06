@@ -1,8 +1,8 @@
 /**
  * MiniMax TTS key 解锁与持久化。
  *
- * bundle 里只有密文（MINMAXKEY_CIPHER/IV/SALT，构建期由 vite.config.ts 注入）。
- * 用户首次运行 App 时输入密码 → 用 PBKDF2 + AES-GCM 解密 → 明文 key 存 IndexedDB。
+ * 密文硬编码在 ttsKeyCipher.ts（构建期用密码 12345 + PBKDF2+AES-GCM 加密）。
+ * 用户首次运行 App 时输入密码 → 解密 → 明文 key 存 IndexedDB。
  * 之后每次启动直接从 IndexedDB 读明文 key，不再要求输入密码。
  *
  * 安全权衡：
@@ -13,11 +13,7 @@
  * 想完全无明文 key 落地，可改成「密码只存内存，App 重启必须重输」——
  * 把 setTtsKey 的 IndexedDB 写入去掉即可，但每次启动都要输密码，体验差。
  */
-
-/** 构建期注入的密文（base64）。明文 key 永不进 bundle。 */
-declare const MINMAXKEY_CIPHER: string
-declare const MINMAXKEY_IV: string
-declare const MINMAXKEY_SALT: string
+import { TTS_KEY_CIPHER, TTS_KEY_IV, TTS_KEY_SALT } from './ttsKeyCipher'
 
 const PBKDF2_ITER = 100_000
 const IDB_NAME = 'langyue-reader-secure'
@@ -96,14 +92,14 @@ function b64ToBuf(b64: string): ArrayBuffer {
   return buf
 }
 
-/** 用密码 + 注入的 salt/iv 解密 bundle 里的密文，返回明文 key；密码错或密文坏返回 null */
+/** 用密码 + salt/iv 解密硬编码的密文，返回明文 key；密码错或密文坏返回 null */
 export async function decryptTtsKey(password: string): Promise<string | null> {
-  if (!MINMAXKEY_CIPHER || !MINMAXKEY_IV || !MINMAXKEY_SALT) return null
+  if (!TTS_KEY_CIPHER || !TTS_KEY_IV || !TTS_KEY_SALT) return null
   try {
     const subtle = crypto.subtle
-    const salt = b64ToBuf(MINMAXKEY_SALT)
-    const iv = b64ToBuf(MINMAXKEY_IV)
-    const cipher = b64ToBuf(MINMAXKEY_CIPHER)
+    const salt = b64ToBuf(TTS_KEY_SALT)
+    const iv = b64ToBuf(TTS_KEY_IV)
+    const cipher = b64ToBuf(TTS_KEY_CIPHER)
 
     const baseKey = await subtle.importKey(
       'raw',
