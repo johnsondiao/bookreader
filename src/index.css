@@ -1302,3 +1302,19 @@ button {
 .reader.theme-night .tts-unlock-btn.cancel:not(:disabled):active {
   background: #444953;
 }
+
+.tts-cost-warn {
+  background: #fff4e5;
+  color: #b35900;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 8px;
+  border: 1px solid #ffd591;
+}
+.reader.theme-night .tts-cost-warn {
+  background: #3a2b10;
+  color: #ffd591;
+  border-color: #7a5a20;
+}

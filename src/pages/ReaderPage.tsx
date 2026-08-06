@@ -985,6 +985,7 @@ function CostModal(props: {
   const { chars, costYuan, onConfirm, onCancel } = props
   const displayChars = chars >= 10_000 ? `${(chars / 10_000).toFixed(1)}万` : `${chars}`
   const displayCost = costYuan < 0.01 ? '不到 1 分' : `¥${costYuan.toFixed(2)}`
+  const warn = chars >= 30_000 // ≥3 万字算超长章
 
   return (
     <div className="tts-unlock-mask" onClick={onCancel}>
@@ -995,6 +996,12 @@ function CostModal(props: {
           预计花费 <strong style={{ color: '#e67e22' }}>{displayCost}</strong>
           （¥2/万字）。
         </p>
+        {warn && (
+          <div className="tts-cost-warn">
+            ⚠️ 本章超过 3 万字，可能是**章节切分异常（多章合并）**。
+            如确认是意外，建议先移除书籍后重新导入，再开始朗读。
+          </div>
+        )}
         <p className="tts-unlock-desc" style={{ fontSize: 13, opacity: 0.75 }}>
           合成后自动缓存，重复朗读本章不再扣费。
         </p>
@@ -1003,7 +1010,7 @@ function CostModal(props: {
             取消
           </button>
           <button type="button" className="tts-unlock-btn ok" onClick={onConfirm}>
-            确认合成
+            {warn ? '确认继续合成' : '确认合成'}
           </button>
         </div>
       </div>
