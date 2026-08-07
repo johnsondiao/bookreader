@@ -100,24 +100,94 @@ function safeJson(s: string): any {
   }
 }
 
-/** hex 字符串 → ArrayBuffer */
+/**
+ * 判断音频数据的编码格式。
+ *
+ * MiniMax T2A v2 返回的 data 字段可能是 hex 或 base64：
+ *   - hex:      仅含 0-9 a-f A-F 空白，长度为偶数（每字节 2 字符）
+ *   - base64:   含 + / = 或 G-Z 大写字母（超出 hex 范围）
+ *                或 URL-safe 变体（- _ 替代 + /）
+ *
+ * 关键：不能仅用 /^[0-9a-fA\s]+$/i 判定，因为 base64 字符串碰巧全是
+ * a-f 字符时会被误判为 hex，导致解码失败。
+ */
+function detectAudioEncoding(s: string): 'hex' | 'base64' {
+  const clean = s.trim()
+  // base64 特有的字符：+ / = URL-safe 的 - _ 或 G-Z（超出 hex 的大写字母）
+  // 如果含有这些字符，一定是 base64
+  if (/[+=/\-_]|[G-Z]/.test(clean)) return 'base64'
+  // 纯 hex 字符且长度为偶数（每字节 2 hex 字符）
+  const hexOnly = clean.replace(/\s+/g, '')
+  if (/^[0-9a-fA]+$/i.test(hexOnly) && hexOnly.length % 2 === 0) return 'hex'
+  // 无法确定时默认 base64（MP3 接口大概率返回 base64）
+  return 'base64'
+}
+
+/** hex 字符串 → ArrayBuffer（健壮版，支持空格换行等空白） */
 function hexToBuf(hex: string): ArrayBuffer {
   const clean = hex.replace(/\s+/g, '')
-  const buf = new ArrayBuffer(clean.length / 2)
+  const buf = new ArrayBuffer(Math.floor(clean.length / 2))
   const bytes = new Uint8Array(buf)
   for (let i = 0; i < bytes.length; i++) {
-    bytes[i] = parseInt(clean.substr(i * 2, 2), 16)
+    const hi = parseInt(clean[i * 2], 16)
+    const lo = parseInt(clean[i * 2 + 1], 16)
+    bytes[i] = (hi << 4) | lo
   }
   return buf
 }
 
-/** base64 字符串 → ArrayBuffer */
+/**
+ * base64 字符串 → ArrayBuffer（健壮版）。
+ * 处理：
+ *   - URL-safe base64:  - → +, _ → /
+ *   - 缺失 padding:  补 = 至 4 的倍数
+ *   - data URI 前缀:  去掉 data:...;base64, 前缀
+ *   - 空白字符:  自动剔除
+ */
 function b64ToBuf(b64: string): ArrayBuffer {
-  const bin = atob(b64)
+  let s = b64.trim()
+  // 去掉 data URI 前缀
+  const dataUriMatch = s.match(/^data:[^;]+;base64,(.+)$/i)
+  if (dataUriMatch) s = dataUriMatch[1]
+  // URL-safe base64 → 标准 base64
+  s = s.replace(/-/g, '+').replace(/_/g, '/')
+  // 去除空白
+  s = s.replace(/\s+/g, '')
+  // 补齐 padding
+  const padLen = s.length % 4
+  if (padLen > 0) s += '='.repeat(4 - padLen)
+  const bin = atob(s)
   const buf = new ArrayBuffer(bin.length)
   const bytes = new Uint8Array(buf)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   return buf
+}
+
+/**
+ * 将 API 返回的音频字符串解码为 ArrayBuffer。
+ * 自动检测 hex / base64 编码，一种失败时回退到另一种。
+ */
+function decodeAudioData(audioStr: string): ArrayBuffer {
+  const encoding = detectAudioEncoding(audioStr)
+  agentLog('minimaxTts:decode', 'encoding detected', { encoding, len: audioStr.length, preview: audioStr.slice(0, 40) }, 'D')
+  try {
+    const buf = encoding === 'hex' ? hexToBuf(audioStr) : b64ToBuf(audioStr)
+    if (buf.byteLength > 0) return buf
+    agentLog('minimaxTts:decode', 'primary decode returned 0 bytes, trying fallback')
+  } catch (e) {
+    agentLog('minimaxTts:decode', `primary decode failed: ${e}, trying fallback`)
+  }
+  // 回退：尝试另一种编码
+  try {
+    const fallback = encoding === 'hex' ? b64ToBuf(audioStr) : hexToBuf(audioStr)
+    if (fallback.byteLength > 0) {
+      agentLog('minimaxTts:decode', 'fallback decode succeeded', { bytes: fallback.byteLength })
+      return fallback
+    }
+  } catch (e2) {
+    agentLog('minimaxTts:decode', `fallback also failed: ${e2}`)
+  }
+  throw new Error(`音频解码失败：hex 和 base64 均无法解析 (原始长度=${audioStr.length})`)
 }
 
 /**
@@ -157,9 +227,7 @@ export async function synthesizeChunk(
   const audioStr = resp.data
   if (!audioStr) throw new Error('MiniMax 同步合成未返回音频数据')
 
-  // 兼容 hex（默认）和 base64 两种编码
-  const isHex = /^[0-9a-fA\s]+$/i.test(audioStr)
-  const buf = isHex ? hexToBuf(audioStr) : b64ToBuf(audioStr)
+  const buf = decodeAudioData(audioStr)
   const blob = new Blob([buf], { type: 'audio/mpeg' })
 
   isAlive()
