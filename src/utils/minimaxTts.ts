@@ -111,7 +111,8 @@ function safeJson(s: string): any {
  * 关键：不能仅用 /^[0-9a-fA\s]+$/i 判定，因为 base64 字符串碰巧全是
  * a-f 字符时会被误判为 hex，导致解码失败。
  */
-function detectAudioEncoding(s: string): 'hex' | 'base64' {
+function detectAudioEncoding(s: unknown): 'hex' | 'base64' {
+  if (typeof s !== 'string') return 'base64'
   const clean = s.trim()
   // base64 特有的字符：+ / = URL-safe 的 - _ 或 G-Z（超出 hex 的大写字母）
   // 如果含有这些字符，一定是 base64
@@ -224,8 +225,38 @@ export async function synthesizeChunk(
     throw new Error(`MiniMax 合成失败: ${resp.base_resp.status_msg}`)
   }
 
-  const audioStr = resp.data
-  if (!audioStr) throw new Error('MiniMax 同步合成未返回音频数据')
+  // —— 日志：查看真实响应结构的字段名 ——
+  const respKeys = Object.keys(resp)
+  const respTypes: Record<string, string> = {}
+  for (const k of respKeys) respTypes[k] = typeof (resp as any)[k]
+  agentLog('minimaxTts:sync', 'raw response inspected', { keys: respKeys, types: respTypes }, 'D')
+
+  // 可能的音频字段名：data / audio / audio_base64 / audio_hex 等
+  let audioStr: string | undefined = undefined
+  const raw = resp as any
+  // 遍历所有字段，找第一个非空字符串值最长的那个（音频数据一定很长）
+  let longestStr = ''
+  for (const k of respKeys) {
+    const v = raw[k]
+    if (typeof v === 'string' && v.length > longestStr.length) longestStr = v
+  }
+  if (typeof raw.data === 'string') audioStr = raw.data
+  else if (typeof raw.audio === 'string') audioStr = raw.audio
+  else if (typeof raw.audio_base64 === 'string') audioStr = raw.audio_base64
+  else if (typeof raw.audio_hex === 'string') audioStr = raw.audio_hex
+  else if (longestStr.length >= 100) audioStr = longestStr // 兜底：最长字符串视为音频
+
+  if (!audioStr) {
+    agentLog('minimaxTts:sync', 'response dump', {
+      keys: respKeys,
+      types: respTypes,
+      preview0: typeof raw[respKeys[0]] === 'string' ? raw[respKeys[0]].slice(0, 80) : JSON.stringify(raw[respKeys[0]]).slice(0, 80),
+    }, 'E')
+    throw new Error(`MiniMax 同步合成未返回音频数据字段（仅有字段: ${respKeys.join(', ')}）`)
+  }
+  if (typeof audioStr !== 'string') {
+    throw new Error(`MiniMax 音频字段类型异常：期望 string，实际 ${typeof audioStr}`)
+  }
 
   const buf = decodeAudioData(audioStr)
   const blob = new Blob([buf], { type: 'audio/mpeg' })
