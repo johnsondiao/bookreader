@@ -1,5 +1,5 @@
 /**
- * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8-turbo）。
+ * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8-hd）。
  *
  * 流程（见 同步语音合成 HTTP 接口文档）：
  *   POST /v1/t2a_v2  一次请求直接返回 base64/hex 音频，无需轮询/下载。
@@ -16,15 +16,22 @@ import { getTtsKey } from './ttsKeyStore'
 
 const API_BASE = 'https://api.minimaxi.com'
 /**
- * Turbo 系列模型：同步合成，速度快、性价比高。
- * 模型名必须带 -turbo / -hd 后缀，纯 speech-2.8 不存在。
- * 官方定价：
- *   Turbo: ¥400 / 200万字符 = ¥200/百万字符 = ¥2/万字
- *   HD:    ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
+ * TTS 模型选择：
+ *
+ *   可用模型（实测 + 踩坑文验证）：
+ *     - speech-2.8-hd   HD 版：所有 Key 类型（按量付费 / TokenPlan）都兼容
+ *     - speech-2.8-turbo Turbo 版：仅按量付费 Key 可用，TokenPlan 直接报 2061
+ *
+ *   曾经踩过的坑：纯 "speech-2.8" 根本不存在，接口报 invalid params not have model。
+ *   稳妥起见，统一用 speech-2.8-hd，兼容性最好。
+ *
+ * 官方定价（MiniMax 文档中心 → 价格说明）：
+ *   HD:   ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
+ *   Turbo:¥400 / 200万字符 = ¥200/百万字符 = ¥2/万字
  */
-const MODEL = 'speech-2.8-turbo'
-/** Turbo 系列单价：¥200 每百万字符（=¥2/万字） */
-export const TTS_COST_PER_MILLION = 200
+const MODEL = 'speech-2.8-hd'
+/** HD 系列单价：¥350 每百万字符（=¥3.5/万字）  */
+export const TTS_COST_PER_MILLION = 350
 
 export function estimateTtsCost(charCount: number): number {
   return (charCount / 1_000_000) * TTS_COST_PER_MILLION
@@ -41,14 +48,22 @@ export type SynthProgress = {
 interface BaseResp {
   base_resp?: { status_code: number; status_msg: string }
 }
+/**
+ * t2a_v2 同步接口响应结构（实测自 Java 示例 + 群文档）：
+ *   data: { audio: "<hex/base64 字符串>" }    —— data 是对象，不是字符串！
+ *   extra_info: { audio_length, audio_sample_rate, audio_size, bitrate }
+ *   base_resp: { status_code, status_msg }
+ *
+ * 注意：历史上不同接口/不同时段文档对 data 字段描述不一致，
+ * 代码里同时兼容 data={audio} 和 data=音频字符串 两种形式，避免再踩坑。
+ */
 interface SyncResp extends BaseResp {
-  /** 音频数据（hex 或 base64 编码的字符串） */
-  data?: string
+  data?: string | { audio?: string } | null
   extra_info?: {
     audio_length?: number
     audio_size?: number
     audio_sample_rate?: number
-    audio_bitrate?: number
+    bitrate?: number
   }
 }
 
@@ -208,9 +223,18 @@ export async function synthesizeChunk(
   onProgress({ stage: 'synthesizing', progress: 0.3, message: '在线合成中…（同步）' })
   agentLog('minimaxTts:sync', 'request start', { chars: text.length, voiceId }, 'C')
 
+  // 请求体：参考 Java 示例（speech-02-hd）+ Apifox 文档。
+  // 顶层放 voice_id / speed / vol / pitch / audio_sample_rate / bitrate
+  // voice_setting 作为兜底（文档说 timbre_weights 优先级 > voice_id）
   const resp = await httpPostSync('/v1/t2a_v2', {
     model: MODEL,
     text,
+    voice_id: voiceId,
+    speed: 1,
+    vol: 1,
+    pitch: 0,
+    audio_sample_rate: 32000,
+    bitrate: 128000,
     voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 1 },
     audio_setting: {
       audio_sample_rate: 32000,
@@ -218,6 +242,7 @@ export async function synthesizeChunk(
       format: 'mp3',
       channel: 1,
     },
+    timbre_weights: [{ voice_id: voiceId, weight: 1 }],
     language_boost: 'auto',
   })
 
@@ -231,31 +256,45 @@ export async function synthesizeChunk(
   for (const k of respKeys) respTypes[k] = typeof (resp as any)[k]
   agentLog('minimaxTts:sync', 'raw response inspected', { keys: respKeys, types: respTypes }, 'D')
 
-  // 可能的音频字段名：data / audio / audio_base64 / audio_hex 等
-  let audioStr: string | undefined = undefined
+  // 兼容多种 data 结构：
+  //   (1) data = { audio: "<hex>" }         （Java 示例实测结构）
+  //   (2) data = "<hex>"                    （老文档描述）
+  //   (3) data = null / undefined / 对象    （找全量最长字符串兜底）
   const raw = resp as any
-  // 遍历所有字段，找第一个非空字符串值最长的那个（音频数据一定很长）
-  let longestStr = ''
-  for (const k of respKeys) {
-    const v = raw[k]
-    if (typeof v === 'string' && v.length > longestStr.length) longestStr = v
-  }
-  if (typeof raw.data === 'string') audioStr = raw.data
-  else if (typeof raw.audio === 'string') audioStr = raw.audio
-  else if (typeof raw.audio_base64 === 'string') audioStr = raw.audio_base64
-  else if (typeof raw.audio_hex === 'string') audioStr = raw.audio_hex
-  else if (longestStr.length >= 100) audioStr = longestStr // 兜底：最长字符串视为音频
+  let audioStr: string | undefined = undefined
 
-  if (!audioStr) {
+  if (typeof raw.data === 'string') {
+    audioStr = raw.data
+  } else if (raw.data && typeof raw.data === 'object') {
+    // 优先取 data.audio，其次 data.base64 / data.hex
+    if (typeof raw.data.audio === 'string') audioStr = raw.data.audio
+    else if (typeof raw.data.base64 === 'string') audioStr = raw.data.base64
+    else if (typeof raw.data.hex === 'string') audioStr = raw.data.hex
+  }
+  // 兜底：全量字段中找最长字符串（音频数据一定是最长的）
+  if (!audioStr || audioStr.length < 100) {
+    let longest = audioStr || ''
+    for (const k of Object.keys(raw)) {
+      const v = raw[k]
+      if (typeof v === 'string' && v.length > longest.length) longest = v
+      // 如果嵌套对象，再找一层
+      if (v && typeof v === 'object') {
+        for (const kk of Object.keys(v)) {
+          const vv = v[kk]
+          if (typeof vv === 'string' && vv.length > longest.length) longest = vv
+        }
+      }
+    }
+    if (longest.length >= 100) audioStr = longest
+  }
+
+  if (!audioStr || typeof audioStr !== 'string') {
     agentLog('minimaxTts:sync', 'response dump', {
       keys: respKeys,
       types: respTypes,
-      preview0: typeof raw[respKeys[0]] === 'string' ? raw[respKeys[0]].slice(0, 80) : JSON.stringify(raw[respKeys[0]]).slice(0, 80),
+      dataRaw: typeof raw.data === 'object' ? JSON.stringify(raw.data).slice(0, 200) : String(raw.data).slice(0, 200),
     }, 'E')
     throw new Error(`MiniMax 同步合成未返回音频数据字段（仅有字段: ${respKeys.join(', ')}）`)
-  }
-  if (typeof audioStr !== 'string') {
-    throw new Error(`MiniMax 音频字段类型异常：期望 string，实际 ${typeof audioStr}`)
   }
 
   const buf = decodeAudioData(audioStr)

@@ -73,7 +73,7 @@ export function ReaderPage() {
   const [toast, setToast] = useState('')
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE)
   const [engineStatus, setEngineStatus] = useState(
-    '在线语音 · MiniMax speech-2.8-turbo（¥2/万字，首次合成需联网，之后缓存）',
+    '在线语音 · MiniMax speech-2.8-hd（¥3.5/万字，首次合成需联网，之后缓存）',
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState(true)
@@ -245,7 +245,7 @@ export function ReaderPage() {
     ) {
       updateSettings(next)
     }
-    setEngineStatus('在线语音 · MiniMax speech-2.8-turbo（¥2/万字，首次合成需联网，之后缓存）')
+    setEngineStatus('在线语音 · MiniMax speech-2.8-hd（¥3.5/万字，首次合成需联网，之后缓存）')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [book?.id])
 
@@ -848,7 +848,7 @@ export function ReaderPage() {
               <span>在线语音 · MiniMax</span>
               <div className="voice-install-box">
                 <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  在线语音合成（speech-2.8-turbo）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。计费 ¥2/万字。
+                  在线语音合成（speech-2.8-hd）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。计费 ¥3.5/万字。
                 </p>
                 <p style={{ margin: 0, fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
               </div>
@@ -994,7 +994,7 @@ function CostModal(props: {
         <p className="tts-unlock-desc">
           本章需在线合成 <strong>{displayChars}</strong> 字，
           预计花费 <strong style={{ color: '#e67e22' }}>{displayCost}</strong>
-          （¥2/万字）。
+          （¥3.5/万字）。
         </p>
         {warn && (
           <div className="tts-cost-warn">
