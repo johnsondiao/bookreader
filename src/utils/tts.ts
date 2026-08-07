@@ -1,5 +1,5 @@
 /**
- * TTS 总调度器 —— MiniMax 在线整章合成（speech-2.8-hd, T2A v2 同步）+ 本地缓存播放。
+ * TTS 总调度器 —— MiniMax 在线整章合成（speech-2.8-turbo, T2A v2 同步）+ 本地缓存播放。
  *
  * 工作模式：
  *   - 段落带类型（text/note），正文用 voiceKey，注释段用 noteVoiceKey

@@ -1,5 +1,5 @@
 /**
- * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8-hd）。
+ * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8-turbo）。
  *
  * 流程（见 同步语音合成 HTTP 接口文档）：
  *   POST /v1/t2a_v2  一次请求直接返回 base64/hex 音频，无需轮询/下载。
@@ -18,20 +18,18 @@ const API_BASE = 'https://api.minimaxi.com'
 /**
  * TTS 模型选择：
  *
- *   可用模型（实测 + 踩坑文验证）：
- *     - speech-2.8-hd   HD 版：所有 Key 类型（按量付费 / TokenPlan）都兼容
- *     - speech-2.8-turbo Turbo 版：仅按量付费 Key 可用，TokenPlan 直接报 2061
+ *   speech-2.8-turbo  — Turbo 极速版，文档主推荐模型。
  *
- *   曾经踩过的坑：纯 "speech-2.8" 根本不存在，接口报 invalid params not have model。
- *   稳妥起见，统一用 speech-2.8-hd，兼容性最好。
+ *   注意：纯 "speech-2.8" 不带后缀不存在，接口会直接报 invalid params；
+ *         必须为 "-turbo" 或 "-hd"。
  *
- * 官方定价（MiniMax 文档中心 → 价格说明）：
- *   HD:   ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
+ * 官方定价（平台 → 价格说明页）：
  *   Turbo:¥400 / 200万字符 = ¥200/百万字符 = ¥2/万字
+ *   HD:   ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
  */
-const MODEL = 'speech-2.8-hd'
-/** HD 系列单价：¥350 每百万字符（=¥3.5/万字）  */
-export const TTS_COST_PER_MILLION = 350
+const MODEL = 'speech-2.8-turbo'
+/** Turbo 系列单价：¥200 每百万字符（=¥2/万字）  */
+export const TTS_COST_PER_MILLION = 200
 
 export function estimateTtsCost(charCount: number): number {
   return (charCount / 1_000_000) * TTS_COST_PER_MILLION
@@ -116,6 +114,22 @@ function safeJson(s: string): any {
 }
 
 /**
+ * 安全地把任意值转换为原生 string，杜绝 "x.trim is not a function"。
+ * 背景：CapacitorHttp / 某些 JSON 层会把字符串包装成 String 对象（typeof === 'object'），
+ * 直接调用 .trim() 会报错；用 String(x) 可以强制解包为 primitive string。
+ */
+function toPrimitiveString(x: unknown): string {
+  if (typeof x === 'string') return x
+  if (x == null) return ''
+  if (x instanceof String) return String(x)
+  try {
+    return String(x)
+  } catch {
+    return ''
+  }
+}
+
+/**
  * 判断音频数据的编码格式。
  *
  * MiniMax T2A v2 返回的 data 字段可能是 hex 或 base64：
@@ -127,8 +141,8 @@ function safeJson(s: string): any {
  * a-f 字符时会被误判为 hex，导致解码失败。
  */
 function detectAudioEncoding(s: unknown): 'hex' | 'base64' {
-  if (typeof s !== 'string') return 'base64'
-  const clean = s.trim()
+  const clean = toPrimitiveString(s).trim()
+  if (!clean) return 'base64'
   // base64 特有的字符：+ / = URL-safe 的 - _ 或 G-Z（超出 hex 的大写字母）
   // 如果含有这些字符，一定是 base64
   if (/[+=/\-_]|[G-Z]/.test(clean)) return 'base64'
@@ -140,8 +154,8 @@ function detectAudioEncoding(s: unknown): 'hex' | 'base64' {
 }
 
 /** hex 字符串 → ArrayBuffer（健壮版，支持空格换行等空白） */
-function hexToBuf(hex: string): ArrayBuffer {
-  const clean = hex.replace(/\s+/g, '')
+function hexToBuf(hex: unknown): ArrayBuffer {
+  const clean = toPrimitiveString(hex).replace(/\s+/g, '')
   const buf = new ArrayBuffer(Math.floor(clean.length / 2))
   const bytes = new Uint8Array(buf)
   for (let i = 0; i < bytes.length; i++) {
@@ -159,9 +173,10 @@ function hexToBuf(hex: string): ArrayBuffer {
  *   - 缺失 padding:  补 = 至 4 的倍数
  *   - data URI 前缀:  去掉 data:...;base64, 前缀
  *   - 空白字符:  自动剔除
+ *   - 入参类型混乱:  强制 String() 解包，避免 .trim is not a function
  */
-function b64ToBuf(b64: string): ArrayBuffer {
-  let s = b64.trim()
+function b64ToBuf(b64: unknown): ArrayBuffer {
+  let s = toPrimitiveString(b64).trim()
   // 去掉 data URI 前缀
   const dataUriMatch = s.match(/^data:[^;]+;base64,(.+)$/i)
   if (dataUriMatch) s = dataUriMatch[1]
@@ -183,11 +198,12 @@ function b64ToBuf(b64: string): ArrayBuffer {
  * 将 API 返回的音频字符串解码为 ArrayBuffer。
  * 自动检测 hex / base64 编码，一种失败时回退到另一种。
  */
-function decodeAudioData(audioStr: string): ArrayBuffer {
-  const encoding = detectAudioEncoding(audioStr)
-  agentLog('minimaxTts:decode', 'encoding detected', { encoding, len: audioStr.length, preview: audioStr.slice(0, 40) }, 'D')
+function decodeAudioData(audioStr: unknown): ArrayBuffer {
+  const str = toPrimitiveString(audioStr)
+  const encoding = detectAudioEncoding(str)
+  agentLog('minimaxTts:decode', 'encoding detected', { encoding, len: str.length, preview: str.slice(0, 60), wasObj: typeof audioStr !== 'string' }, 'D')
   try {
-    const buf = encoding === 'hex' ? hexToBuf(audioStr) : b64ToBuf(audioStr)
+    const buf = encoding === 'hex' ? hexToBuf(str) : b64ToBuf(str)
     if (buf.byteLength > 0) return buf
     agentLog('minimaxTts:decode', 'primary decode returned 0 bytes, trying fallback')
   } catch (e) {
@@ -195,7 +211,7 @@ function decodeAudioData(audioStr: string): ArrayBuffer {
   }
   // 回退：尝试另一种编码
   try {
-    const fallback = encoding === 'hex' ? b64ToBuf(audioStr) : hexToBuf(audioStr)
+    const fallback = encoding === 'hex' ? b64ToBuf(str) : hexToBuf(str)
     if (fallback.byteLength > 0) {
       agentLog('minimaxTts:decode', 'fallback decode succeeded', { bytes: fallback.byteLength })
       return fallback
@@ -203,7 +219,7 @@ function decodeAudioData(audioStr: string): ArrayBuffer {
   } catch (e2) {
     agentLog('minimaxTts:decode', `fallback also failed: ${e2}`)
   }
-  throw new Error(`音频解码失败：hex 和 base64 均无法解析 (原始长度=${audioStr.length})`)
+  throw new Error(`音频解码失败：hex 和 base64 均无法解析 (原始长度=${str.length})`)
 }
 
 /**
@@ -250,53 +266,113 @@ export async function synthesizeChunk(
     throw new Error(`MiniMax 合成失败: ${resp.base_resp.status_msg}`)
   }
 
+  /** 递归查找对象中最长的字符串（音频数据一定是最长的那个），最深 3 层 */
+  function findLongestString(obj: any, depth = 0, maxDepth = 3): { value: string; path: string } {
+    let best: { value: string; path: string } = { value: '', path: '' }
+    if (!obj || depth >= maxDepth) return best
+    if (typeof obj === 'string') return { value: obj, path: '' }
+    if (typeof obj !== 'object') return best
+    for (const k of Object.keys(obj)) {
+      const v = obj[k]
+      if (typeof v === 'string' && v.length > best.value.length) {
+        best = { value: v, path: k }
+      } else if (v && typeof v === 'object') {
+        const sub = findLongestString(v, depth + 1, maxDepth)
+        if (sub.value.length > best.value.length) {
+          best = { value: sub.value, path: sub.path ? `${k}.${sub.path}` : k }
+        }
+      }
+    }
+    return best
+  }
+
   // —— 日志：查看真实响应结构的字段名 ——
-  const respKeys = Object.keys(resp)
+  const raw = resp as any
+  const respKeys = Object.keys(raw)
   const respTypes: Record<string, string> = {}
-  for (const k of respKeys) respTypes[k] = typeof (resp as any)[k]
-  agentLog('minimaxTts:sync', 'raw response inspected', { keys: respKeys, types: respTypes }, 'D')
+  for (const k of respKeys) respTypes[k] = typeof raw[k]
+  // 安全地 dump 出响应的前 4000 字符（足以看到结构，又不刷屏）
+  let fullDump = ''
+  try {
+    const redacted: any = {}
+    for (const k of respKeys) {
+      const v = raw[k]
+      if (typeof v === 'string' && v.length > 200) {
+        redacted[k] = `[string len=${v.length}] ${v.slice(0, 80)}...`
+      } else if (v && typeof v === 'object') {
+        // 对嵌套对象也做同样处理
+        redacted[k] = {}
+        for (const kk of Object.keys(v)) {
+          const vv = v[kk]
+          if (typeof vv === 'string' && vv.length > 200) {
+            redacted[k][kk] = `[string len=${vv.length}] ${vv.slice(0, 80)}...`
+          } else {
+            redacted[k][kk] = vv
+          }
+        }
+      } else {
+        redacted[k] = v
+      }
+    }
+    fullDump = JSON.stringify(redacted, null, 2)
+  } catch (dumpErr) {
+    fullDump = `[dump 失败: ${dumpErr}]`
+  }
+  agentLog('minimaxTts:sync', 'raw response inspected', {
+    keys: respKeys,
+    types: respTypes,
+    dumpTail: fullDump.slice(0, 2500),
+  }, 'D')
 
   // 兼容多种 data 结构：
   //   (1) data = { audio: "<hex>" }         （Java 示例实测结构）
   //   (2) data = "<hex>"                    （老文档描述）
-  //   (3) data = null / undefined / 对象    （找全量最长字符串兜底）
-  const raw = resp as any
+  //   (3) data = null / undefined / 对象    （用递归最长字符串兜底）
   let audioStr: string | undefined = undefined
+  let audioSrcPath = ''
 
   if (typeof raw.data === 'string') {
     audioStr = raw.data
+    audioSrcPath = 'data'
   } else if (raw.data && typeof raw.data === 'object') {
-    // 优先取 data.audio，其次 data.base64 / data.hex
-    if (typeof raw.data.audio === 'string') audioStr = raw.data.audio
-    else if (typeof raw.data.base64 === 'string') audioStr = raw.data.base64
-    else if (typeof raw.data.hex === 'string') audioStr = raw.data.hex
-  }
-  // 兜底：全量字段中找最长字符串（音频数据一定是最长的）
-  if (!audioStr || audioStr.length < 100) {
-    let longest = audioStr || ''
-    for (const k of Object.keys(raw)) {
-      const v = raw[k]
-      if (typeof v === 'string' && v.length > longest.length) longest = v
-      // 如果嵌套对象，再找一层
-      if (v && typeof v === 'object') {
-        for (const kk of Object.keys(v)) {
-          const vv = v[kk]
-          if (typeof vv === 'string' && vv.length > longest.length) longest = vv
-        }
-      }
+    if (typeof raw.data.audio === 'string') {
+      audioStr = raw.data.audio
+      audioSrcPath = 'data.audio'
+    } else if (typeof raw.data.base64 === 'string') {
+      audioStr = raw.data.base64
+      audioSrcPath = 'data.base64'
+    } else if (typeof raw.data.hex === 'string') {
+      audioStr = raw.data.hex
+      audioSrcPath = 'data.hex'
+    } else if (typeof raw.data.audio_file === 'string') {
+      // T2A Pro 返回的是下载链接（我们的接口是同步 v2，应该不会出现）
+      audioStr = raw.data.audio_file
+      audioSrcPath = 'data.audio_file (WARN: 这是下载链接而非音频数据！)'
     }
-    if (longest.length >= 100) audioStr = longest
+  }
+  // 兜底：递归找全量字段中最长字符串（音频数据一定是最大的字符串）
+  if (!audioStr || audioStr.length < 100) {
+    const found = findLongestString(raw)
+    if (found.value.length >= 100) {
+      audioStr = found.value
+      audioSrcPath = `longest@${found.path}`
+    }
   }
 
-  if (!audioStr || typeof audioStr !== 'string') {
+  if (!audioStr || toPrimitiveString(audioStr).length < 10) {
     agentLog('minimaxTts:sync', 'response dump', {
       keys: respKeys,
       types: respTypes,
-      dataRaw: typeof raw.data === 'object' ? JSON.stringify(raw.data).slice(0, 200) : String(raw.data).slice(0, 200),
+      fullDump,
     }, 'E')
-    throw new Error(`MiniMax 同步合成未返回音频数据字段（仅有字段: ${respKeys.join(', ')}）`)
+    throw new Error(
+      `MiniMax 同步合成未返回音频数据。` +
+      `\n返回字段：${respKeys.join(', ')}` +
+      `\n完整响应 dump：\n${fullDump.slice(0, 2000)}`
+    )
   }
 
+  agentLog('minimaxTts:sync', `audio source=${audioSrcPath} len=${audioStr.length}`)
   const buf = decodeAudioData(audioStr)
   const blob = new Blob([buf], { type: 'audio/mpeg' })
 
