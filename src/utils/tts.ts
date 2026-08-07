@@ -457,8 +457,30 @@ export function createTtsController(): TtsController {
           }
         }
 
+        // —— 探测合成：先用 10 字验证 API + 解码链路正常 ——
+        // 避免因模型名/解码等问题浪费整章合成费用
+        try {
+          status = 'loading'
+          opts.onStatus?.('loading', '正在验证语音合成链路…')
+          const probeText = fullText.slice(0, Math.min(10, fullText.length))
+          agentLog('tts.ts:probe', 'probe synth start', { chars: probeText.length, voiceId: textVoice.voiceId })
+          const probeBlob = await synthesizeChunk(
+            probeText,
+            textVoice.voiceId,
+            () => {},
+            () => assertAlive(epoch),
+          )
+          if (probeBlob.size === 0) throw new Error('探测音频为空')
+          agentLog('tts.ts:probe', 'probe synth ok', { bytes: probeBlob.size })
+        } catch (probeErr) {
+          agentLog('tts.ts:probe', 'probe synth failed', { error: String(probeErr) }, 'E')
+          status = 'idle'
+          opts.onStatus?.('idle', `语音合成链路异常：${probeErr instanceof Error ? probeErr.message : String(probeErr)}`)
+          throw probeErr
+        }
+
         status = 'loading'
-        opts.onStatus?.('loading', '正在在线合成整章语音（首次需联网，之后缓存）…')
+        opts.onStatus?.('loading', '探测通过，正在在线合成整章语音…')
         agentLog(
           'tts.ts:playChapter',
           'synth start',
