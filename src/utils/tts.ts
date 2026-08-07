@@ -1,9 +1,9 @@
 /**
- * TTS 总调度器 —— MiniMax 在线整章合成 + 本地缓存播放。
+ * TTS 总调度器 —— MiniMax 在线整章合成（speech-2.8-turbo, T2A v2 同步）+ 本地缓存播放。
  *
  * 工作模式：
  *   - 段落带类型（text/note），正文用 voiceKey，注释段用 noteVoiceKey
- *   - 相同音色的连续段落合并成一个合成块，整块异步 T2A 合成 mp3，
+ *   - 相同音色的连续段落合并成一个合成块，整块 T2A v2 同步合成 mp3，
  *     减少接口调用次数、省成本、音色切换自然
  *   - 每段合成结果（PlaySegment blob 序列）按 bookId:chapterId:voiceKey_noteVoiceKey
  *     为维度缓存，textHash 校验；已缓存直接播放，绝不重复合成

@@ -1,8 +1,8 @@
 /**
- * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8 Turbo）。
+ * MiniMax 在线语音合成客户端 —— 同步 T2A v2（speech-2.8-turbo）。
  *
- * 流程（见 https://platform.minimaxi.com/document/T2A%20V2 ）：
- *   POST /v1/t2a_v2  一次请求直接返回 base64 音频，无需轮询/下载。
+ * 流程（见 同步语音合成 HTTP 接口文档）：
+ *   POST /v1/t2a_v2  一次请求直接返回 base64/hex 音频，无需轮询/下载。
  *   相比异步省掉轮询开销（约 10-20s），单次支持 ≤5 万字符。
  *
  * 鉴权：Header `Authorization: Bearer <MINMAXKEY>`，v2 接口无需 GroupId。
@@ -17,11 +17,12 @@ import { getTtsKey } from './ttsKeyStore'
 const API_BASE = 'https://api.minimaxi.com'
 /**
  * Turbo 系列模型：同步合成，速度快、性价比高。
- * 官方定价见 https://platform.minimaxi.com/document/Price
+ * 模型名必须带 -turbo / -hd 后缀，纯 speech-2.8 不存在。
+ * 官方定价：
  *   Turbo: ¥400 / 200万字符 = ¥200/百万字符 = ¥2/万字
  *   HD:    ¥700 / 200万字符 = ¥350/百万字符 = ¥3.5/万字
  */
-const MODEL = 'speech-2.8'
+const MODEL = 'speech-2.8-turbo'
 /** Turbo 系列单价：¥200 每百万字符（=¥2/万字） */
 export const TTS_COST_PER_MILLION = 200
 

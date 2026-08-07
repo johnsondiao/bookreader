@@ -1,5 +1,5 @@
 /**
- * 听书音色目录：MiniMax 在线语音合成（speech-2.8-turbo，异步长文本 T2A）。
+ * 听书音色目录：MiniMax 在线语音合成（speech-2.8-turbo，同步 T2A v2）。
  *
  * 旧的本地离线引擎（piper 华严 / sherpa-onnx matcha）已全部移除，
  * 现在统一走 MiniMax 云端合成，音色 voice_id 来自 MiniMax 系统音色库。
