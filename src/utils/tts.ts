@@ -75,8 +75,8 @@ export interface TtsController {
 
 export { VOICE_CATALOG, voicesForLang, DEFAULT_VOICE_ZH, DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE }
 
-/** MiniMax 单次 t2a_async_v2 的 text 字段上限 5 万字，留余量按 4.8 万切块 */
-const MAX_CHUNK_CHARS = 48000
+/** 每个合成块的目标字数：接近此值时在句子边界断开 */
+const TARGET_CHUNK_CHARS = 500
 
 class SpeakAborted extends Error {
   constructor() {
@@ -132,9 +132,11 @@ function buildTextAndRanges(paras: Paragraph[]): { fullText: string; paraRanges:
 }
 
 /**
- * 按音色分组（正文 / 注释）生成 PlaySegment 列表：
- *   - 相同音色的连续段落合并成一段
- *   - 同音色连续超过 MAX_CHUNK_CHARS 时，按段落边界切多段
+ * 按音色分组（正文 / 注释）+ 按句子边界切分，生成 PlaySegment 列表：
+ *   - 先把每段正文拆成「句子单元」（句号/问号/叹号/分号/省略号/换行处断开）
+ *   - 再把同音色的连续句子合并，累计字数接近 TARGET_CHUNK_CHARS 时在句子边界断开
+ *   - 音色变化时必然断开
+ *   - 单句超长（无标点）时整句作为一个块（不会截断句子中间）
  */
 function planSegments(
   paras: Paragraph[],
@@ -143,32 +145,121 @@ function planSegments(
   noteVoice: VoiceDef,
 ): PlaySegment[] {
   const pickVoice = (k: ParagraphKind) => (k === 'note' ? noteVoice : textVoice)
-  const out: PlaySegment[] = []
-  let i = 0
-  while (i < paras.length) {
-    const voice = pickVoice(paras[i].kind)
-    let j = i
-    let acc = 0
-    while (j < paras.length) {
-      const p = paras[j]
-      if (pickVoice(p.kind).key !== voice.key) break
-      const nextLen = acc + p.text.length + 1
-      if (nextLen > MAX_CHUNK_CHARS && j > i) break
-      acc = nextLen
-      j++
-    }
-    if (j === i) j = i + 1
-    out.push({
-      voiceKey: voice.key,
-      voiceId: voice.voiceId,
-      firstPara: i,
-      lastPara: j - 1,
-      charStart: paraRanges[i].start,
-      charEnd: paraRanges[j - 1].end,
-    })
-    i = j
+
+  // —— 第一步：把所有段落拆成句子单元 ——
+  interface SentUnit {
+    voice: VoiceDef
+    paraIdx: number
+    charStart: number // 在 fullText 中的绝对位置
+    charEnd: number
   }
+  const units: SentUnit[] = []
+
+  for (let pi = 0; pi < paras.length; pi++) {
+    const para = paras[pi]
+    const voice = pickVoice(para.kind)
+    const range = paraRanges[pi]
+    const text = para.text
+    if (!text) continue
+
+    let sentStart = 0 // 当前句子在段落内的起始偏移
+    for (let ci = 0; ci < text.length; ci++) {
+      if (isSentenceEnd(text[ci])) {
+        const absStart = range.start + sentStart
+        const absEnd = range.start + ci + 1 // 包含标点本身
+        if (absEnd > absStart) {
+          units.push({ voice, paraIdx: pi, charStart: absStart, charEnd: absEnd })
+        }
+        sentStart = ci + 1
+      }
+    }
+    // 段尾没有结束标点的剩余部分
+    if (sentStart < text.length) {
+      units.push({
+        voice,
+        paraIdx: pi,
+        charStart: range.start + sentStart,
+        charEnd: range.end,
+      })
+    }
+  }
+
+  if (units.length === 0) return []
+
+  // —— 第二步：合并同音色句子，接近目标字数时断开 ——
+  const out: PlaySegment[] = []
+  let cur = {
+    voice: units[0].voice,
+    firstPara: units[0].paraIdx,
+    lastPara: units[0].paraIdx,
+    charStart: units[0].charStart,
+    charEnd: units[0].charEnd,
+    accLen: units[0].charEnd - units[0].charStart,
+  }
+
+  for (let i = 1; i < units.length; i++) {
+    const u = units[i]
+    const uLen = u.charEnd - u.charStart
+
+    if (u.voice.key !== cur.voice.key) {
+      // 音色变化 → 断开
+      out.push({
+        voiceKey: cur.voice.key,
+        voiceId: cur.voice.voiceId,
+        firstPara: cur.firstPara,
+        lastPara: cur.lastPara,
+        charStart: cur.charStart,
+        charEnd: cur.charEnd,
+      })
+      cur = {
+        voice: u.voice,
+        firstPara: u.paraIdx,
+        lastPara: u.paraIdx,
+        charStart: u.charStart,
+        charEnd: u.charEnd,
+        accLen: uLen,
+      }
+    } else if (cur.accLen + uLen > TARGET_CHUNK_CHARS && cur.accLen > 0) {
+      // 累计超目标 → 在此句子边界断开（但不会让当前段为空）
+      out.push({
+        voiceKey: cur.voice.key,
+        voiceId: cur.voice.voiceId,
+        firstPara: cur.firstPara,
+        lastPara: cur.lastPara,
+        charStart: cur.charStart,
+        charEnd: cur.charEnd,
+      })
+      cur = {
+        voice: u.voice,
+        firstPara: u.paraIdx,
+        lastPara: u.paraIdx,
+        charStart: u.charStart,
+        charEnd: u.charEnd,
+        accLen: uLen,
+      }
+    } else {
+      // 合并到当前段
+      cur.lastPara = u.paraIdx
+      cur.charEnd = u.charEnd
+      cur.accLen += uLen
+    }
+  }
+  // 最后一段
+  out.push({
+    voiceKey: cur.voice.key,
+    voiceId: cur.voice.voiceId,
+    firstPara: cur.firstPara,
+    lastPara: cur.lastPara,
+    charStart: cur.charStart,
+    charEnd: cur.charEnd,
+  })
+
   return out
+}
+
+/** 判断字符是否为句子结束标点（中英文） */
+function isSentenceEnd(ch: string): boolean {
+  return '。！？；…\n'.includes(ch) || '.!?;'.includes(ch)
 }
 
 const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
