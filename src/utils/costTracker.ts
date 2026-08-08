@@ -8,6 +8,8 @@
 import { TTS_COST_PER_MILLION } from './minimaxTts'
 
 const STORAGE_KEY = 'langyue-tts-cost-records'
+const OLD_STORAGE_KEY = 'langyue-tts-cost-by-day'
+const MAX_RECORDS = 5000
 
 export interface CostRecord {
   /** 日期 "YYYY-MM-DD" */
@@ -22,6 +24,11 @@ export interface CostRecord {
 
 function load(): CostRecord[] {
   try {
+    // 迁移旧数据：旧 key 是按天聚合的 { "YYYY-MM-DD": chars }，清理掉
+    const oldRaw = localStorage.getItem(OLD_STORAGE_KEY)
+    if (oldRaw) {
+      try { localStorage.removeItem(OLD_STORAGE_KEY) } catch { /* ignore */ }
+    }
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return []
     const arr = JSON.parse(raw)
@@ -55,6 +62,10 @@ export function addSynthChars(chars: number, bookTitle: string) {
     chars,
     ts: Date.now(),
   })
+  // 超过上限时丢弃最旧的记录
+  if (records.length > MAX_RECORDS) {
+    records.splice(0, records.length - MAX_RECORDS)
+  }
   save(records)
 }
 

@@ -78,13 +78,6 @@ export function MePage() {
     if (!a) return
     audioRef.current = a
     a.addEventListener('ended', () => setPlayingId(null))
-    a.addEventListener('pause', () => {
-      // 手动暂停（非 ended 触发），也要把 playingId 清掉
-      // 注意：切歌时会先 pause → load → play，这里不能简单 setPlayingId(null)，
-      // 而是判断 paused 后如果没有马上再 play，用户确实是按了暂停。
-      // 简化方案：playingId 只在 play 成功 / pause 按钮回调 / ended 三处更新，
-      // 不在此处 audio 事件里清理。
-    })
     return () => {
       try {
         a.pause()

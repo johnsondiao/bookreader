@@ -44,13 +44,37 @@ export function CostPage() {
 
   const totalYuan = useMemo(() => getTotalYuan(), [refreshKey])
   const totalChars = useMemo(() => getTotalChars(), [refreshKey])
-
-  const dayStats = useMemo<DayStat[]>(() => statsByDay(30), [refreshKey])
-  const weekStats = useMemo<PeriodStat[]>(() => statsByWeek(8), [refreshKey])
-  const monthStats = useMemo<PeriodStat[]>(() => statsByMonth(6), [refreshKey])
-  const bookStats = useMemo<BookStat[]>(() => statsByBook(), [refreshKey])
-
   const hasData = totalChars > 0
+
+  // 按需计算：只算当前 tab 的统计
+  const dayStats = useMemo<DayStat[]>(
+    () => (mode === 'day' ? statsByDay(30) : []),
+    [mode, refreshKey],
+  )
+  const weekStats = useMemo<PeriodStat[]>(
+    () => (mode === 'week' ? statsByWeek(8) : []),
+    [mode, refreshKey],
+  )
+  const monthStats = useMemo<PeriodStat[]>(
+    () => (mode === 'month' ? statsByMonth(6) : []),
+    [mode, refreshKey],
+  )
+  const bookStats = useMemo<BookStat[]>(
+    () => (mode === 'book' ? statsByBook() : []),
+    [mode, refreshKey],
+  )
+
+  // 当前 tab 过滤后的列表
+  const currentList = useMemo(() => {
+    switch (mode) {
+      case 'day': return dayStats.filter((s) => s.chars > 0)
+      case 'week': return weekStats.filter((s) => s.chars > 0)
+      case 'month': return monthStats.filter((s) => s.chars > 0)
+      case 'book': return bookStats
+    }
+  }, [mode, dayStats, weekStats, monthStats, bookStats])
+
+  const listEmpty = currentList.length === 0
 
   return (
     <div>
@@ -96,55 +120,51 @@ export function CostPage() {
         <div className="empty-state">
           还没有合成记录。在书架中打开一本书，点击「听」开始朗读后，这里会出现花费统计。
         </div>
+      ) : listEmpty ? (
+        <div className="empty-state">该时段暂无合成记录。</div>
       ) : (
         <div className="cost-list">
           {/* 按天 */}
           {mode === 'day' &&
-            dayStats
-              .filter((s) => s.chars > 0)
-              .map((s) => (
-                <div key={s.date} className="cost-row">
-                  <div className="cost-row-left">
-                    <div className="cost-row-label">{formatDate(s.date)}</div>
-                    <div className="cost-row-sub">
-                      {formatChars(s.chars)} · {s.records} 次
-                    </div>
+            (currentList as DayStat[]).map((s) => (
+              <div key={s.date} className="cost-row">
+                <div className="cost-row-left">
+                  <div className="cost-row-label">{formatDate(s.date)}</div>
+                  <div className="cost-row-sub">
+                    {formatChars(s.chars)} · {s.records} 次
                   </div>
-                  <div className="cost-row-right">{formatCost(s.yuan)}</div>
                 </div>
-              ))}
+                <div className="cost-row-right">{formatCost(s.yuan)}</div>
+              </div>
+            ))}
 
           {/* 按周 */}
           {mode === 'week' &&
-            weekStats
-              .filter((s) => s.chars > 0)
-              .map((s, i) => (
-                <div key={i} className="cost-row">
-                  <div className="cost-row-left">
-                    <div className="cost-row-label">{s.label} 起</div>
-                    <div className="cost-row-sub">{formatChars(s.chars)}</div>
-                  </div>
-                  <div className="cost-row-right">{formatCost(s.yuan)}</div>
+            (currentList as PeriodStat[]).map((s) => (
+              <div key={s.label} className="cost-row">
+                <div className="cost-row-left">
+                  <div className="cost-row-label">{s.label} 起</div>
+                  <div className="cost-row-sub">{formatChars(s.chars)}</div>
                 </div>
-              ))}
+                <div className="cost-row-right">{formatCost(s.yuan)}</div>
+              </div>
+            ))}
 
           {/* 按月 */}
           {mode === 'month' &&
-            monthStats
-              .filter((s) => s.chars > 0)
-              .map((s, i) => (
-                <div key={i} className="cost-row">
-                  <div className="cost-row-left">
-                    <div className="cost-row-label">{s.label}</div>
-                    <div className="cost-row-sub">{formatChars(s.chars)}</div>
-                  </div>
-                  <div className="cost-row-right">{formatCost(s.yuan)}</div>
+            (currentList as PeriodStat[]).map((s) => (
+              <div key={s.label} className="cost-row">
+                <div className="cost-row-left">
+                  <div className="cost-row-label">{s.label}</div>
+                  <div className="cost-row-sub">{formatChars(s.chars)}</div>
                 </div>
-              ))}
+                <div className="cost-row-right">{formatCost(s.yuan)}</div>
+              </div>
+            ))}
 
           {/* 按书 */}
           {mode === 'book' &&
-            bookStats.map((s) => (
+            (currentList as BookStat[]).map((s) => (
               <div key={s.bookTitle} className="cost-row">
                 <div className="cost-row-left">
                   <div className="cost-row-label">{s.bookTitle}</div>
@@ -155,17 +175,6 @@ export function CostPage() {
                 <div className="cost-row-right">{formatCost(s.yuan)}</div>
               </div>
             ))}
-
-          {/* 按天/周/月过滤后为空时 */}
-          {(mode === 'day' || mode === 'week' || mode === 'month') &&
-            (mode === 'day'
-              ? dayStats
-              : mode === 'week'
-                ? weekStats
-                : monthStats
-            ).every((s) => s.chars === 0) && (
-              <div className="empty-state">该时段暂无合成记录。</div>
-            )}
         </div>
       )}
     </div>
