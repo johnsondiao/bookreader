@@ -134,7 +134,7 @@ export function MePage() {
     try {
       if (playingId === item.id) {
         audioRef.current?.pause()
-        audioRef.current && (audioRef.current.src = '')
+        if (audioRef.current) audioRef.current.src = ''
         setPlayingId(null)
       }
       await deleteAudioFile(item.id)

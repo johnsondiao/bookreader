@@ -3,6 +3,14 @@ const ENDPOINT = 'http://127.0.0.1:7614/ingest/ed076610-e963-431c-bb64-17c41bdea
 const STORAGE_KEY = 'debug-18e7c1'
 const MAX_LINES = 40
 
+/** 是否启用远程上报（默认关闭，避免生产环境 Network 面板红字） */
+let remoteEnabled = false
+
+/** 开启/关闭远程调试上报（仅在本地调试时按需开启） */
+export function setRemoteDebugEnabled(on: boolean) {
+  remoteEnabled = on
+}
+
 /** 包装 fetch 之前保留原生实现，避免调试上报被拦截/刷屏 */
 export const nativeFetch: typeof fetch =
   typeof window !== 'undefined' ? window.fetch.bind(window) : fetch
@@ -79,11 +87,13 @@ export function agentLog(
   if (ring.length > MAX_LINES) ring.length = MAX_LINES
   notify()
 
-  nativeFetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18e7c1' },
-    body: JSON.stringify(payload),
-  }).catch(() => {})
+  if (remoteEnabled) {
+    nativeFetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '18e7c1' },
+      body: JSON.stringify(payload),
+    }).catch(() => {})
+  }
 
   try {
     const line = JSON.stringify(payload)

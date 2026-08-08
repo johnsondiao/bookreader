@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useAppStore } from '../store/useAppStore'
 
 function formatTime(ts: number) {
@@ -16,7 +17,7 @@ export function HistoryPage() {
   const updateReadingProgress = useAppStore((s) => s.updateReadingProgress)
   const clearSnapshots = useAppStore((s) => s.clearSnapshots)
 
-  const bookMap = Object.fromEntries(books.map((b) => [b.id, b]))
+  const bookMap = useMemo(() => Object.fromEntries(books.map((b) => [b.id, b])), [books])
 
   return (
     <div>

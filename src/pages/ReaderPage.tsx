@@ -59,7 +59,8 @@ function pickStartChapter(book: {
 
 export function ReaderPage() {
   const activeBookId = useAppStore((s) => s.activeBookId)
-  const book = useAppStore((s) => s.books.find((b) => b.id === activeBookId))
+  const books = useAppStore((s) => s.books)
+  const book = useMemo(() => books.find((b) => b.id === activeBookId), [books, activeBookId])
   const settings = useAppStore((s) => s.settings)
   const closeReader = useAppStore((s) => s.closeReader)
   const updateReadingProgress = useAppStore((s) => s.updateReadingProgress)
@@ -351,38 +352,45 @@ export function ReaderPage() {
 
       if (!quiet) showToast('正在准备语音…', 4000)
 
+      // 共享回调：避免主流程和重试流程重复定义
+      const callbacks = {
+        onParagraph: (i: number) => {
+          if (!speakingRef.current) return
+          setParaIndex(i)
+          scrollToPara(i)
+          saveProgress(chapter.id, i, 'tts', '朗读进度', true)
+        },
+        onStatus: (s: string, msg?: string) => {
+          if (quiet) return
+          if (s === 'loading') setEngineStatus(msg || '正在准备语音…')
+          else if (s === 'speaking') {
+            setEngineStatus('正在朗读…')
+            setTtsPaused(false)
+          } else if (s === 'idle') setEngineStatus(msg || '')
+        },
+        onSynthProgress: (p: { progress: number; message: string; stage: string }) => {
+          setTodayCost(formatCost(getTodayCostYuan()))
+          if (quiet) return
+          const pct = Math.round((p.progress || 0) * 100)
+          setEngineStatus(`${p.message || p.stage} ${pct}%`)
+        },
+      }
+
+      const playOpts = {
+        bookId: book.id,
+        bookTitle: book.title,
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        paragraphs,
+        startParagraphIndex: startIndex,
+        voiceKey: zhKey,
+        noteVoiceKey: noteKey,
+        rate: settings.ttsRate,
+        ...callbacks,
+      }
+
       try {
-        await ttsRef.current.playChapter({
-          bookId: book.id,
-          bookTitle: book.title,
-          chapterId: chapter.id,
-          chapterTitle: chapter.title,
-          paragraphs,
-          startParagraphIndex: startIndex,
-          voiceKey: zhKey,
-          noteVoiceKey: noteKey,
-          rate: settings.ttsRate,
-          onParagraph: (i) => {
-            if (!speakingRef.current) return
-            setParaIndex(i)
-            scrollToPara(i)
-            saveProgress(chapter.id, i, 'tts', '朗读进度', true)
-          },
-          onStatus: (s, msg) => {
-            if (quiet) return
-            if (s === 'loading') setEngineStatus(msg || '正在准备语音…')
-            else if (s === 'speaking') {
-              setEngineStatus('正在朗读…')
-              setTtsPaused(false)
-            } else if (s === 'idle') setEngineStatus(msg || '')
-          },
-          onSynthProgress: (p) => {
-            setTodayCost(formatCost(getTodayCostYuan()))
-            if (quiet) return
-            const pct = Math.round((p.progress || 0) * 100)
-            setEngineStatus(`${p.message || p.stage} ${pct}%`)
-          },
-        })
+        await ttsRef.current.playChapter(playOpts)
       } catch (err) {
         // 合成时 key 被清/读不到 → 弹解锁框，解锁成功后重试一次
         if (err instanceof TtsKeyLockedError) {
@@ -394,37 +402,7 @@ export function ReaderPage() {
           }
           // 解锁成功，重试一次（不再递归避免无限循环）
           try {
-            await ttsRef.current.playChapter({
-              bookId: book.id,
-              bookTitle: book.title,
-              chapterId: chapter.id,
-              chapterTitle: chapter.title,
-              paragraphs,
-              startParagraphIndex: startIndex,
-              voiceKey: zhKey,
-              noteVoiceKey: noteKey,
-              rate: settings.ttsRate,
-              onParagraph: (i) => {
-                if (!speakingRef.current) return
-                setParaIndex(i)
-                scrollToPara(i)
-                saveProgress(chapter.id, i, 'tts', '朗读进度', true)
-              },
-              onStatus: (s, msg) => {
-                if (quiet) return
-                if (s === 'loading') setEngineStatus(msg || '正在准备语音…')
-                else if (s === 'speaking') {
-                  setEngineStatus('正在朗读…')
-                  setTtsPaused(false)
-                } else if (s === 'idle') setEngineStatus(msg || '')
-              },
-              onSynthProgress: (p) => {
-                setTodayCost(formatCost(getTodayCostYuan()))
-                if (quiet) return
-                const pct = Math.round((p.progress || 0) * 100)
-                setEngineStatus(`${p.message || p.stage} ${pct}%`)
-              },
-            })
+            await ttsRef.current.playChapter(playOpts)
           } catch (err2) {
             if (
               err2 instanceof Error &&
