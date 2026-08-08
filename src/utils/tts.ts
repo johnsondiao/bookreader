@@ -75,9 +75,6 @@ export interface TtsController {
 
 export { VOICE_CATALOG, voicesForLang, DEFAULT_VOICE_ZH, DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE }
 
-/** 每个合成块的目标字数：接近此值时在句子边界断开 */
-const TARGET_CHUNK_CHARS = 500
-
 class SpeakAborted extends Error {
   constructor() {
     super('aborted')
@@ -101,12 +98,11 @@ interface CharRange {
 }
 
 /**
- * 一个播放段：相同音色的连续段落合并成一段音频。
+ * 一个播放段 = 一个句子，对应一次语音合成 API 调用。
  * - voiceKey：该段使用的音色
  * - firstPara/lastPara：在 paragraphs 中的索引（闭区间）
  * - charStart/charEnd：该段在全局拼接文本中的字符区间
  * - blob：合成好的音频（缓存里就有，否则在合成阶段赋值）
- * - groupKey：合成块的分组 key（供整章跨合成次数复用）
  */
 interface PlaySegment {
   voiceKey: string
@@ -132,11 +128,10 @@ function buildTextAndRanges(paras: Paragraph[]): { fullText: string; paraRanges:
 }
 
 /**
- * 按音色分组（正文 / 注释）+ 按句子边界切分，生成 PlaySegment 列表：
- *   - 先把每段正文拆成「句子单元」（句号/问号/叹号/分号/省略号/换行处断开）
- *   - 再把同音色的连续句子合并，累计字数接近 TARGET_CHUNK_CHARS 时在句子边界断开
- *   - 音色变化时必然断开
- *   - 单句超长（无标点）时整句作为一个块（不会截断句子中间）
+ * 按句子切分，生成 PlaySegment 列表：每个句子 = 一个 segment = 一次 API 调用。
+ *   - 句子结束标点：。！？；…\n . ! ? ;
+ *   - 每个句子用所属段落的音色（正文/注释）
+ *   - 段尾没有结束标点的剩余部分也作为一个 segment
  */
 function planSegments(
   paras: Paragraph[],
@@ -145,15 +140,7 @@ function planSegments(
   noteVoice: VoiceDef,
 ): PlaySegment[] {
   const pickVoice = (k: ParagraphKind) => (k === 'note' ? noteVoice : textVoice)
-
-  // —— 第一步：把所有段落拆成句子单元 ——
-  interface SentUnit {
-    voice: VoiceDef
-    paraIdx: number
-    charStart: number // 在 fullText 中的绝对位置
-    charEnd: number
-  }
-  const units: SentUnit[] = []
+  const out: PlaySegment[] = []
 
   for (let pi = 0; pi < paras.length; pi++) {
     const para = paras[pi]
@@ -168,91 +155,30 @@ function planSegments(
         const absStart = range.start + sentStart
         const absEnd = range.start + ci + 1 // 包含标点本身
         if (absEnd > absStart) {
-          units.push({ voice, paraIdx: pi, charStart: absStart, charEnd: absEnd })
+          out.push({
+            voiceKey: voice.key,
+            voiceId: voice.voiceId,
+            firstPara: pi,
+            lastPara: pi,
+            charStart: absStart,
+            charEnd: absEnd,
+          })
         }
         sentStart = ci + 1
       }
     }
     // 段尾没有结束标点的剩余部分
     if (sentStart < text.length) {
-      units.push({
-        voice,
-        paraIdx: pi,
+      out.push({
+        voiceKey: voice.key,
+        voiceId: voice.voiceId,
+        firstPara: pi,
+        lastPara: pi,
         charStart: range.start + sentStart,
         charEnd: range.end,
       })
     }
   }
-
-  if (units.length === 0) return []
-
-  // —— 第二步：合并同音色句子，接近目标字数时断开 ——
-  const out: PlaySegment[] = []
-  let cur = {
-    voice: units[0].voice,
-    firstPara: units[0].paraIdx,
-    lastPara: units[0].paraIdx,
-    charStart: units[0].charStart,
-    charEnd: units[0].charEnd,
-    accLen: units[0].charEnd - units[0].charStart,
-  }
-
-  for (let i = 1; i < units.length; i++) {
-    const u = units[i]
-    const uLen = u.charEnd - u.charStart
-
-    if (u.voice.key !== cur.voice.key) {
-      // 音色变化 → 断开
-      out.push({
-        voiceKey: cur.voice.key,
-        voiceId: cur.voice.voiceId,
-        firstPara: cur.firstPara,
-        lastPara: cur.lastPara,
-        charStart: cur.charStart,
-        charEnd: cur.charEnd,
-      })
-      cur = {
-        voice: u.voice,
-        firstPara: u.paraIdx,
-        lastPara: u.paraIdx,
-        charStart: u.charStart,
-        charEnd: u.charEnd,
-        accLen: uLen,
-      }
-    } else if (cur.accLen + uLen > TARGET_CHUNK_CHARS && cur.accLen > 0) {
-      // 累计超目标 → 在此句子边界断开（但不会让当前段为空）
-      out.push({
-        voiceKey: cur.voice.key,
-        voiceId: cur.voice.voiceId,
-        firstPara: cur.firstPara,
-        lastPara: cur.lastPara,
-        charStart: cur.charStart,
-        charEnd: cur.charEnd,
-      })
-      cur = {
-        voice: u.voice,
-        firstPara: u.paraIdx,
-        lastPara: u.paraIdx,
-        charStart: u.charStart,
-        charEnd: u.charEnd,
-        accLen: uLen,
-      }
-    } else {
-      // 合并到当前段
-      cur.lastPara = u.paraIdx
-      cur.charEnd = u.charEnd
-      cur.accLen += uLen
-    }
-  }
-  // 最后一段
-  out.push({
-    voiceKey: cur.voice.key,
-    voiceId: cur.voice.voiceId,
-    firstPara: cur.firstPara,
-    lastPara: cur.lastPara,
-    charStart: cur.charStart,
-    charEnd: cur.charEnd,
-  })
 
   return out
 }
