@@ -231,6 +231,7 @@ export function createTtsController(): TtsController {
     segments: PlaySegment[],
     onSynthProgress: ((p: TtsProgress) => void) | undefined,
     epoch: number,
+    bookTitle: string,
   ): Promise<void> => {
     const total = segments.length
     for (let i = 0; i < total; i++) {
@@ -260,7 +261,7 @@ export function createTtsController(): TtsController {
       )
       seg.blob = blob
       // 记录本次合成的字符数到每日花费统计
-      addSynthChars(text.length)
+      addSynthChars(text.length, bookTitle)
     }
   }
 
@@ -476,7 +477,7 @@ export function createTtsController(): TtsController {
           },
           'A',
         )
-        await synthesizeSegments(fullText, segments, opts.onSynthProgress, epoch)
+        await synthesizeSegments(fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知')
         assertAlive(epoch)
         // 写回缓存
         const chunks: AudioChunk[] = segments.map((s) => ({

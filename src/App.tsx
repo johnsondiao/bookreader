@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { BottomNav } from './components/BottomNav'
+import { CostPage } from './pages/CostPage'
 import { HistoryPage } from './pages/HistoryPage'
 import { MePage } from './pages/MePage'
 import { ReaderPage } from './pages/ReaderPage'
@@ -15,6 +16,7 @@ function Home() {
       <div className="home-body">
         {tab === 'shelf' && <ShelfPage />}
         {tab === 'history' && <HistoryPage />}
+        {tab === 'cost' && <CostPage />}
         {tab === 'me' && <MePage />}
       </div>
       <BottomNav />

@@ -98,5 +98,5 @@ export interface AudioFileRecord {
 }
 
 
-export type TabId = 'shelf' | 'history' | 'me'
+export type TabId = 'shelf' | 'history' | 'cost' | 'me'
 export type Screen = 'home' | 'reader'
