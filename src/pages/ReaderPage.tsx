@@ -76,7 +76,28 @@ export function ReaderPage() {
     '在线语音 · MiniMax speech-2.8-turbo（¥2/万字，首次合成需联网，之后缓存）',
   )
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
-  const [debugOpen, setDebugOpen] = useState(true)
+  const [debugOpen, setDebugOpen] = useState<boolean>(() => {
+    // 读 Zustand settings.ttsDebugPanel，SSR/未初始化时值为 false（默认不展开）
+    try {
+      // 初始化时 useAppStore.getState 比订阅更早，避免 hydration 前 undefined
+      return !!useAppStore.getState().settings.ttsDebugPanel
+    } catch {
+      return false
+    }
+  })
+  /** 调试面板开关变化时同步写入 settings，下次启动保持 */
+  const setDebugOpenPersistent = useCallback(
+    (v: boolean | ((p: boolean) => boolean)) => {
+      const next = typeof v === 'function' ? (v as (p: boolean) => boolean)(debugOpen) : v
+      setDebugOpen(next)
+      try {
+        useAppStore.getState().updateSettings({ ttsDebugPanel: next })
+      } catch {
+        /* ignore */
+      }
+    },
+    [debugOpen],
+  )
   /** 语音解锁弹窗：首次朗读时要求输入密码，解密 MiniMax key */
   const [unlockOpen, setUnlockOpen] = useState(false)
   const [unlockError, setUnlockError] = useState('')
@@ -361,7 +382,9 @@ export function ReaderPage() {
       try {
         await ttsRef.current.playChapter({
           bookId: book.id,
+          bookTitle: book.title,
           chapterId: chapter.id,
+          chapterTitle: chapter.title,
           paragraphs,
           startParagraphIndex: startIndex,
           voiceKey: zhKey,
@@ -401,7 +424,9 @@ export function ReaderPage() {
           try {
             await ttsRef.current.playChapter({
               bookId: book.id,
+              bookTitle: book.title,
               chapterId: chapter.id,
+              chapterTitle: chapter.title,
               paragraphs,
               startParagraphIndex: startIndex,
               voiceKey: zhKey,
@@ -442,7 +467,7 @@ export function ReaderPage() {
               { err: err2 instanceof Error ? err2.message : String(err2), hint: hint2 },
               'C',
             )
-            setDebugOpen(true)
+            setDebugOpenPersistent(true)
             showToast(`${err2 instanceof Error ? err2.message : '朗读失败'}\n${hint2}`, 12000)
             speakingRef.current = false
             setTtsOn(false)
@@ -465,7 +490,7 @@ export function ReaderPage() {
             'C',
           )
           // #endregion
-          setDebugOpen(true)
+          setDebugOpenPersistent(true)
           showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
           speakingRef.current = false
           setTtsOn(false)
@@ -886,6 +911,30 @@ export function ReaderPage() {
                 ))}
               </select>
             </div>
+
+            <div className="row">
+              <span>调试面板</span>
+              <label
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={!!settings.ttsDebugPanel}
+                  onChange={(e) => {
+                    const on = e.target.checked
+                    setDebugOpenPersistent(on)
+                  }}
+                />
+                展开日志（排错用，默认关）
+              </label>
+            </div>
           </div>
         </div>
       )}
@@ -911,7 +960,7 @@ export function ReaderPage() {
       )}
 
       <div className={`tts-debug-panel${debugOpen ? ' open' : ''}`}>
-        <button type="button" className="tts-debug-toggle" onClick={() => setDebugOpen((v) => !v)}>
+        <button type="button" className="tts-debug-toggle" onClick={() => setDebugOpenPersistent((v) => !v)}>
           {debugOpen ? '收起调试' : '展开调试'} ({debugLines.length})
         </button>
         {debugOpen && (

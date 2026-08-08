@@ -11,7 +11,7 @@
  */
 import { agentLog } from './agentLog'
 import { estimateTtsCost, synthesizeChunk, type SynthProgress } from './minimaxTts'
-import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio } from './audioCache'
+import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
@@ -41,7 +41,9 @@ export type TtsProgress = {
 
 export interface PlayChapterOpts {
   bookId: string
+  bookTitle: string
   chapterId: string
+  chapterTitle: string
   /** 章节段落（带 text/note 类型，兼容旧的纯字符串数组） */
   paragraphs: Paragraph[] | string[]
   /** 从第几段开始播放 */
@@ -503,7 +505,18 @@ export function createTtsController(): TtsController {
           blob: s.blob!,
         }))
         clip = { chunks, textHash, voiceKey: `${textVoice.key}|${noteVoice.key}`, createdAt: Date.now() }
-        void putClip(cacheKey, clip)
+        // meta 用于写外部文件（升级不被清），缺字段也没关系：此时回退只写 IDB
+        const voiceLabel = textVoice.name + (noteVoice.key !== textVoice.key ? ` · ${noteVoice.name}注释` : '')
+        const fileMeta: ChapterFileMeta = {
+          bookId: opts.bookId,
+          bookTitle: opts.bookTitle,
+          chapterId: opts.chapterId,
+          chapterTitle: opts.chapterTitle,
+          voiceKey: textVoice.key,
+          noteVoiceKey: noteVoice.key,
+          voiceLabel,
+        }
+        void putClip(cacheKey, clip, fileMeta)
         opts.onStatus?.('loading', '合成完成，准备播放…')
       } else {
         agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, segments: segments.length }, 'A')

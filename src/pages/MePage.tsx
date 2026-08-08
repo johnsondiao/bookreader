@@ -1,4 +1,26 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import {
+  listAudioFiles,
+  deleteAudioFile,
+  getAudioPlayUrl,
+  getAudioAbsolutePath,
+  isAudioFsAvailable,
+} from '../utils/audioFileStore'
+import type { AudioFileRecord } from '../types'
+
+function fmtSize(bytes: number): string {
+  if (bytes == null) return '—'
+  const kb = bytes / 1024
+  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`
+  const mb = kb / 1024
+  return `${mb.toFixed(mb < 10 ? 2 : 1)} MB`
+}
+function fmtTs(ts: number): string {
+  const d = new Date(ts)
+  const pad = (n: number) => n.toString().padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
 
 export function MePage() {
   const books = useAppStore((s) => s.books)
@@ -9,6 +31,93 @@ export function MePage() {
 
   const reading = books.filter((b) => b.progressPercent > 0).length
   const ttsCount = snapshots.filter((s) => s.source === 'tts').length
+
+  /* ===== 已合成音频列表 ===== */
+  const [list, setList] = useState<AudioFileRecord[]>([])
+  const [fsOk, setFsOk] = useState<boolean | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  async function reload() {
+    setLoading(true)
+    try {
+      const ok = await isAudioFsAvailable()
+      setFsOk(ok)
+      setList(ok ? await listAudioFiles() : [])
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => {
+    void reload()
+  }, [])
+
+  // 全局 audio：切歌时复用同一个 <audio>，避免多条同时响
+  useEffect(() => {
+    const a = typeof Audio !== 'undefined' ? new Audio() : null
+    if (!a) return
+    audioRef.current = a
+    a.addEventListener('ended', () => setPlayingId(null))
+    a.addEventListener('pause', () => {
+      // 手动暂停（非 ended 触发），也要把 playingId 清掉
+      // 注意：切歌时会先 pause → load → play，这里不能简单 setPlayingId(null)，
+      // 而是判断 paused 后如果没有马上再 play，用户确实是按了暂停。
+      // 简化方案：playingId 只在 play 成功 / pause 按钮回调 / ended 三处更新，
+      // 不在此处 audio 事件里清理。
+    })
+    return () => {
+      try {
+        a.pause()
+      } catch { /* ignore */ }
+      a.src = ''
+    }
+  }, [])
+
+  const totalSize = useMemo(() => list.reduce((s, x) => s + (x.sizeBytes || 0), 0), [list])
+
+  async function onPlay(item: AudioFileRecord) {
+    const audio = audioRef.current
+    if (!audio) return
+    // 正在播同一条 → 暂停
+    if (playingId === item.id) {
+      audio.pause()
+      setPlayingId(null)
+      return
+    }
+    try {
+      const url = await getAudioPlayUrl(item.id)
+      if (!url) {
+        alert('找不到该音频文件，可能已被从文件管理器中删除。')
+        return
+      }
+      audio.src = url
+      audio.playbackRate = settings.ttsRate
+      await audio.play()
+      setPlayingId(item.id)
+    } catch (err) {
+      console.warn('[MePage] 播放失败', err)
+      alert('播放失败：' + ((err as Error)?.message || String(err)))
+    }
+  }
+  async function onDelete(item: AudioFileRecord) {
+    if (!confirm(`确认删除该音频？\n《${item.bookTitle}》· ${item.chapterTitle}\n（将同时删除物理 mp3 文件）`)) return
+    try {
+      if (playingId === item.id) {
+        audioRef.current?.pause()
+        audioRef.current && (audioRef.current.src = '')
+        setPlayingId(null)
+      }
+      await deleteAudioFile(item.id)
+      setList((prev) => prev.filter((x) => x.id !== item.id))
+    } catch (err) {
+      alert('删除失败：' + ((err as Error)?.message || String(err)))
+    }
+  }
+  async function onShowPath(item: AudioFileRecord) {
+    const p = await getAudioAbsolutePath(item.id)
+    alert(p || '（暂无路径信息）')
+  }
 
   return (
     <div>
@@ -74,8 +183,112 @@ export function MePage() {
         </button>
       </div>
 
+      {/* ======= 已合成音频 ======= */}
+      <div className="setting-list" style={{ marginTop: 16 }}>
+        <div className="setting-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>已合成音频</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
+                {loading
+                  ? '正在读取…'
+                  : fsOk === false
+                  ? '当前环境不支持文件系统存储（仅 Android App 下生效）'
+                  : `${list.length} 条 · 共 ${fmtSize(totalSize)} · 保存在公共 Documents/LangyueReader/audio/，升级/重装不会丢失`}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="tts-debug-toggle"
+              style={{ fontSize: 12, padding: '4px 10px' }}
+              onClick={() => void reload()}
+            >
+              刷新
+            </button>
+          </div>
+        </div>
+
+        {list.length === 0 && !loading && fsOk !== false && (
+          <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px' }}>
+            还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。
+          </div>
+        )}
+
+        {list.map((it) => {
+          const playing = playingId === it.id
+          return (
+            <div
+              key={it.id}
+              className="setting-row"
+              style={{
+                display: 'block',
+                padding: '10px 16px',
+                gap: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    《{it.bookTitle}》
+                  </div>
+                  <div style={{ marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {it.chapterTitle}
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    <span>{it.voiceLabel}</span>
+                    <span>·</span>
+                    <span>{fmtSize(it.sizeBytes)}</span>
+                    <span>·</span>
+                    <span>{fmtTs(it.createdAt)}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="tts-debug-toggle"
+                    style={{
+                      fontSize: 12,
+                      padding: '6px 12px',
+                      background: playing ? 'var(--accent)' : 'transparent',
+                      color: playing ? '#fff' : 'var(--accent)',
+                      border: `1px solid var(--accent)`,
+                    }}
+                    onClick={() => void onPlay(it)}
+                  >
+                    {playing ? '暂停' : '播放'}
+                  </button>
+                  <button
+                    type="button"
+                    className="tts-debug-toggle"
+                    title="查看保存路径"
+                    style={{ fontSize: 12, padding: '6px 10px' }}
+                    onClick={() => void onShowPath(it)}
+                  >
+                    路径
+                  </button>
+                  <button
+                    type="button"
+                    className="tts-debug-toggle"
+                    title="删除音频文件"
+                    style={{
+                      fontSize: 12,
+                      padding: '6px 10px',
+                      color: 'var(--danger, #c0392b)',
+                      border: `1px solid var(--danger-border, #e2b1ac)`,
+                    }}
+                    onClick={() => void onDelete(it)}
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
       {books.length > 0 && (
-        <div className="setting-list">
+        <div className="setting-list" style={{ marginTop: 16 }}>
           <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 12 }}>
             书籍管理 · 仅从书架移除，不会删除原文件
           </div>
