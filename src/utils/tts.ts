@@ -10,7 +10,7 @@
  *   - 播放统一按「段落全局字符比例」估算当前段，回调高亮
  */
 import { agentLog } from './agentLog'
-import { estimateTtsCost, synthesizeChunk, type SynthProgress } from './minimaxTts'
+import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -60,8 +60,6 @@ export interface PlayChapterOpts {
   onStatus?: (status: TtsStatus, message?: string) => void
   /** 合成进度回调 */
   onSynthProgress?: (p: TtsProgress) => void
-  /** 合成前的费用预估回调（仅当需要在线合成时触发，返回 true 才继续） */
-  onCostEstimate?: (chars: number, costYuan: number) => boolean | Promise<boolean>
 }
 
 export interface TtsController {
@@ -460,22 +458,6 @@ export function createTtsController(): TtsController {
       const needSynth = cached.length !== segments.length || segments.some((s) => !s.blob)
 
       if (needSynth) {
-        // 费用预估：统计需要新合成的字符数（缓存命中的段不计费）
-        const newSynthChars = segments
-          .filter((s) => !s.blob)
-          .reduce((sum, s) => sum + (s.charEnd - s.charStart), 0)
-        const estCost = estimateTtsCost(newSynthChars)
-
-        // 回调上层：显示确认弹窗；返回 false 则取消
-        if (opts.onCostEstimate) {
-          const confirmed = await opts.onCostEstimate(newSynthChars, estCost)
-          if (!confirmed) {
-            status = 'idle'
-            opts.onStatus?.('idle', '已取消合成')
-            return
-          }
-        }
-
         status = 'loading'
         opts.onStatus?.('loading', '正在在线合成整章语音…')
         agentLog(
