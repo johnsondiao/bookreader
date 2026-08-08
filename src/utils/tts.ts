@@ -11,6 +11,7 @@
  */
 import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
+import { addSynthChars } from './costTracker'
 import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -258,6 +259,8 @@ export function createTtsController(): TtsController {
         () => assertAlive(epoch),
       )
       seg.blob = blob
+      // 记录本次合成的字符数到每日花费统计
+      addSynthChars(text.length)
     }
   }
 

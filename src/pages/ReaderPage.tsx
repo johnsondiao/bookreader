@@ -18,6 +18,7 @@ import {
   subscribeDebugLog,
   type DebugPayload,
 } from '../utils/agentLog'
+import { getTodayCostYuan, formatCost } from '../utils/costTracker'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -75,6 +76,7 @@ export function ReaderPage() {
   const [engineStatus, setEngineStatus] = useState(
     '在线语音 · MiniMax speech-2.8-turbo（¥2/万字，首次合成需联网，之后缓存）',
   )
+  const [todayCost, setTodayCost] = useState(() => formatCost(getTodayCostYuan()))
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState<boolean>(() => {
     // 读 Zustand settings.ttsDebugPanel，SSR/未初始化时值为 false（默认不展开）
@@ -375,6 +377,7 @@ export function ReaderPage() {
             } else if (s === 'idle') setEngineStatus(msg || '')
           },
           onSynthProgress: (p) => {
+            setTodayCost(formatCost(getTodayCostYuan()))
             if (quiet) return
             const pct = Math.round((p.progress || 0) * 100)
             setEngineStatus(`${p.message || p.stage} ${pct}%`)
@@ -416,6 +419,7 @@ export function ReaderPage() {
                 } else if (s === 'idle') setEngineStatus(msg || '')
               },
               onSynthProgress: (p) => {
+                setTodayCost(formatCost(getTodayCostYuan()))
                 if (quiet) return
                 const pct = Math.round((p.progress || 0) * 100)
                 setEngineStatus(`${p.message || p.stage} ${pct}%`)
@@ -749,6 +753,9 @@ export function ReaderPage() {
               <div>{ttsOn ? (ttsPaused ? '已暂停' : '正在朗读…') : '点击播放开始朗读'}</div>
               <div className="muted">
                 {chapter.title} · 第 {paraIndex + 1}/{paragraphs.length || 1} 段 · {settings.ttsRate.toFixed(1)}x
+              </div>
+              <div className="muted" style={{ fontSize: 11 }}>
+                今日已耗 {todayCost}
               </div>
             </div>
             <button
