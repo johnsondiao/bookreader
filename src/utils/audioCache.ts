@@ -1,13 +1,14 @@
 /**
- * 章节音频缓存（IndexedDB + 外部物理文件双写）。
+ * 章节音频缓存（IndexedDB + 物理文件双写）。
  *
  *  1. IndexedDB（主键 key = `${bookId}__${chapterId}__${voiceCombo}`）：
  *     存分块 Blob + 字符边界，用于 App 内部段落级精准播放 + 高亮。
  *
- *  2. 外部文件 Documents/LangyueReader/audio/*.mp3（仅原生环境）：
+ *  2. 物理文件 Directory.Data/LangyueReader/audio/*.mp3（仅原生环境）：
  *     把分段 chunks 按字节顺序合并成一个完整 MP3 文件。
- *     文件独立于 APK，升级软件 / 卸载重装都不会被清。
- *     还会写 index.json 作为索引，供「已合成音频」列表页查询/播放/删除。
+ *     文件保存在 App 私有 files 目录下，覆盖升级时系统自动保留（只有卸载或
+ *     手动清除数据才会删除）。还会写 index.json 作为索引，供「已合成音频」
+ *     列表页查询/播放/删除。
  *
  *  索引 key 规则同 cacheKey：`${bookId}__${chapterId}__${voiceKey}|${noteVoiceKey}`
  *

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { useAppStore } from '../store/useAppStore'
 import {
   listAudioFiles,
@@ -6,6 +7,8 @@ import {
   getAudioPlayUrl,
   getAudioAbsolutePath,
   isAudioFsAvailable,
+  getLastFsError,
+  clearLastFsError,
 } from '../utils/audioFileStore'
 import type { AudioFileRecord } from '../types'
 
@@ -36,15 +39,30 @@ export function MePage() {
   const [list, setList] = useState<AudioFileRecord[]>([])
   const [fsOk, setFsOk] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
+  const [errMsg, setErrMsg] = useState<string | null>(null)
   const [playingId, setPlayingId] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
     setLoading(true)
+    setErrMsg(null)
+    clearLastFsError()
     try {
       const ok = await isAudioFsAvailable()
       setFsOk(ok)
-      setList(ok ? await listAudioFiles() : [])
+      if (!ok) {
+        // 原生环境下如果不可用，把底层错误掏出来展示
+        if (Capacitor.isNativePlatform()) {
+          const e = getLastFsError()
+          setErrMsg(e || '初始化失败（未捕获到具体错误）')
+        }
+        setList([])
+      } else {
+        setList(await listAudioFiles())
+      }
+    } catch (err) {
+      setErrMsg((err as Error)?.message || String(err))
+      setList([])
     } finally {
       setLoading(false)
     }
@@ -192,9 +210,11 @@ export function MePage() {
               <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
                 {loading
                   ? '正在读取…'
-                  : fsOk === false
-                  ? '当前环境不支持文件系统存储（仅 Android App 下生效）'
-                  : `${list.length} 条 · 共 ${fmtSize(totalSize)} · 保存在公共 Documents/LangyueReader/audio/，升级/重装不会丢失`}
+                  : fsOk
+                  ? `${list.length} 条 · 共 ${fmtSize(totalSize)} · 保存在 App 私有文件目录，覆盖升级不会丢失`
+                  : errMsg
+                  ? `初始化失败：${errMsg}`
+                  : '当前环境不支持文件系统存储（仅 Android App 下生效）'}
               </div>
             </div>
             <button
