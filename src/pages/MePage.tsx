@@ -41,6 +41,7 @@ export function MePage() {
   const [loading, setLoading] = useState(true)
   const [errMsg, setErrMsg] = useState<string | null>(null)
   const [playingId, setPlayingId] = useState<string | null>(null)
+  const [selectedBook, setSelectedBook] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
@@ -93,6 +94,23 @@ export function MePage() {
   }, [])
 
   const totalSize = useMemo(() => list.reduce((s, x) => s + (x.sizeBytes || 0), 0), [list])
+
+  // 按书名分组
+  const bookGroups = useMemo(() => {
+    const map = new Map<string, { bookTitle: string; items: AudioFileRecord[]; totalSize: number }>()
+    for (const it of list) {
+      const g = map.get(it.bookTitle) || { bookTitle: it.bookTitle, items: [], totalSize: 0 }
+      g.items.push(it)
+      g.totalSize += it.sizeBytes || 0
+      map.set(it.bookTitle, g)
+    }
+    return Array.from(map.values()).sort((a, b) => b.items.length - a.items.length)
+  }, [list])
+
+  const currentBookItems = useMemo(
+    () => (selectedBook ? list.filter((x) => x.bookTitle === selectedBook) : []),
+    [list, selectedBook],
+  )
 
   async function onPlay(item: AudioFileRecord) {
     const audio = audioRef.current
@@ -203,108 +221,140 @@ export function MePage() {
 
       {/* ======= 已合成音频 ======= */}
       <div className="setting-list" style={{ marginTop: 16 }}>
-        <div className="setting-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
-          <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ fontWeight: 600 }}>已合成音频</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
-                {loading
-                  ? '正在读取…'
-                  : fsOk
-                  ? `${list.length} 条 · 共 ${fmtSize(totalSize)} · 保存在 App 私有文件目录，覆盖升级不会丢失`
-                  : errMsg
-                  ? `初始化失败：${errMsg}`
-                  : '当前环境不支持文件系统存储（仅 Android App 下生效）'}
-              </div>
-            </div>
+        {selectedBook ? (
+          /* ===== 详情页：某本书的所有音频 ===== */
+          <>
             <button
               type="button"
-              className="tts-debug-toggle"
-              style={{ fontSize: 12, padding: '4px 10px' }}
-              onClick={() => void reload()}
-            >
-              刷新
-            </button>
-          </div>
-        </div>
-
-        {list.length === 0 && !loading && fsOk !== false && (
-          <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px' }}>
-            还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。
-          </div>
-        )}
-
-        {list.map((it) => {
-          const playing = playingId === it.id
-          return (
-            <div
-              key={it.id}
               className="setting-row"
-              style={{
-                display: 'block',
-                padding: '10px 16px',
-                gap: 8,
-              }}
+              onClick={() => setSelectedBook(null)}
+              style={{ color: 'var(--accent)', fontSize: 14 }}
             >
-              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    《{it.bookTitle}》
-                  </div>
-                  <div style={{ marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {it.chapterTitle}
-                  </div>
-                  <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    <span>{it.voiceLabel}</span>
-                    <span>·</span>
-                    <span>{fmtSize(it.sizeBytes)}</span>
-                    <span>·</span>
-                    <span>{fmtTs(it.createdAt)}</span>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    className="tts-debug-toggle"
-                    style={{
-                      fontSize: 12,
-                      padding: '6px 12px',
-                      background: playing ? 'var(--accent)' : 'transparent',
-                      color: playing ? '#fff' : 'var(--accent)',
-                      border: `1px solid var(--accent)`,
-                    }}
-                    onClick={() => void onPlay(it)}
-                  >
-                    {playing ? '暂停' : '播放'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-debug-toggle"
-                    title="查看保存路径"
-                    style={{ fontSize: 12, padding: '6px 10px' }}
-                    onClick={() => void onShowPath(it)}
-                  >
-                    路径
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-debug-toggle"
-                    title="删除音频文件"
-                    style={{
-                      fontSize: 12,
-                      padding: '6px 10px',
-                      color: 'var(--danger, #c0392b)',
-                      border: `1px solid var(--danger-border, #e2b1ac)`,
-                    }}
-                    onClick={() => void onDelete(it)}
-                  >
-                    删除
-                  </button>
-                </div>
+              <span>← 返回音频列表</span>
+            </button>
+            <div className="setting-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontWeight: 600, fontSize: 16 }}>《{selectedBook}》</div>
+              <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+                {currentBookItems.length} 条音频 · 共 {fmtSize(currentBookItems.reduce((s, x) => s + (x.sizeBytes || 0), 0))}
               </div>
             </div>
-          )
-        })}
+            {currentBookItems.map((it) => {
+              const playing = playingId === it.id
+              return (
+                <div
+                  key={it.id}
+                  className="setting-row"
+                  style={{ display: 'block', padding: '10px 16px', gap: 8 }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {it.chapterTitle}
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <span>{it.voiceLabel}</span>
+                        <span>·</span>
+                        <span>{fmtSize(it.sizeBytes)}</span>
+                        <span>·</span>
+                        <span>{fmtTs(it.createdAt)}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className="tts-debug-toggle"
+                        style={{
+                          fontSize: 12, padding: '6px 12px',
+                          background: playing ? 'var(--accent)' : 'transparent',
+                          color: playing ? '#fff' : 'var(--accent)',
+                          border: `1px solid var(--accent)`,
+                        }}
+                        onClick={() => void onPlay(it)}
+                      >
+                        {playing ? '暂停' : '播放'}
+                      </button>
+                      <button
+                        type="button"
+                        className="tts-debug-toggle"
+                        title="查看保存路径"
+                        style={{ fontSize: 12, padding: '6px 10px' }}
+                        onClick={() => void onShowPath(it)}
+                      >
+                        路径
+                      </button>
+                      <button
+                        type="button"
+                        className="tts-debug-toggle"
+                        title="删除音频文件"
+                        style={{
+                          fontSize: 12, padding: '6px 10px',
+                          color: 'var(--danger, #c0392b)',
+                          border: `1px solid var(--danger-border, #e2b1ac)`,
+                        }}
+                        onClick={() => void onDelete(it)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </>
+        ) : (
+          /* ===== 列表页：按书名分组 ===== */
+          <>
+            <div className="setting-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', width: '100%', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>已合成音频</div>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>
+                    {loading
+                      ? '正在读取…'
+                      : fsOk
+                      ? `${list.length} 条 · 共 ${fmtSize(totalSize)} · 覆盖升级不会丢失`
+                      : errMsg
+                      ? `初始化失败：${errMsg}`
+                      : '当前环境不支持文件系统存储（仅 Android App 下生效）'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="tts-debug-toggle"
+                  style={{ fontSize: 12, padding: '4px 10px' }}
+                  onClick={() => void reload()}
+                >
+                  刷新
+                </button>
+              </div>
+            </div>
+
+            {list.length === 0 && !loading && fsOk !== false && (
+              <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px' }}>
+                还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。
+              </div>
+            )}
+
+            {bookGroups.map((g) => (
+              <button
+                key={g.bookTitle}
+                type="button"
+                className="setting-row"
+                onClick={() => setSelectedBook(g.bookTitle)}
+              >
+                <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    《{g.bookTitle}》
+                  </div>
+                  <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-muted)' }}>
+                    {g.items.length} 条音频 · {fmtSize(g.totalSize)}
+                  </div>
+                </div>
+                <span className="val" style={{ color: 'var(--accent)' }}>查看</span>
+              </button>
+            ))}
+          </>
+        )}
       </div>
 
       {books.length > 0 && (
