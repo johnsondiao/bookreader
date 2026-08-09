@@ -135,11 +135,6 @@ async function init(): Promise<void> {
 // 启动时异步初始化
 void init()
 
-/** 确保已初始化（同步等待） */
-async function ensureInit(): Promise<void> {
-  await init()
-}
-
 /* ====== 公共 API ====== */
 
 function todayKey(): string {
