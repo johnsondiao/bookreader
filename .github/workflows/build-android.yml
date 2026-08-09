@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      uploadArtifact:
+        description: '是否上传 APK artifact（日常 push 默认不上，节省 GitHub Actions 存储额度）'
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
@@ -55,12 +60,22 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk out/朗阅-release.apk
           ls -lh out/
 
+      # 上传 artifact 决策：
+      # - 打 tag（发布）：必须上传（下一步 softprops/action-gh-release 要用 files 里本地路径，其实不需要 artifact 也能传；
+      #   但多一份 artifact 方便在 Actions run 里直接下载）
+      # - workflow_dispatch 手动触发：根据 input 决定，默认上传
+      # - 日常 push 到 main：只构建验证，不上传 artifact，节省 GitHub Actions 存储额度
       - name: Upload signed APK
+        if: >
+          startsWith(github.ref, 'refs/tags/') ||
+          (github.event_name == 'workflow_dispatch' && github.event.inputs.uploadArtifact != 'false')
         uses: actions/upload-artifact@v4
         with:
           name: bookreader-release-apk
           path: out/朗阅-release.apk
-          retention-days: 30
+          # 免费版 GitHub Actions 存储额度只有 ~500MB，APK 体积大又频繁构建时很快就会耗尽。
+          # 3 天足够用于下载验证；正式版本以 Release 页面的附件为准，长期保存不依赖 artifact。
+          retention-days: 3
 
       - name: Publish to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
