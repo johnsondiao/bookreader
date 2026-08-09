@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { App as CapacitorApp } from '@capacitor/app'
+import { App as CapacitorApp, type PluginListenerHandle } from '@capacitor/app'
 import { BottomNav } from './components/BottomNav'
 import { CostPage } from './pages/CostPage'
 import { HistoryPage } from './pages/HistoryPage'
@@ -37,17 +37,16 @@ export default function App() {
 
   // Android 物理返回键：阅读器中返回书架，书架中退出 App
   useEffect(() => {
-    const handler = CapacitorApp.addListener('backButton', () => {
+    let listener: PluginListenerHandle | undefined
+    CapacitorApp.addListener('backButton', () => {
       const state = useAppStore.getState()
       if (state.screen === 'reader') {
         state.closeReader()
       } else {
         CapacitorApp.exitApp()
       }
-    })
-    return () => {
-      handler.remove()
-    }
+    }).then((h) => { listener = h })
+    return () => { listener?.remove() }
   }, [])
 
   if (!hydrated) {
