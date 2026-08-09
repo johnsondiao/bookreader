@@ -93,15 +93,15 @@ function migrateFromLs(): CostRecord[] {
   return []
 }
 
-function flushSave() {
+function flushSave(): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
   }
-  if (!dirty) return
+  if (!dirty) return Promise.resolve()
   dirty = false
   pendingCount = 0
-  void saveToIdb([...records])
+  return saveToIdb([...records])
 }
 
 function scheduleSave() {
@@ -143,9 +143,10 @@ function todayKey(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-/** 记录一次合成调用 */
-export function addSynthChars(chars: number, bookTitle: string) {
+/** 记录一次合成调用（异步确保 init 完成，避免初始化前新记录被覆盖） */
+export async function addSynthChars(chars: number, bookTitle: string): Promise<void> {
   if (chars <= 0) return
+  await init()
   records.push({
     date: todayKey(),
     bookTitle: bookTitle || '未知',
@@ -159,15 +160,17 @@ export function addSynthChars(chars: number, bookTitle: string) {
   scheduleSave()
 }
 
-/** 获取今日已合成的字符数 */
-export function getTodayChars(): number {
+/** 获取今日已合成的字符数（读取前确保初始化完成） */
+export async function getTodayChars(): Promise<number> {
+  await init()
   const today = todayKey()
   return records.filter((r) => r.date === today).reduce((s, r) => s + r.chars, 0)
 }
 
 /** 获取今日已花费的金额（元） */
-export function getTodayCostYuan(): number {
-  return (getTodayChars() / 1_000_000) * TTS_COST_PER_MILLION
+export async function getTodayCostYuan(): Promise<number> {
+  const c = await getTodayChars()
+  return (c / 1_000_000) * TTS_COST_PER_MILLION
 }
 
 /** 格式化金额：小于 1 分显示"不到1分"，否则显示 ¥x.xx */
@@ -190,7 +193,8 @@ export interface DayStat {
 }
 
 /** 按天聚合，返回最近 N 天（含今天），按日期倒序 */
-export function statsByDay(days = 30): DayStat[] {
+export async function statsByDay(days = 30): Promise<DayStat[]> {
+  await init()
   const map = new Map<string, { chars: number; records: number }>()
   for (const r of records) {
     const cur = map.get(r.date) || { chars: 0, records: 0 }
@@ -223,7 +227,8 @@ export interface PeriodStat {
 }
 
 /** 按周聚合，返回最近 N 周（含本周），按周倒序 */
-export function statsByWeek(weeks = 8): PeriodStat[] {
+export async function statsByWeek(weeks = 8): Promise<PeriodStat[]> {
+  await init()
   const now = new Date()
   const curDay = now.getDay() || 7
   const monday = new Date(now)
@@ -252,7 +257,8 @@ export function statsByWeek(weeks = 8): PeriodStat[] {
 }
 
 /** 按月聚合，返回最近 N 个月（含本月），按月倒序 */
-export function statsByMonth(months = 6): PeriodStat[] {
+export async function statsByMonth(months = 6): Promise<PeriodStat[]> {
+  await init()
   const now = new Date()
   const out: PeriodStat[] = []
   for (let m = 0; m < months; m++) {
@@ -279,7 +285,8 @@ export interface BookStat {
 }
 
 /** 按书名聚合，按字符数倒序 */
-export function statsByBook(): BookStat[] {
+export async function statsByBook(): Promise<BookStat[]> {
+  await init()
   const map = new Map<string, { chars: number; records: number; lastDate: string }>()
   for (const r of records) {
     const cur = map.get(r.bookTitle) || { chars: 0, records: 0, lastDate: '' }
@@ -302,28 +309,30 @@ export function statsByBook(): BookStat[] {
 }
 
 /** 总花费 */
-export function getTotalYuan(): number {
+export async function getTotalYuan(): Promise<number> {
+  await init()
   return charsToYuan(records.reduce((s, r) => s + r.chars, 0))
 }
 
 /** 总字符数 */
-export function getTotalChars(): number {
+export async function getTotalChars(): Promise<number> {
+  await init()
   return records.reduce((s, r) => s + r.chars, 0)
 }
 
-/** 确保数据已持久化（页面关闭前调用） */
-export function flushCostTracker(): void {
-  flushSave()
+/** 确保数据已持久化（页面关闭前调用，await 等待写入完成） */
+export async function flushCostTracker(): Promise<void> {
+  await flushSave()
 }
 
 /**
- * 检查今日花费是否超出预算上限。
- * @param budgetYuan 预算上限（元），0 或 undefined 表示不限制
- * @returns { exceeded: true, todayYuan, budgetYuan } 如果超出预算
+ * 检查今日花费是否超出预算上限（内部 await init 保证数据最新）。
  */
-export function checkBudget(budgetYuan?: number): { exceeded: boolean; todayYuan: number; budgetYuan: number } | null {
+export async function checkBudget(
+  budgetYuan?: number,
+): Promise<{ exceeded: boolean; todayYuan: number; budgetYuan: number } | null> {
   if (!budgetYuan || budgetYuan <= 0) return null
-  const todayYuan = getTodayCostYuan()
+  const todayYuan = await getTodayCostYuan()
   if (todayYuan >= budgetYuan) {
     return { exceeded: true, todayYuan, budgetYuan }
   }

@@ -16,8 +16,10 @@
  */
 import type { Chapter } from '../types'
 
-/** 1. 严格章节标题（卷/篇/章/节/回/集/部） */
-const STRICT_CHAPTER_RE = /^(第[零一二三四五六七八九十百千0-9]+[章节回卷部集篇编部分节附录]|Chapter\s+\d+|CHAPTER\s+\d+|Chapter\s+[IVXLCDM]+|CHAPTER\s+[IVXLCDM]+|Part\s+\d+|PART\s+\d+)[^\n]*$/gm
+/** 1. 严格章节标题（卷/篇/章/节/回/集/部）
+ *  ——关键字后必须带空白或结束，避免"第3天""第一节火车"之类的正文短句误判。
+ */
+const STRICT_CHAPTER_RE = /^(第[零一二三四五六七八九十百千0-9]+[章节回卷部集篇编部分节附录](?!\S)|Chapter\s+\d+(?:[\s:：]|$)|CHAPTER\s+\d+(?:[\s:：]|$)|Chapter\s+[IVXLCDM]+(?:[\s:：]|$)|CHAPTER\s+[IVXLCDM]+(?:[\s:：]|$)|Part\s+\d+(?:[\s:：]|$)|PART\s+\d+(?:[\s:：]|$))[^\n]*$/gm
 
 /** 2. 选集日期副标题行，如"（一九二七年三月）" 或 "(1927.3)" */
 const DATE_SUBTITLE_RE = /^(（|\()\s*(\d{2,4}|[一二三四五六七八九十〇]+)\s*年.*?(）|\))\s*$/
@@ -87,7 +89,8 @@ function looksLikeStandaloneTitle(line: LinePos): boolean {
 }
 
 export function parseChapters(content: string): Chapter[] {
-  const text = content.replace(/\r\n/g, '\n').trim()
+  // 兼容 \r\n 和单独 \r（老 txt 文件可能只有 \r）
+  const text = content.replace(/\r\n?/g, '\n').trim()
   if (!text) return []
 
   // —— 1. 先收集所有严格标题 ——

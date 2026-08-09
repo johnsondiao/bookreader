@@ -71,9 +71,11 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
   }
 
   useEffect(() => {
-    requestAnimationFrame(() => {
+    let raf = 0
+    raf = requestAnimationFrame(() => {
       currentRef.current?.scrollIntoView({ block: 'center' })
     })
+    return () => cancelAnimationFrame(raf)
   }, [currentChapterId])
 
   const jumpCurrent = () => {

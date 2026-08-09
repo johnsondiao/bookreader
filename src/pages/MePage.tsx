@@ -10,6 +10,7 @@ import {
   getLastFsError,
   clearLastFsError,
 } from '../utils/audioFileStore'
+import { getTodayCostYuan, formatCost } from '../utils/costTracker'
 import type { AudioFileRecord } from '../types'
 
 function fmtSize(bytes: number): string {
@@ -86,7 +87,40 @@ export function MePage() {
     }
   }, [])
 
+  const [todayCostYuan, setTodayCostYuan] = useState<number>(0)
+
+  useEffect(() => {
+    let cancelled = false
+    void getTodayCostYuan().then((v) => {
+      if (!cancelled) setTodayCostYuan(v)
+    })
+    const t = setInterval(() => {
+      void getTodayCostYuan().then((v) => { if (!cancelled) setTodayCostYuan(v) })
+    }, 30000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [])
+
   const totalSize = useMemo(() => list.reduce((s, x) => s + (x.sizeBytes || 0), 0), [list])
+
+  function promptDailyBudget() {
+    const cur = settings.dailyBudgetYuan ?? 0
+    const input = window.prompt(
+      '设置每日 TTS 预算上限（元），0 表示不限制。\n\n达到上限后会停止合成，避免超支。',
+      cur === 0 ? '' : String(cur),
+    )
+    if (input == null) return
+    const trimmed = input.trim()
+    if (trimmed === '') {
+      updateSettings({ dailyBudgetYuan: 0 })
+      return
+    }
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n < 0) {
+      alert('请输入 0 或正数。')
+      return
+    }
+    updateSettings({ dailyBudgetYuan: Number(n.toFixed(2)) })
+  }
 
   // 按 bookId 分组（书名以书架上的原始标题为准，rebuild 文件名变形时不影响分组）
   const bookGroups = useMemo(() => {
@@ -177,6 +211,10 @@ export function MePage() {
             <div className="n">{ttsCount}</div>
             <div className="l">朗读记录</div>
           </div>
+          <div>
+            <div className="n">{formatCost(todayCostYuan)}</div>
+            <div className="l">今日花费</div>
+          </div>
         </div>
       </div>
 
@@ -216,6 +254,14 @@ export function MePage() {
         >
           <span>阅读主题</span>
           <span className="val">{settings.theme === 'day' ? '日间' : settings.theme === 'eye' ? '护眼' : '夜间'}</span>
+        </button>
+        <button type="button" className="setting-row" onClick={promptDailyBudget}>
+          <span>每日 TTS 预算上限</span>
+          <span className="val">
+            {(settings.dailyBudgetYuan ?? 0) > 0
+              ? `¥${(settings.dailyBudgetYuan ?? 0).toFixed(2)}`
+              : '不限制'}
+          </span>
         </button>
       </div>
 

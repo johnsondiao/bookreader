@@ -254,6 +254,37 @@ export function tocFromChapters(chapters: { id: string; title: string; href?: st
   }))
 }
 
+// Zip Bomb 防护上限
+const ZIP_MAX_FILES = 20000       // 单文件数上限（一本百万字 EPUB 通常 <2000）
+const ZIP_MAX_UNCOMPRESSED_MB = 800 // 解压后总大小上限 800MB（百万字约 10MB，给足余量）
+const ZIP_MAX_RATIO = 200         // 压缩比上限（普通文本压缩比约 2~5，恶意 zip 可达 1000+）
+
+function assertZipSafety(zip: JSZip, compressedTotal: number): void {
+  let files = 0
+  let uncompressed = 0
+  zip.forEach((_, file) => {
+    if (file.dir) return
+    files++
+    // 用 any 访问 JSZipObject 非公开 _data 字段；TS 声明里没给，但运行时 jszip 内部有。
+    // 若读取失败（后续 jszip 升级改名等），走 0，即跳过压缩比检查，不会中断解压。
+    const internal = (file as unknown as { _data?: { uncompressedSize?: number } })?._data
+    uncompressed += internal?.uncompressedSize ?? 0
+  })
+  if (files > ZIP_MAX_FILES) {
+    throw new Error(`EPUB 文件过大：条目数 ${files} 超出上限 ${ZIP_MAX_FILES}`)
+  }
+  if (uncompressed > ZIP_MAX_UNCOMPRESSED_MB * 1024 * 1024) {
+    throw new Error(
+      `EPUB 解压后大小 ${(uncompressed / 1024 / 1024).toFixed(1)}MB 超出上限 ${ZIP_MAX_UNCOMPRESSED_MB}MB`,
+    )
+  }
+  if (compressedTotal > 0 && uncompressed / compressedTotal > ZIP_MAX_RATIO) {
+    throw new Error(
+      `EPUB 压缩比 ${(uncompressed / compressedTotal).toFixed(0)}:1 超出上限 ${ZIP_MAX_RATIO}:1，疑似恶意文件`,
+    )
+  }
+}
+
 export async function parseEpub(
   data: ArrayBuffer,
   filename?: string,
@@ -263,6 +294,7 @@ export async function parseEpub(
   await yieldToMain()
 
   const zip = await JSZip.loadAsync(data, { createFolders: false })
+  assertZipSafety(zip, data.byteLength)
   const zipIndex = buildZipIndex(zip)
   onProgress?.({ phase: 'unzip', current: 1, total: 1 })
   await yieldToMain()

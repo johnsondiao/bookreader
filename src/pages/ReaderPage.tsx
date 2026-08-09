@@ -80,7 +80,7 @@ export function ReaderPage() {
   const [engineStatus, setEngineStatus] = useState(
     '在线语音 · MiniMax speech-2.8-turbo（¥2/万字，首次合成需联网，之后缓存）',
   )
-  const [todayCost, setTodayCost] = useState(() => formatCost(getTodayCostYuan()))
+  const [todayCost, setTodayCost] = useState<string>('不到1分')
   const [debugLines, setDebugLines] = useState<DebugPayload[]>([])
   const [debugOpen, setDebugOpen] = useState<boolean>(() => {
     // 读 Zustand settings.ttsDebugPanel，SSR/未初始化时值为 false（默认不展开）
@@ -117,10 +117,30 @@ export function ReaderPage() {
   /** 连章续读：跳过「正在准备」toast */
   const continueQuietRef = useRef(false)
   const touchRef = useRef<{ x: number; y: number } | null>(null)
+  const suppressClickRef = useRef(false)
   const chapterIdRef = useRef(chapterId)
   const speakFromRef = useRef<(start: number) => Promise<void>>(async () => {})
   const bookRef = useRef(book)
   bookRef.current = book
+  const mountedRef = useRef(true)
+  const toastTimerRef = useRef<number | null>(null)
+  // saveProgress 定义在下方（useCallback），这里先占位，后续赋值。用 ref 引用避免 useCallback 定义前使用。
+  const saveProgressRef = useRef<
+    (
+      ...args: [
+        chapterId: string,
+        paragraphIndex: number,
+        source?: string,
+        note?: string,
+        recordSnapshot?: boolean,
+        charOffset?: number,
+      ]
+    ) => void
+  >(() => {})
+
+  const currentChapterIndex = useMemo(() => {
+    return book ? book.chapters.findIndex((c) => c.id === chapterId) : -1
+  }, [book, chapterId])
 
   const chapter = useMemo(
     () => book?.chapters.find((c) => c.id === chapterId) ?? book?.chapters[0],
@@ -201,12 +221,24 @@ export function ReaderPage() {
   useEffect(() => {
     return () => {
       ttsRef.current.stop()
+      mountedRef.current = false
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current)
+        toastTimerRef.current = null
+      }
     }
   }, [])
 
   const showToast = (msg: string, ms = 2800) => {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current)
+      toastTimerRef.current = null
+    }
     setToast(msg)
-    window.setTimeout(() => setToast(''), ms)
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast('')
+      toastTimerRef.current = null
+    }, ms)
   }
 
   /**
@@ -221,24 +253,33 @@ export function ReaderPage() {
     })
   }, [])
 
+  /** 解锁弹窗提交进行中：阻止「取消」在 unlockTtsKey resolve 之前生效 */
+  const unlockSubmittingRef = useRef(false)
+
   /** 弹窗内：提交密码尝试解锁 */
   const onSubmitUnlock = useCallback(
     async (password: string) => {
+      if (unlockSubmittingRef.current) return
+      unlockSubmittingRef.current = true
       setUnlockLoading(true)
       setUnlockError('')
+      let ok = false
       try {
-        const ok = await unlockTtsKey(password)
-        if (ok) {
-          setUnlockOpen(false)
-          unlockResolverRef.current?.(true)
-          unlockResolverRef.current = null
-        } else {
-          setUnlockError('密码错误，请重试')
-        }
+        ok = await unlockTtsKey(password)
       } catch {
-        setUnlockError('解锁失败，请重试')
+        ok = false
       } finally {
+        unlockSubmittingRef.current = false
         setUnlockLoading(false)
+      }
+      if (!mountedRef.current) return
+      if (ok) {
+        setUnlockOpen(false)
+        const resolver = unlockResolverRef.current
+        unlockResolverRef.current = null
+        resolver?.(true)
+      } else {
+        setUnlockError('密码错误，请重试')
       }
     },
     [],
@@ -246,14 +287,36 @@ export function ReaderPage() {
 
   /** 弹窗内：取消 */
   const onCancelUnlock = useCallback(() => {
+    if (unlockSubmittingRef.current) return
     setUnlockOpen(false)
-    unlockResolverRef.current?.(false)
+    const resolver = unlockResolverRef.current
     unlockResolverRef.current = null
+    resolver?.(false)
   }, [])
 
   // #region agent log
   useEffect(() => subscribeDebugLog(setDebugLines), [])
   // #endregion
+
+  // 挂载后刷新今日花费（接口是异步的），并每 30s 轮询一次
+  useEffect(() => {
+    let cancelled = false
+    async function refresh() {
+      const v = await getTodayCostYuan()
+      if (!cancelled) setTodayCost(formatCost(v))
+    }
+    void refresh()
+    const t = setInterval(() => void refresh(), 30000)
+    return () => { cancelled = true; clearInterval(t) }
+  }, [])
+
+  // onSynthProgress 中也会异步更新今日花费，避免同步路径 Promise<number> 赋值
+  const updateTodayCost = () => {
+    void (async () => {
+      const v = await getTodayCostYuan()
+      if (mountedRef.current) setTodayCost(formatCost(v))
+    })()
+  }
 
   // 旧版本残留的本地音色 key（华严 / sherpa / 早期英文音色）迁移到默认在线音色
   useEffect(() => {
@@ -285,6 +348,8 @@ export function ReaderPage() {
     },
     [book, updateReadingProgress],
   )
+  // saveProgress 定义后同步写入 saveProgressRef，保证上方使用该 ref 的回调永远是最新 saveProgress
+  saveProgressRef.current = saveProgress as typeof saveProgressRef.current
 
   const scrollToPara = (index: number) => {
     const el = paraRefs.current[index]
@@ -363,13 +428,16 @@ export function ReaderPage() {
 
       // 首次朗读需解锁语音（输入密码解密 MiniMax key）；已解锁则跳过
       if (!(await hasTtsKey())) {
+        if (!mountedRef.current) return
         const ok = await requestUnlock()
+        if (!mountedRef.current) return
         if (!ok) return // 用户取消
       }
 
       const quiet = continueQuietRef.current
       continueQuietRef.current = false
       speakingRef.current = true
+      if (!mountedRef.current) return
       setTtsOn(true)
       setTtsPaused(false)
       setMenuOpen(true)
@@ -395,7 +463,8 @@ export function ReaderPage() {
           const pi = sentToParaRef.current[si] ?? 0
           setParaIndex(pi)
           scrollToPara(pi)
-          saveProgress(chapter.id, pi, 'tts', '朗读进度', true)
+          // 每句只更新进度不写 snapshot，避免 500 条快照被 TTS 噪声填满
+          saveProgress(chapter.id, pi, 'tts', '朗读进度', false)
         },
         onStatus: (s: string, msg?: string) => {
           if (quiet) return
@@ -406,7 +475,7 @@ export function ReaderPage() {
           } else if (s === 'idle') setEngineStatus(msg || '')
         },
         onSynthProgress: (p: { progress: number; message: string; stage: string }) => {
-          setTodayCost(formatCost(getTodayCostYuan()))
+          updateTodayCost()
           if (quiet) return
           const pct = Math.round((p.progress || 0) * 100)
           setEngineStatus(`${p.message || p.stage} ${pct}%`)
@@ -446,9 +515,11 @@ export function ReaderPage() {
       try {
         await ttsRef.current.playChapter(playOpts)
       } catch (err) {
+        if (!mountedRef.current) return
         // 合成时 key 被清/读不到 → 弹解锁框，解锁成功后重试一次
         if (err instanceof TtsKeyLockedError) {
           const ok = await requestUnlock()
+          if (!mountedRef.current) return
           if (!ok) {
             speakingRef.current = false
             setTtsOn(false)
@@ -458,6 +529,7 @@ export function ReaderPage() {
           try {
             await ttsRef.current.playChapter(playOpts)
           } catch (err2) {
+            if (!mountedRef.current) return
             if (
               err2 instanceof Error &&
               (err2.name === 'SpeakAborted' || err2.message === 'aborted')
@@ -472,7 +544,6 @@ export function ReaderPage() {
               { err: err2 instanceof Error ? err2.message : String(err2), category: c2.title, hint: hint2 },
               'C',
             )
-            // 非可重试错误（如鉴权）和重试都失败的情况：给用户详细反馈
             setDebugOpenPersistent(true)
             const msg2 = `[重试失败] ${c2.title}${c2.advice ? '\n' + c2.advice : ''}\n${hint2}`
             showToast(msg2, 14000)
@@ -480,10 +551,7 @@ export function ReaderPage() {
             setTtsOn(false)
             return
           }
-          // 重试成功 → 走正常结束流程（跳到下方「本章播放完毕」逻辑）
-        } else if (
-          err instanceof BudgetExceeded
-        ) {
+        } else if (err instanceof BudgetExceeded) {
           const msg = `⚠️ 今日花费已达预算上限 ¥${err.budgetYuan.toFixed(2)}（已花 ¥${err.todayYuan.toFixed(2)}）`
           agentLog('ReaderPage:speakFrom', 'budget exceeded', { todayYuan: err.todayYuan, budgetYuan: err.budgetYuan }, 'W')
           showToast(msg, 10000)
@@ -494,25 +562,21 @@ export function ReaderPage() {
           err instanceof Error &&
           (err.name === 'SpeakAborted' || err.message === 'aborted')
         ) {
-          // 用户 stop / 切换段落，正常中止
           return
         } else {
           const hint = getLastDebugHint()
           const c = classifyTtsError(err)
-          // #region agent log
           agentLog(
             'ReaderPage:speakFrom',
             'playChapter failed',
             { err: err instanceof Error ? err.message : String(err), category: c.title, hint },
             'C',
           )
-          // #endregion
-          // 可重试型的错误：自动重试一次（网络/限流/解码/5xx），避免一错就停
           if (c.retryable) {
             try {
               await ttsRef.current.playChapter(playOpts)
-              // 重试成功 → 走正常结束流程
             } catch (err2) {
+              if (!mountedRef.current) return
               if (
                 err2 instanceof Error &&
                 (err2.name === 'SpeakAborted' || err2.message === 'aborted')
@@ -545,6 +609,7 @@ export function ReaderPage() {
         }
       }
 
+      if (!mountedRef.current) return
       // playChapter 正常 resolve → 本章播放完毕，进入下一章
       if (!speakingRef.current) return
       const idx = book.chapters.findIndex((c) => c.id === chapter.id)
@@ -571,6 +636,7 @@ export function ReaderPage() {
       settings.ttsRate,
       settings.ttsVoiceZh,
       settings.ttsVoiceNote,
+      settings.dailyBudgetYuan,
       settings.autoScroll,
     ],
   )
@@ -589,7 +655,7 @@ export function ReaderPage() {
       if (nextId) {
         setChapterId(nextId)
         setParaIndex(0)
-        saveProgress(nextId, 0, 'tts', '跳过空章')
+        saveProgressRef.current(nextId, 0, 'tts', '跳过空章')
         return
       }
       pendingAutoSpeakRef.current = false
@@ -607,7 +673,7 @@ export function ReaderPage() {
     }
     void speakFromRef.current(0)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 故意不依赖 book/speakFrom 引用
-  }, [chapterId, paragraphs.length, saveProgress])
+  }, [chapterId, paragraphs.length])
 
   useEffect(() => {
     if (paraIndex >= paragraphs.length) setParaIndex(0)
@@ -633,6 +699,10 @@ export function ReaderPage() {
   }
 
   const onTapContent = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
     const y = e.clientY
     const rect = e.currentTarget.getBoundingClientRect()
     const ratio = (y - rect.top) / rect.height
@@ -662,6 +732,7 @@ export function ReaderPage() {
   const onTouchStart = (e: React.TouchEvent) => {
     const t = e.changedTouches[0]
     touchRef.current = { x: t.clientX, y: t.clientY }
+    suppressClickRef.current = false
   }
 
   const onTouchEnd = (e: React.TouchEvent) => {
@@ -672,6 +743,9 @@ export function ReaderPage() {
     const dx = t.clientX - start.x
     const dy = t.clientY - start.y
     if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.3) return
+    // 有效滑动：150ms 内抑制一次后续 click 事件，避免滑动结束又触发菜单/跳句
+    suppressClickRef.current = true
+    window.setTimeout(() => { suppressClickRef.current = false }, 300)
     goRelativeChapter(dx < 0 ? 1 : -1)
   }
 
@@ -885,13 +959,13 @@ export function ReaderPage() {
         {/* 章节快速跳转滑动条 */}
         <div className="chapter-slider-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 16px 8px' }}>
           <span style={{ fontSize: 11, whiteSpace: 'nowrap', minWidth: 28, textAlign: 'right' }}>
-            {book.chapters.findIndex((c) => c.id === chapterId) + 1}/{book.chapters.length}
+            {(currentChapterIndex >= 0 ? currentChapterIndex : 0) + 1}/{book.chapters.length}
           </span>
           <input
             type="range"
             min={0}
             max={book.chapters.length - 1}
-            value={book.chapters.findIndex((c) => c.id === chapterId)}
+            value={currentChapterIndex >= 0 ? currentChapterIndex : 0}
             onChange={(e) => {
               const idx = parseInt(e.target.value, 10)
               const cid = book.chapters[idx]?.id

@@ -64,14 +64,22 @@ export function createIdbStorage<S>(): PersistStorage<S> {
       }
     },
     setItem: async (name, value) => {
-      const db = await openDb()
-      const tx = db.transaction(STORE_NAME, 'readwrite')
-      await idbRequest(tx.objectStore(STORE_NAME).put(value, name))
+      try {
+        const db = await openDb()
+        const tx = db.transaction(STORE_NAME, 'readwrite')
+        await idbRequest(tx.objectStore(STORE_NAME).put(value, name))
+      } catch {
+        /* IDB 写入失败降级：不阻塞 zustand persist，避免 store 卡死 */
+      }
     },
     removeItem: async (name) => {
-      const db = await openDb()
-      const tx = db.transaction(STORE_NAME, 'readwrite')
-      await idbRequest(tx.objectStore(STORE_NAME).delete(name))
+      try {
+        const db = await openDb()
+        const tx = db.transaction(STORE_NAME, 'readwrite')
+        await idbRequest(tx.objectStore(STORE_NAME).delete(name))
+      } catch {
+        /* 同上 */
+      }
     },
   }
 }

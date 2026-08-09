@@ -361,7 +361,7 @@ export function createTtsController(): TtsController {
         })
         agentLog('tts.ts:synth', 'segment start', { seg: idx + 1, total: segments.length, chars: text.length, voice: voiceLabel }, 'C')
         // 预算检查：超出上限则停止后续合成
-        const budgetCheck = checkBudget(budgetYuan)
+        const budgetCheck = await checkBudget(budgetYuan)
         if (budgetCheck?.exceeded) {
           const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
           // 拒绝所有未完成的段
@@ -386,7 +386,7 @@ export function createTtsController(): TtsController {
         )
         synthAbortFn = null
         seg.blob = blob
-        addSynthChars(text.length, bookTitle)
+        await addSynthChars(text.length, bookTitle)
         seg._resolveReady?.()
         done++
       }

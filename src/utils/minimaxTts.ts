@@ -93,7 +93,7 @@ async function httpPostSync(
         `MiniMax POST ${path} 失败: HTTP ${resp.status} ${data?.base_resp?.status_msg ?? ''}`,
       )
     }
-    return data as SyncResp
+    return (data ?? {}) as SyncResp
   }
   const r = await fetch(url, {
     method: 'POST',
@@ -390,7 +390,6 @@ export async function synthesizeChunk(
   const buf = decodeAudioData(audioStr)
   const blob = new Blob([buf], { type: 'audio/mpeg' })
 
-  isAlive()
   onProgress({ stage: 'done', progress: 1, message: '合成完成' })
   agentLog(
     'minimaxTts:sync',

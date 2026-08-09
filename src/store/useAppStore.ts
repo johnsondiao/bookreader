@@ -64,12 +64,16 @@ function normalizeBook(book: Book): Book {
   }
   const readChapterIds = book.readChapterIds || []
   const fromCurrent = chapters.findIndex((c) => c.id === book.chapterId)
+  const validChapterId = fromCurrent >= 0 ? book.chapterId : chapters[0]?.id ?? ''
   const furthestChapterIndex =
-    typeof book.furthestChapterIndex === 'number'
+    typeof book.furthestChapterIndex === 'number' &&
+    book.furthestChapterIndex >= 0 &&
+    book.furthestChapterIndex < chapters.length
       ? book.furthestChapterIndex
       : Math.max(0, fromCurrent)
   return {
     ...book,
+    chapterId: validChapterId,
     content: '',
     toc,
     readChapterIds,
@@ -143,6 +147,9 @@ export const useAppStore = create<AppState>()(
 
       importTextBook: (content, filename) => {
         const chapters = parseChapters(content)
+        if (chapters.length === 0 || chapters.every((c) => !c.content?.trim())) {
+          throw new Error('内容为空，无法导入。请换一个文件试试。')
+        }
         const title = guessTitleFromContent(content, filename)
         const book = buildBook({
           title,
@@ -156,6 +163,12 @@ export const useAppStore = create<AppState>()(
       },
 
       importParsedBook: (parsed) => {
+        if (
+          !parsed.chapters?.length ||
+          parsed.chapters.every((c) => !c.content?.trim())
+        ) {
+          throw new Error('未能从 EPUB 中提取到正文，请换一个文件试试。')
+        }
         const book = buildBook({
           title: parsed.title,
           author: parsed.author,

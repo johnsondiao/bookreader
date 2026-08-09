@@ -176,7 +176,7 @@ export async function getClip(key: string): Promise<ChapterAudio | null> {
       // 命中时 touch lastUsedAt（v1 数据补 createdAt）
       if (!clip.lastUsedAt) clip.lastUsedAt = clip.createdAt ?? now
       clip.lastUsedAt = now
-      try { store.put(clip, key) } catch { /* ignore */ }
+      await idbRequest(store.put(clip, key))
     }
     return clip
   } catch {

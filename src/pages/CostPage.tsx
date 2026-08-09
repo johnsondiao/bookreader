@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import {
   statsByDay,
   statsByWeek,
@@ -41,38 +41,52 @@ function formatDate(dateStr: string): string {
 export function CostPage() {
   const [mode, setMode] = useState<TabMode>('day')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [totalYuan, setTotalYuan] = useState(0)
+  const [totalChars, setTotalChars] = useState(0)
+  const [dayStats, setDayStats] = useState<DayStat[]>([])
+  const [weekStats, setWeekStats] = useState<PeriodStat[]>([])
+  const [monthStats, setMonthStats] = useState<PeriodStat[]>([])
+  const [bookStats, setBookStats] = useState<BookStat[]>([])
 
-  const totalYuan = useMemo(() => getTotalYuan(), [refreshKey])
-  const totalChars = useMemo(() => getTotalChars(), [refreshKey])
+  // 因为 costTracker 接口是异步的，用 useEffect + state 加载；并且 mount 后每 30s 自动刷新
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const [yuan, chars, ds, ws, ms, bs] = await Promise.all([
+        getTotalYuan(),
+        getTotalChars(),
+        mode === 'day' ? statsByDay(30) : Promise.resolve([] as DayStat[]),
+        mode === 'week' ? statsByWeek(8) : Promise.resolve([] as PeriodStat[]),
+        mode === 'month' ? statsByMonth(6) : Promise.resolve([] as PeriodStat[]),
+        mode === 'book' ? statsByBook() : Promise.resolve([] as BookStat[]),
+      ])
+      if (cancelled) return
+      setTotalYuan(yuan)
+      setTotalChars(chars)
+      setDayStats(ds)
+      setWeekStats(ws)
+      setMonthStats(ms)
+      setBookStats(bs)
+    }
+    void load()
+    const t = setInterval(() => void load(), 30000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [mode, refreshKey])
+
   const hasData = totalChars > 0
 
-  // 按需计算：只算当前 tab 的统计
-  const dayStats = useMemo<DayStat[]>(
-    () => (mode === 'day' ? statsByDay(30) : []),
-    [mode, refreshKey],
-  )
-  const weekStats = useMemo<PeriodStat[]>(
-    () => (mode === 'week' ? statsByWeek(8) : []),
-    [mode, refreshKey],
-  )
-  const monthStats = useMemo<PeriodStat[]>(
-    () => (mode === 'month' ? statsByMonth(6) : []),
-    [mode, refreshKey],
-  )
-  const bookStats = useMemo<BookStat[]>(
-    () => (mode === 'book' ? statsByBook() : []),
-    [mode, refreshKey],
-  )
-
   // 当前 tab 过滤后的列表
-  const currentList = useMemo(() => {
+  const currentList: (DayStat | PeriodStat | BookStat)[] = (() => {
     switch (mode) {
       case 'day': return dayStats.filter((s) => s.chars > 0)
       case 'week': return weekStats.filter((s) => s.chars > 0)
       case 'month': return monthStats.filter((s) => s.chars > 0)
       case 'book': return bookStats
     }
-  }, [mode, dayStats, weekStats, monthStats, bookStats])
+  })()
 
   const listEmpty = currentList.length === 0
 

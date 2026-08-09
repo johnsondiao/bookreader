@@ -33,7 +33,10 @@ android/.idea
 *.apk
 *.aab
 *.keystore
+*.jks
 !debug.keystore
+android/keystore.properties
+android/keystore/
 
 # 本地密钥文件（MiniMax API key），绝不入库
 key.env
