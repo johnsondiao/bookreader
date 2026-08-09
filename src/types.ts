@@ -65,12 +65,12 @@ export interface ReaderSettings {
   autoScroll: boolean
   /** 中文正文音色 key：lang||name */
   ttsVoiceZh: string
-  /** 英文音色 */
-  ttsVoiceEn: string
   /** 注释音色 */
   ttsVoiceNote: string
   /** 调试面板默认是否展开（默认 false，不展开） */
   ttsDebugPanel?: boolean
+  /** 每日花费预算上限（元），0 表示不限制 */
+  dailyBudgetYuan?: number
 }
 
 /** 已合成的整章 MP3 文件元数据（外部存储 index.json 中的一项） */
@@ -89,7 +89,10 @@ export interface AudioFileRecord {
   voiceLabel: string
   /** 正文哈希：正文变化了缓存自动作废 */
   textHash: string
-  /** 文件名：相对 audio 目录，如 "毛泽东选集_湖南农民运动考察报告_mm-qn-jy_20250808-081345.mp3" */
+  /** 该音频覆盖的字符区间 [charStart, charEnd) */
+  charStart: number
+  charEnd: number
+  /** 文件名：结构化命名，含 bookId/chapterId/音色/字符区间/hash，可从文件名重建索引 */
   fileName: string
   /** 文件大小（字节） */
   sizeBytes: number

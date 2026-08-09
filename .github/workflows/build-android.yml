@@ -26,6 +26,10 @@ jobs:
 
       - name: Build web
         run: npm run build
+        env:
+          VITE_TTS_KEY_CIPHER: ${{ secrets.VITE_TTS_KEY_CIPHER }}
+          VITE_TTS_KEY_IV: ${{ secrets.VITE_TTS_KEY_IV }}
+          VITE_TTS_KEY_SALT: ${{ secrets.VITE_TTS_KEY_SALT }}
 
       - name: Setup Java
         uses: actions/setup-java@v4

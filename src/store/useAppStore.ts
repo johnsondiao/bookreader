@@ -6,7 +6,7 @@ import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
 import { createIdbStorage } from '../utils/idbStorage'
-import { DEFAULT_VOICE_EN, DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
+import { DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 
 interface AppState {
   books: Book[]
@@ -44,7 +44,6 @@ const defaultSettings: ReaderSettings = {
   ttsRate: 1,
   autoScroll: true,
   ttsVoiceZh: DEFAULT_VOICE_ZH,
-  ttsVoiceEn: DEFAULT_VOICE_EN,
   ttsVoiceNote: DEFAULT_VOICE_NOTE,
 }
 
@@ -253,10 +252,21 @@ export const useAppStore = create<AppState>()(
       merge: (persisted, current) => {
         const p = persisted as Partial<AppState> | undefined
         if (!p) return current
+        // 逐本 normalize，单本坏数据不影响其他书
+        const rawBooks = (p.books ?? current.books) as Book[]
+        const books: Book[] = []
+        for (const b of rawBooks) {
+          try {
+            books.push(normalizeBook(b))
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('normalizeBook 失败，跳过该书籍', b?.id, b?.title, err)
+          }
+        }
         return {
           ...current,
           ...p,
-          books: (p.books ?? current.books).map((b) => normalizeBook(b as Book)),
+          books,
           settings: { ...defaultSettings, ...(p.settings || current.settings) },
         }
       },

@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { TocPanel } from '../components/TocPanel'
+import { UnlockModal } from '../components/UnlockModal'
+import { DebugPanel } from '../components/DebugPanel'
+import { ReaderSettingsPanel } from '../components/ReaderSettingsPanel'
 import { useAppStore } from '../store/useAppStore'
-import { splitParagraphs } from '../utils/chapterParser'
+import { splitParagraphs, splitSentences } from '../utils/chapterParser'
 import {
+  BudgetExceeded,
+  classifyTtsError,
   createTtsController,
   DEFAULT_VOICE_NOTE,
   DEFAULT_VOICE_ZH,
-  voicesForLang,
-  VOICE_CATALOG,
 } from '../utils/tts'
 import { migrateVoiceKey } from '../utils/ttsVoices'
 import { hasTtsKey, unlockTtsKey, TtsKeyLockedError } from '../utils/ttsKeyStore'
 import {
   agentLog,
-  formatDebugLine,
   getLastDebugHint,
   subscribeDebugLog,
   type DebugPayload,
@@ -69,6 +71,7 @@ export function ReaderPage() {
   const [menuOpen, setMenuOpen] = useState(true)
   const [panel, setPanel] = useState<Panel>(null)
   const [paraIndex, setParaIndex] = useState(0)
+  const [activeSentence, setActiveSentence] = useState(-1)
   const [chapterId, setChapterId] = useState('')
   const [ttsOn, setTtsOn] = useState(false)
   const [ttsPaused, setTtsPaused] = useState(false)
@@ -133,6 +136,33 @@ export function ReaderPage() {
     () => paragraphs.slice(0, Math.min(visibleCount, paragraphs.length)),
     [paragraphs, visibleCount],
   )
+
+  /** 每段的句子列表（与 TTS planSegments 一一对应） */
+  const paraSentences = useMemo(
+    () => paragraphs.map((p) => splitSentences(p.text)),
+    [paragraphs],
+  )
+  /** 每段首句的全局索引（用于 paraIndex+sentIdx → globalIdx 映射） */
+  const paraSentStart = useMemo(() => {
+    const starts: number[] = []
+    let acc = 0
+    for (const sents of paraSentences) {
+      starts.push(acc)
+      acc += sents.length
+    }
+    return starts
+  }, [paraSentences])
+  /** 全局句子总数 */
+  const totalSentences = paraSentStart.length > 0 ? paraSentStart[paraSentStart.length - 1] + paraSentences[paraSentences.length - 1].length : 0
+  /** 全局句子索引 → 段落索引 映射（供 TTS onSentence 回调使用） */
+  const sentToParaRef = useRef<number[]>([])
+  sentToParaRef.current = useMemo(() => {
+    const map: number[] = []
+    paraSentences.forEach((sents, pi) => {
+      for (let si = 0; si < sents.length; si++) map.push(pi)
+    })
+    return map
+  }, [paraSentences])
 
   useEffect(() => {
     chapterIdRef.current = chapterId
@@ -229,12 +259,10 @@ export function ReaderPage() {
   useEffect(() => {
     const next = {
       ttsVoiceZh: migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH,
-      ttsVoiceEn: migrateVoiceKey(settings.ttsVoiceEn) || DEFAULT_VOICE_ZH,
       ttsVoiceNote: migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_ZH,
     }
     if (
       next.ttsVoiceZh !== settings.ttsVoiceZh ||
-      next.ttsVoiceEn !== settings.ttsVoiceEn ||
       next.ttsVoiceNote !== settings.ttsVoiceNote
     ) {
       updateSettings(next)
@@ -290,6 +318,7 @@ export function ReaderPage() {
     }
     setTtsOn(false)
     setTtsPaused(false)
+    setActiveSentence(-1)
   }, [])
 
   const jumpChapter = useCallback(
@@ -306,6 +335,7 @@ export function ReaderPage() {
       }
       setChapterId(cid)
       setParaIndex(0)
+      setActiveSentence(-1)
       setPanel(null)
       saveProgress(cid, 0, 'read', '切换章节')
     },
@@ -328,7 +358,7 @@ export function ReaderPage() {
   )
 
   const speakFrom = useCallback(
-    async (startIndex: number) => {
+    async (startSent: number) => {
       if (!book || !chapter) return
 
       // 首次朗读需解锁语音（输入密码解密 MiniMax key）；已解锁则跳过
@@ -347,7 +377,7 @@ export function ReaderPage() {
       const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
       const noteKey = migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE
       // #region agent log
-      agentLog('ReaderPage:speakFrom', 'start', { zhKey, noteKey, startIndex, quiet, chapterId: chapter.id }, 'D')
+      agentLog('ReaderPage:speakFrom', 'start', { zhKey, noteKey, startSent, quiet, chapterId: chapter.id }, 'D')
       // #endregion
 
       if (!quiet) showToast('正在准备语音…', 4000)
@@ -358,7 +388,14 @@ export function ReaderPage() {
           if (!speakingRef.current) return
           setParaIndex(i)
           scrollToPara(i)
-          saveProgress(chapter.id, i, 'tts', '朗读进度', true)
+        },
+        onSentence: (si: number) => {
+          if (!speakingRef.current) return
+          setActiveSentence(si)
+          const pi = sentToParaRef.current[si] ?? 0
+          setParaIndex(pi)
+          scrollToPara(pi)
+          saveProgress(chapter.id, pi, 'tts', '朗读进度', true)
         },
         onStatus: (s: string, msg?: string) => {
           if (quiet) return
@@ -374,6 +411,22 @@ export function ReaderPage() {
           const pct = Math.round((p.progress || 0) * 100)
           setEngineStatus(`${p.message || p.stage} ${pct}%`)
         },
+        onFileSaved: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => {
+          if (r.fileOk) return
+          const detail = r.error ? `：${r.error}` : ''
+          const msg =
+            `⚠️ 音频文件保存失败${detail}\n` +
+            `本章已扣费且可继续播放，但"已合成音频"里没有文件。` +
+            `请检查手机存储空间，稍后可再次从本章开头朗读（不重复扣费，会自动重存）。`
+          agentLog(
+            'ReaderPage:onFileSaved',
+            'audio file save failed',
+            { chapterId: chapter.id, bookId: book.id, err: r.error, idbOk: r.idbOk },
+            'E',
+          )
+          setDebugOpenPersistent(true)
+          showToast(msg, 16000)
+        },
       }
 
       const playOpts = {
@@ -382,10 +435,11 @@ export function ReaderPage() {
         chapterId: chapter.id,
         chapterTitle: chapter.title,
         paragraphs,
-        startParagraphIndex: startIndex,
+        startSentenceIndex: startSent,
         voiceKey: zhKey,
         noteVoiceKey: noteKey,
         rate: settings.ttsRate,
+        budgetYuan: settings.dailyBudgetYuan,
         ...callbacks,
       }
 
@@ -411,19 +465,31 @@ export function ReaderPage() {
               return
             }
             const hint2 = getLastDebugHint()
+            const c2 = classifyTtsError(err2)
             agentLog(
               'ReaderPage:speakFrom',
               'playChapter retry failed',
-              { err: err2 instanceof Error ? err2.message : String(err2), hint: hint2 },
+              { err: err2 instanceof Error ? err2.message : String(err2), category: c2.title, hint: hint2 },
               'C',
             )
+            // 非可重试错误（如鉴权）和重试都失败的情况：给用户详细反馈
             setDebugOpenPersistent(true)
-            showToast(`${err2 instanceof Error ? err2.message : '朗读失败'}\n${hint2}`, 12000)
+            const msg2 = `[重试失败] ${c2.title}${c2.advice ? '\n' + c2.advice : ''}\n${hint2}`
+            showToast(msg2, 14000)
             speakingRef.current = false
             setTtsOn(false)
             return
           }
           // 重试成功 → 走正常结束流程（跳到下方「本章播放完毕」逻辑）
+        } else if (
+          err instanceof BudgetExceeded
+        ) {
+          const msg = `⚠️ 今日花费已达预算上限 ¥${err.budgetYuan.toFixed(2)}（已花 ¥${err.todayYuan.toFixed(2)}）`
+          agentLog('ReaderPage:speakFrom', 'budget exceeded', { todayYuan: err.todayYuan, budgetYuan: err.budgetYuan }, 'W')
+          showToast(msg, 10000)
+          speakingRef.current = false
+          setTtsOn(false)
+          return
         } else if (
           err instanceof Error &&
           (err.name === 'SpeakAborted' || err.message === 'aborted')
@@ -432,19 +498,50 @@ export function ReaderPage() {
           return
         } else {
           const hint = getLastDebugHint()
+          const c = classifyTtsError(err)
           // #region agent log
           agentLog(
             'ReaderPage:speakFrom',
             'playChapter failed',
-            { err: err instanceof Error ? err.message : String(err), hint },
+            { err: err instanceof Error ? err.message : String(err), category: c.title, hint },
             'C',
           )
           // #endregion
-          setDebugOpenPersistent(true)
-          showToast(`${err instanceof Error ? err.message : '朗读失败'}\n${hint}`, 12000)
-          speakingRef.current = false
-          setTtsOn(false)
-          return
+          // 可重试型的错误：自动重试一次（网络/限流/解码/5xx），避免一错就停
+          if (c.retryable) {
+            try {
+              await ttsRef.current.playChapter(playOpts)
+              // 重试成功 → 走正常结束流程
+            } catch (err2) {
+              if (
+                err2 instanceof Error &&
+                (err2.name === 'SpeakAborted' || err2.message === 'aborted')
+              ) {
+                return
+              }
+              const c2 = classifyTtsError(err2)
+              const hint2 = getLastDebugHint()
+              agentLog(
+                'ReaderPage:speakFrom',
+                'playChapter auto-retry failed',
+                { err: err2 instanceof Error ? err2.message : String(err2), category: c2.title, hint: hint2 },
+                'C',
+              )
+              setDebugOpenPersistent(true)
+              const msg2 = `[重试失败] ${c2.title}${c2.advice ? '\n' + c2.advice : ''}\n${hint2}`
+              showToast(msg2, 14000)
+              speakingRef.current = false
+              setTtsOn(false)
+              return
+            }
+          } else {
+            setDebugOpenPersistent(true)
+            const msg = `${c.title}${c.advice ? '\n' + c.advice : ''}\n${hint}`
+            showToast(msg, 14000)
+            speakingRef.current = false
+            setTtsOn(false)
+            return
+          }
         }
       }
 
@@ -457,6 +554,7 @@ export function ReaderPage() {
         pendingAutoSpeakRef.current = true
         setChapterId(nextId)
         setParaIndex(0)
+        setActiveSentence(-1)
         saveProgress(nextId, 0, 'tts', '进入下一章')
         showToast('继续下一章…')
       } else {
@@ -542,16 +640,22 @@ export function ReaderPage() {
       toggleMenu()
       return
     }
+    // 上/下翻以句子为单位
+    const cur = activeSentence >= 0 ? activeSentence : (paraSentStart[paraIndex] ?? 0)
     if (ratio <= 0.28) {
-      const next = Math.max(0, paraIndex - 1)
-      setParaIndex(next)
-      saveProgress(chapter.id, next, 'read', '上翻定位', false)
-      scrollToPara(next)
+      const n = Math.max(0, cur - 1)
+      setActiveSentence(n)
+      const pi = sentToParaRef.current[n] ?? 0
+      setParaIndex(pi)
+      saveProgress(chapter.id, pi, 'read', '上翻定位', false)
+      scrollToPara(pi)
     } else {
-      const next = Math.min(paragraphs.length - 1, paraIndex + 1)
-      setParaIndex(next)
-      saveProgress(chapter.id, next, 'read', '下翻定位', true)
-      scrollToPara(next)
+      const n = Math.min(totalSentences - 1, cur + 1)
+      setActiveSentence(n)
+      const pi = sentToParaRef.current[n] ?? 0
+      setParaIndex(pi)
+      saveProgress(chapter.id, pi, 'read', '下翻定位', true)
+      scrollToPara(pi)
     }
   }
 
@@ -573,7 +677,9 @@ export function ReaderPage() {
 
   const togglePlay = () => {
     if (!ttsOn) {
-      void speakFrom(paraIndex)
+      // 从当前段落的首句开始
+      const startSent = paraSentStart[paraIndex] ?? 0
+      void speakFrom(startSent)
       return
     }
     if (ttsPaused) {
@@ -601,28 +707,42 @@ export function ReaderPage() {
         {visibleParagraphs.length === 0 ? (
           <p style={{ textIndent: 0, opacity: 0.7 }}>（本章暂无正文，可打开目录或左右滑动切换章节）</p>
         ) : (
-          visibleParagraphs.map((p, i) => (
-            <p
-              key={`${chapter.id}-${i}`}
-              ref={(el) => {
-                paraRefs.current[i] = el
-              }}
-              className={
-                (i === paraIndex ? 'active-para' : '') + (p.kind === 'note' ? ' note-para' : '')
-              }
-              onClick={(e) => {
-                e.stopPropagation()
-                setParaIndex(i)
-                saveProgress(chapter.id, i, 'read', '点击定位', true)
-                if (ttsOn) {
-                  stopTts()
-                  window.setTimeout(() => void speakFrom(i), 50)
-                }
-              }}
-            >
-              {p.text}
-            </p>
-          ))
+          visibleParagraphs.map((p, i) => {
+            const sents = paraSentences[i] ?? []
+            const baseIdx = paraSentStart[i] ?? 0
+            return (
+              <p
+                key={`${chapter.id}-${i}`}
+                ref={(el) => {
+                  paraRefs.current[i] = el
+                }}
+                className={p.kind === 'note' ? 'note-para' : ''}
+              >
+                {sents.map((sent, si) => {
+                  const globalIdx = baseIdx + si
+                  const isActive = globalIdx === activeSentence
+                  return (
+                    <span
+                      key={si}
+                      className={`sent-clickable${isActive ? ' active-sent' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setActiveSentence(globalIdx)
+                        setParaIndex(i)
+                        saveProgress(chapter.id, i, 'read', '点击定位', true)
+                        if (ttsOn) {
+                          stopTts()
+                          void speakFrom(globalIdx)
+                        }
+                      }}
+                    >
+                      {sent}
+                    </span>
+                  )
+                })}
+              </p>
+            )
+          })
         )}
         {visibleParagraphs.length < paragraphs.length && (
           <button
@@ -700,7 +820,10 @@ export function ReaderPage() {
             className={ttsOn ? 'active' : ''}
             onClick={() => {
               if (ttsOn) stopTts()
-              else void speakFrom(paraIndex)
+              else {
+                const startSent = paraSentStart[paraIndex] ?? 0
+                void speakFrom(startSent)
+              }
             }}
           >
             <span className="mi">听</span>
@@ -714,15 +837,18 @@ export function ReaderPage() {
               type="button"
               className="side-btn"
               onClick={() => {
-                const n = Math.max(0, paraIndex - 1)
-                setParaIndex(n)
+                const cur = activeSentence >= 0 ? activeSentence : (paraSentStart[paraIndex] ?? 0)
+                const n = Math.max(0, cur - 1)
+                setActiveSentence(n)
+                const pi = sentToParaRef.current[n] ?? 0
+                setParaIndex(pi)
                 if (ttsOn) {
                   stopTts()
-                  window.setTimeout(() => void speakFrom(n), 50)
+                  void speakFrom(n)
                 }
               }}
             >
-              上段
+              上句
             </button>
             <button type="button" className="tts-btn" onClick={togglePlay}>
               {!ttsOn || ttsPaused ? '▶' : '❚❚'}
@@ -730,7 +856,7 @@ export function ReaderPage() {
             <div className="tts-info">
               <div>{ttsOn ? (ttsPaused ? '已暂停' : '正在朗读…') : '点击播放开始朗读'}</div>
               <div className="muted">
-                {chapter.title} · 第 {paraIndex + 1}/{paragraphs.length || 1} 段 · {settings.ttsRate.toFixed(1)}x
+                {chapter.title} · 第 {activeSentence >= 0 ? activeSentence + 1 : (paraSentStart[paraIndex] ?? 0) + 1}/{totalSentences || 1} 句 · {settings.ttsRate.toFixed(1)}x
               </div>
               <div className="muted" style={{ fontSize: 11 }}>
                 今日已耗 {todayCost}
@@ -740,18 +866,46 @@ export function ReaderPage() {
               type="button"
               className="side-btn"
               onClick={() => {
-                const n = Math.min(Math.max(paragraphs.length - 1, 0), paraIndex + 1)
-                setParaIndex(n)
+                const cur = activeSentence >= 0 ? activeSentence : (paraSentStart[paraIndex] ?? 0)
+                const n = Math.min(totalSentences - 1, cur + 1)
+                setActiveSentence(n)
+                const pi = sentToParaRef.current[n] ?? 0
+                setParaIndex(pi)
                 if (ttsOn) {
                   stopTts()
-                  window.setTimeout(() => void speakFrom(n), 50)
+                  void speakFrom(n)
                 }
               }}
             >
-              下段
+              下句
             </button>
           </div>
         )}
+
+        {/* 章节快速跳转滑动条 */}
+        <div className="chapter-slider-row" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 16px 8px' }}>
+          <span style={{ fontSize: 11, whiteSpace: 'nowrap', minWidth: 28, textAlign: 'right' }}>
+            {book.chapters.findIndex((c) => c.id === chapterId) + 1}/{book.chapters.length}
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={book.chapters.length - 1}
+            value={book.chapters.findIndex((c) => c.id === chapterId)}
+            onChange={(e) => {
+              const idx = parseInt(e.target.value, 10)
+              const cid = book.chapters[idx]?.id
+              if (cid && cid !== chapterId) {
+                jumpChapter(cid)
+                showToast(book.chapters[idx].title)
+              }
+            }}
+            style={{ flex: 1, height: 4, accentColor: 'var(--accent)' }}
+          />
+          <span style={{ fontSize: 11, whiteSpace: 'nowrap', minWidth: 28 }}>
+            {book.chapters.length}
+          </span>
+        </div>
       </div>
 
       {panel && <div className="overlay-mask" onClick={() => setPanel(null)} />}
@@ -769,127 +923,17 @@ export function ReaderPage() {
       )}
 
       {panel === 'settings' && (
-        <div className="panel-sheet" onClick={(e) => e.stopPropagation()}>
-          <div className="panel-head">
-            <span>阅读设置</span>
-            <button type="button" onClick={() => setPanel(null)}>
-              关闭
-            </button>
-          </div>
-          <div className="setting-panel">
-            <div className="row">
-              <span>背景</span>
-              <div className="theme-pills">
-                {(
-                  [
-                    ['day', '日间'],
-                    ['eye', '护眼'],
-                    ['night', '夜间'],
-                  ] as const
-                ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    className={`${k}${settings.theme === k ? ' on' : ''}`}
-                    onClick={() => updateSettings({ theme: k })}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="row">
-              <span>字号</span>
-              <div className="stepper">
-                <button type="button" onClick={() => updateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })}>
-                  A−
-                </button>
-                <span>{settings.fontSize}</span>
-                <button type="button" onClick={() => updateSettings({ fontSize: Math.min(28, settings.fontSize + 1) })}>
-                  A+
-                </button>
-              </div>
-            </div>
-            <div className="row">
-              <span>语速</span>
-              <div className="stepper">
-                <button type="button" onClick={() => updateSettings({ ttsRate: Math.max(0.6, +(settings.ttsRate - 0.1).toFixed(1)) })}>
-                  −
-                </button>
-                <span>{settings.ttsRate.toFixed(1)}x</span>
-                <button type="button" onClick={() => updateSettings({ ttsRate: Math.min(1.8, +(settings.ttsRate + 0.1).toFixed(1)) })}>
-                  +
-                </button>
-              </div>
-            </div>
-            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
-              <span>在线语音 · MiniMax</span>
-              <div className="voice-install-box">
-                <p style={{ margin: '0 0 8px', fontSize: 12, lineHeight: 1.5 }}>
-                  在线语音合成（speech-2.8-turbo）。首次朗读每章需联网合成，之后缓存到本地，重复朗读不花钱。计费 ¥2/万字。
-                </p>
-                <p style={{ margin: 0, fontSize: 11, opacity: 0.75 }}>{engineStatus}</p>
-              </div>
-            </div>
-
-            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-              <span>中文音色</span>
-              <select
-                className="voice-select"
-                value={settings.ttsVoiceZh || DEFAULT_VOICE_ZH}
-                onChange={(e) => updateSettings({ ttsVoiceZh: e.target.value })}
-              >
-                {voicesForLang('zh').map((v) => (
-                  <option key={v.key} value={v.key}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
-              <span>注释音色</span>
-              <span style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
-                识别*开头、[n]编号、数字编号的注释段，自动切换到此音色朗读。
-              </span>
-              <select
-                className="voice-select"
-                value={settings.ttsVoiceNote || DEFAULT_VOICE_NOTE}
-                onChange={(e) => updateSettings({ ttsVoiceNote: e.target.value })}
-              >
-                {VOICE_CATALOG.map((v) => (
-                  <option key={`note-${v.key}`} value={v.key}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="row">
-              <span>调试面板</span>
-              <label
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 13,
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={!!settings.ttsDebugPanel}
-                  onChange={(e) => {
-                    const on = e.target.checked
-                    setDebugOpenPersistent(on)
-                  }}
-                />
-                展开日志（排错用，默认关）
-              </label>
-            </div>
-          </div>
-        </div>
+        <ReaderSettingsPanel
+          settings={settings}
+          engineStatus={engineStatus}
+          onUpdateSettings={(partial) => {
+            updateSettings(partial)
+            if ('ttsDebugPanel' in partial) {
+              setDebugOpenPersistent(!!partial.ttsDebugPanel)
+            }
+          }}
+          onClose={() => setPanel(null)}
+        />
       )}
 
       {toast && <div className="toast toast-debug">{toast}</div>}
@@ -903,67 +947,15 @@ export function ReaderPage() {
         />
       )}
 
-      <div className={`tts-debug-panel${debugOpen ? ' open' : ''}`}>
-        <button type="button" className="tts-debug-toggle" onClick={() => setDebugOpenPersistent((v) => !v)}>
-          {debugOpen ? '收起调试' : '展开调试'} ({debugLines.length})
-        </button>
-        {debugOpen && (
-          <pre className="tts-debug-body">
-            {debugLines.length === 0
-              ? '暂无日志。点听书后这里会显示每一步（下载 URL / 错误 / 音量）。'
-              : debugLines.slice(0, 25).map(formatDebugLine).join('\n---\n')}
-          </pre>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/** 语音解锁弹窗：首次朗读时要求输入密码，解密 MiniMax key */
-function UnlockModal(props: {
-  error: string
-  loading: boolean
-  onSubmit: (password: string) => void
-  onCancel: () => void
-}) {
-  const { error, loading, onSubmit, onCancel } = props
-  const [password, setPassword] = useState('')
-
-  const handleSubmit = (e?: React.FormEvent) => {
-    e?.preventDefault()
-    if (!password || loading) return
-    onSubmit(password)
-  }
-
-  return (
-    <div className="tts-unlock-mask" onClick={onCancel}>
-      <form
-        className="tts-unlock-modal"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSubmit}
-      >
-        <h3>语音功能解锁</h3>
-        <p className="tts-unlock-desc">首次使用在线语音需输入密码，验证后自动保存，之后不再询问。</p>
-        <input
-          className="tts-unlock-input"
-          type="password"
-          autoFocus
-          autoComplete="off"
-          placeholder="请输入密码"
-          value={password}
-          disabled={loading}
-          onChange={(e) => setPassword(e.target.value)}
+      {settings.ttsDebugPanel && (
+        <DebugPanel
+          debugOpen={debugOpen}
+          debugLines={debugLines}
+          onToggle={() => setDebugOpenPersistent((v) => !v)}
         />
-        {error && <span className="tts-unlock-error">{error}</span>}
-        <div className="tts-unlock-buttons">
-          <button type="button" className="tts-unlock-btn cancel" onClick={onCancel} disabled={loading}>
-            取消
-          </button>
-          <button type="submit" className="tts-unlock-btn ok" disabled={loading || !password}>
-            {loading ? '解锁中…' : '解锁'}
-          </button>
-        </div>
-      </form>
+      )}
     </div>
   )
 }
+
+

@@ -669,6 +669,30 @@ button {
   background: rgba(255, 213, 79, 0.15);
 }
 
+/* 句子级高亮：点击选中 / TTS 播放到对应句子 */
+.reader-content .active-sent {
+  background: rgba(198, 40, 40, 0.15);
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+.reader.theme-eye .reader-content .active-sent {
+  background: rgba(46, 125, 50, 0.16);
+}
+.reader.theme-night .reader-content .active-sent {
+  background: rgba(255, 213, 79, 0.18);
+}
+
+.reader-content .sent-clickable {
+  cursor: pointer;
+  border-radius: 3px;
+}
+.reader-content .sent-clickable:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.reader.theme-night .reader-content .sent-clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 /* 注释段视觉提示：与正文略区分，不改变朗读内容 */
 .reader-content p.note-para {
   padding-left: 0.5em;

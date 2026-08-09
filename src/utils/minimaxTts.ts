@@ -65,8 +65,12 @@ interface SyncResp extends BaseResp {
   }
 }
 
-/** 原生用 CapacitorHttp（绕 CORS），Web 用 fetch。同步合成大文本耗时长，超时设 180s。 */
-async function httpPostSync(path: string, body: unknown): Promise<SyncResp> {
+/** 原生用 CapacitorHttp（绕 CORS），Web 用 fetch。同步合成大文本耗时长，超时设 60s。 */
+async function httpPostSync(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<SyncResp> {
   const key = await getTtsKey() // 未解锁时抛 TtsKeyLockedError，由上层弹密码框
   const url = `${API_BASE}${path}`
   const headers = {
@@ -80,8 +84,8 @@ async function httpPostSync(path: string, body: unknown): Promise<SyncResp> {
       headers,
       data: body,
       responseType: 'json',
-      connectTimeout: 30000,
-      readTimeout: 180000, // 5 万字同步合成可能要 60-90s，留足余量
+      connectTimeout: 20000,
+      readTimeout: 60000, // 单句一般 < 10s，60s 足够
     })
     const data = typeof resp.data === 'string' ? safeJson(resp.data) : resp.data
     if (resp.status < 200 || resp.status >= 300) {
@@ -95,6 +99,7 @@ async function httpPostSync(path: string, body: unknown): Promise<SyncResp> {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal,
   })
   const data = (await r.json().catch(() => ({}))) as SyncResp
   if (!r.ok) {
@@ -234,10 +239,19 @@ export async function synthesizeChunk(
   voiceId: string,
   onProgress: (p: SynthProgress) => void,
   isAlive: () => void,
+  registerAbort?: (fn: () => void) => void,
 ): Promise<Blob> {
   isAlive()
   onProgress({ stage: 'synthesizing', progress: 0.3, message: '在线合成中…（同步）' })
   agentLog('minimaxTts:sync', 'request start', { chars: text.length, voiceId }, 'C')
+
+  // AbortController：Web 端可被 stop() 立即中断 HTTP 请求
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+  if (registerAbort && controller) {
+    registerAbort(() => {
+      try { controller.abort() } catch { /* ignore */ }
+    })
+  }
 
   // 请求体：参考 Java 示例（speech-02-hd）+ Apifox 文档。
   // 顶层放 voice_id / speed / vol / pitch / audio_sample_rate / bitrate
@@ -260,7 +274,7 @@ export async function synthesizeChunk(
     },
     timbre_weights: [{ voice_id: voiceId, weight: 1 }],
     language_boost: 'auto',
-  })
+  }, controller?.signal)
 
   if (resp.base_resp?.status_code !== 0 && resp.base_resp?.status_code !== undefined) {
     throw new Error(`MiniMax 合成失败: ${resp.base_resp.status_msg}`)

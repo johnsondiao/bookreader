@@ -11,7 +11,7 @@
  */
 import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
-import { addSynthChars } from './costTracker'
+import { addSynthChars, checkBudget } from './costTracker'
 import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -23,6 +23,7 @@ import {
   type VoiceDef,
 } from './ttsVoices'
 import type { Paragraph, ParagraphKind } from './chapterParser'
+import { isSentenceEnd } from './chapterParser'
 
 export type TtsStatus = 'idle' | 'speaking' | 'paused' | 'loading'
 
@@ -47,8 +48,10 @@ export interface PlayChapterOpts {
   chapterTitle: string
   /** 章节段落（带 text/note 类型，兼容旧的纯字符串数组） */
   paragraphs: Paragraph[] | string[]
-  /** 从第几段开始播放 */
+  /** 从第几段开始播放（旧接口，优先级低于 startSentenceIndex） */
   startParagraphIndex?: number
+  /** 从第几个句子（segment）开始播放 */
+  startSentenceIndex?: number
   /** 正文音色 key */
   voiceKey?: string
   /** 注释音色 key（不传则与正文相同） */
@@ -57,10 +60,20 @@ export interface PlayChapterOpts {
   rate?: number
   /** 当前段落变化回调 */
   onParagraph?: (index: number) => void
+  /** 当前句子（segment）变化回调 */
+  onSentence?: (segIndex: number) => void
   /** 状态变化回调 */
   onStatus?: (status: TtsStatus, message?: string) => void
   /** 合成进度回调 */
   onSynthProgress?: (p: TtsProgress) => void
+  /**
+   * 合成结束 + 尝试写入文件（外部 .mp3 + IDB）之后异步触发。
+   * fileOk === false 表示"钱扣了但音频没保存到磁盘"，UI 需要提示用户；
+   * fileOk === true 表示保存成功（或纯 Web 环境不需要存）。
+   */
+  onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void
+  /** 每日花费预算上限（元），0 或不传表示不限制 */
+  budgetYuan?: number
 }
 
 export interface TtsController {
@@ -78,6 +91,95 @@ class SpeakAborted extends Error {
   constructor() {
     super('aborted')
     this.name = 'SpeakAborted'
+  }
+}
+
+class BudgetExceeded extends Error {
+  todayYuan: number
+  budgetYuan: number
+  constructor(todayYuan: number, budgetYuan: number) {
+    super(`今日花费 ¥${todayYuan.toFixed(2)} 已超过预算上限 ¥${budgetYuan.toFixed(2)}`)
+    this.name = 'BudgetExceeded'
+    this.todayYuan = todayYuan
+    this.budgetYuan = budgetYuan
+  }
+}
+
+export { BudgetExceeded }
+
+/** 把原始 TTS 错误分类为用户可读的「标题 + 建议」。 */
+export function classifyTtsError(rawErr: unknown): { title: string; advice: string; retryable: boolean } {
+  const msg = rawErr instanceof Error ? rawErr.message : String(rawErr ?? '')
+  const lower = msg.toLowerCase()
+
+  // 1. 网络层（浏览器/原生通用）
+  if (lower.includes('failed to fetch') || lower.includes('network error') || lower.includes('net::') || lower.includes('timeout') || lower.includes('连接超时') || lower.includes('请求超时')) {
+    return {
+      title: '网络请求失败',
+      advice: '请检查网络连接（Wi-Fi/流量），确认能正常上网后重试。',
+      retryable: true,
+    }
+  }
+
+  // 2. MiniMax HTTP 限流/配额
+  if (/429|rate.?limit|quota|频率|限流|额度|余额不足/.test(lower)) {
+    return {
+      title: '语音平台限流或额度不足',
+      advice: '每分钟有调用上限，请等待 1~2 分钟再试；如长期出现请检查 MiniMax 账户余额或 API Key 权限。',
+      retryable: true,
+    }
+  }
+
+  // 3. 认证
+  if (/401|403|unauthorized|forbidden|鉴权|授权|invalid key|bearer/.test(lower)) {
+    return {
+      title: 'API Key 无效或未授权',
+      advice: '请到「设置 → 解锁密钥」重新输入 MiniMax API Key；如已设置，请确认 Key 的字符与官网完全一致。',
+      retryable: false,
+    }
+  }
+
+  // 4. 参数错误
+  if (/400|invalid param|bad request|参数/.test(lower)) {
+    return {
+      title: '合成参数非法',
+      advice: '文本中可能包含不支持的特殊字符，可跳过该句或改选其他音色再试。',
+      retryable: true,
+    }
+  }
+
+  // 5. 服务端 5xx
+  if (/^HTTP\s*5\d{2}|500|502|503|504|server error|服务端|服务器/.test(lower)) {
+    return {
+      title: '语音平台服务异常',
+      advice: 'MiniMax 平台暂时不可用，请 5~10 分钟后重试；若持续较长时间可考虑切换音色或稍后再读。',
+      retryable: true,
+    }
+  }
+
+  // 6. 解码失败
+  if (/解码失败|decode|base64|hex|audio data/.test(lower)) {
+    return {
+      title: '音频解码失败',
+      advice: '网络传输可能损坏了音频数据，重试一次即可；如果持续失败请关闭 VPN 或代理软件。',
+      retryable: true,
+    }
+  }
+
+  // 7. 其他已知但不严重
+  if (msg === 'aborted' || rawErr instanceof SpeakAborted) {
+    return {
+      title: '已停止',
+      advice: '',
+      retryable: false,
+    }
+  }
+
+  // 兜底
+  return {
+    title: '朗读失败',
+    advice: '未知错误，请稍后重试。如持续失败可开启调试面板查看详细日志，或反馈给开发者。',
+    retryable: true,
   }
 }
 
@@ -111,6 +213,10 @@ interface PlaySegment {
   charStart: number
   charEnd: number
   blob?: Blob
+  /** 消费者等待此 promise（生产者合成完该段后 resolve） */
+  blobReady?: Promise<void>
+  _resolveReady?: () => void
+  _rejectReady?: (e: Error) => void
 }
 
 /** 把段落拼成全文字符串（段间 \n），并记录每段全局字符区间 */
@@ -182,11 +288,6 @@ function planSegments(
   return out
 }
 
-/** 判断字符是否为句子结束标点（中英文） */
-function isSentenceEnd(ch: string): boolean {
-  return '。！？；…\n'.includes(ch) || '.!?;'.includes(ch)
-}
-
 const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 
 export function createTtsController(): TtsController {
@@ -195,6 +296,9 @@ export function createTtsController(): TtsController {
   let objectUrl: string | null = null
   let playWait: { resolve: () => void; reject: (e: Error) => void } | null = null
   let speakEpoch = 0
+  let currentSegments: PlaySegment[] | null = null
+  let synthAbortFn: (() => void) | null = null
+  let currentPlayPromise: Promise<void> | null = null
 
   const assertAlive = (epoch: number) => {
     if (epoch !== speakEpoch) throw new SpeakAborted()
@@ -223,8 +327,8 @@ export function createTtsController(): TtsController {
   }
 
   /**
-   * 按组合成：segments 是按音色合并的播放段列表。
-   * 把同 voiceKey 的 segments 按顺序合成（避免重复任务），把 blob 填回 segment.blob。
+   * 生产者：按序合成 segments，每段就绪后 resolve blobReady 通知消费者。
+   * 合成顺序从 startSegIdx 开始（确保首句最快就绪），再到 wrap-around 段（缓存完整性）。
    */
   const synthesizeSegments = async (
     fullText: string,
@@ -232,36 +336,66 @@ export function createTtsController(): TtsController {
     onSynthProgress: ((p: TtsProgress) => void) | undefined,
     epoch: number,
     bookTitle: string,
+    startSegIdx: number,
+    budgetYuan?: number,
   ): Promise<void> => {
-    const total = segments.length
-    for (let i = 0; i < total; i++) {
-      assertAlive(epoch)
-      const seg = segments[i]
-      if (seg.blob) continue
-      const text = fullText.slice(seg.charStart, seg.charEnd)
-      const voiceLabel = seg.voiceKey
-      onSynthProgress?.({
-        stage: 'synth',
-        progress: i / Math.max(1, total),
-        message: `合成${voiceLabel.startsWith('note:') ? '注释' : '正文'}段 ${i + 1}/${total}（${text.length} 字）`,
-      })
-      agentLog('tts.ts:synth', 'segment start', { seg: i + 1, total, chars: text.length, voice: voiceLabel }, 'C')
-      const blob = await synthesizeChunk(
-        text,
-        seg.voiceId,
-        (p: SynthProgress) => {
-          const overall = (i + p.progress) / Math.max(1, total)
-          onSynthProgress?.({
-            stage: p.stage,
-            progress: Math.min(0.99, overall),
-            message: p.message,
-          })
-        },
-        () => assertAlive(epoch),
-      )
-      seg.blob = blob
-      // 记录本次合成的字符数到每日花费统计
-      addSynthChars(text.length, bookTitle)
+    // 合成顺序：从播放起点开始，确保首句最快就绪
+    const order: number[] = []
+    for (let i = startSegIdx; i < segments.length; i++) order.push(i)
+    for (let i = 0; i < startSegIdx; i++) order.push(i)
+
+    const needCount = segments.filter((s) => !s.blob).length
+    let done = 0
+
+    try {
+      for (const idx of order) {
+        assertAlive(epoch)
+        const seg = segments[idx]
+        if (seg.blob) continue
+        const text = fullText.slice(seg.charStart, seg.charEnd)
+        const voiceLabel = seg.voiceKey
+        onSynthProgress?.({
+          stage: 'synth',
+          progress: done / Math.max(1, needCount),
+          message: `合成${voiceLabel.startsWith('note:') ? '注释' : '正文'}段 ${done + 1}/${needCount}（${text.length} 字）`,
+        })
+        agentLog('tts.ts:synth', 'segment start', { seg: idx + 1, total: segments.length, chars: text.length, voice: voiceLabel }, 'C')
+        // 预算检查：超出上限则停止后续合成
+        const budgetCheck = checkBudget(budgetYuan)
+        if (budgetCheck?.exceeded) {
+          const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
+          // 拒绝所有未完成的段
+          for (const seg of segments) {
+            if (!seg.blob) seg._rejectReady?.(err)
+          }
+          throw err
+        }
+        const blob = await synthesizeChunk(
+          text,
+          seg.voiceId,
+          (p: SynthProgress) => {
+            const overall = (done + p.progress) / Math.max(1, needCount)
+            onSynthProgress?.({
+              stage: p.stage,
+              progress: Math.min(0.99, overall),
+              message: p.message,
+            })
+          },
+          () => assertAlive(epoch),
+          (abortFn) => { synthAbortFn = abortFn },
+        )
+        synthAbortFn = null
+        seg.blob = blob
+        addSynthChars(text.length, bookTitle)
+        seg._resolveReady?.()
+        done++
+      }
+    } catch (e) {
+      // 合成失败/中止：拒绝所有未完成的 deferred，防止消费者死等
+      for (const seg of segments) {
+        if (!seg.blob) seg._rejectReady?.(e instanceof Error ? e : new Error(String(e)))
+      }
+      throw e
     }
   }
 
@@ -309,22 +443,32 @@ export function createTtsController(): TtsController {
       )
     })
 
-  /** 顺序播放 segments，按字符比例回调当前段落 */
+  /** 消费者：顺序播放 segments，blob 未就绪时等待生产者合成完成 */
   const playSegments = async (
     segments: PlaySegment[],
     paraRanges: CharRange[],
     opts: PlayChapterOpts,
     epoch: number,
+    startSegIdx: number,
   ) => {
-    const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
-    const startChar = paraRanges[startIndex].start
-    let startSegIdx = segments.findIndex((s) => startChar >= s.charStart && startChar < s.charEnd)
-    if (startSegIdx < 0) startSegIdx = 0
+    const startIndex = segments[startSegIdx]?.firstPara ?? 0
 
     for (let si = startSegIdx; si < segments.length; si++) {
       assertAlive(epoch)
       const seg = segments[si]
-      if (!seg.blob) throw new Error('播放段缺少音频 blob（合成未完成或缓存损坏）')
+      // 生产者-消费者协同：blob 未就绪时等待合成完成
+      if (!seg.blob) {
+        if (seg.blobReady) {
+          await seg.blobReady
+          assertAlive(epoch)
+        }
+        if (!seg.blob) throw new Error('播放段缺少音频 blob（合成未完成或缓存损坏）')
+      }
+      // 释放上一段的 objectUrl（每段都独立 create 一个，连续播放时避免累积）
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
       objectUrl = URL.createObjectURL(seg.blob)
       const el = new Audio(objectUrl)
       audio = el
@@ -373,6 +517,7 @@ export function createTtsController(): TtsController {
       }
 
       status = 'speaking'
+      opts.onSentence?.(si)
       opts.onStatus?.('speaking')
       agentLog(
         'tts.ts:playSegments',
@@ -403,8 +548,15 @@ export function createTtsController(): TtsController {
     listVoices: async () => VOICE_CATALOG.map(toRef),
 
     async playChapter(opts) {
-      const epoch = ++speakEpoch
-      cleanupAudio()
+      // 串行化：先中断旧播放，再等待旧 Promise 完成，避免并发
+      if (currentPlayPromise) {
+        stop()
+        try { await currentPlayPromise } catch { /* 旧播放已中止 */ }
+      }
+
+      const promise = (async () => {
+        const epoch = ++speakEpoch
+        cleanupAudio()
       status = 'loading'
       opts.onStatus?.('loading', '正在准备语音…')
 
@@ -437,36 +589,50 @@ export function createTtsController(): TtsController {
       }
 
       let segments: PlaySegment[] = planSegments(paras, paraRanges, textVoice, noteVoice)
+      currentSegments = segments
 
-      // 尝试用缓存还原 segments.blob
-      const cached: PlaySegment[] = []
+      // 尝试用缓存还原 segments.blob（支持部分命中，不 break）
       if (clip && clip.textHash === textHash && clip.chunks?.length) {
-        // 按 charStart/charEnd 精确匹配：同一本书同一个音色组合下，
-        // planSegments 相同输入输出相同，charStart/charEnd 完全一致即可复用
-        const remaining = [...clip.chunks]
-        let ok = true
         for (const seg of segments) {
-          const idx = remaining.findIndex(
+          const idx = clip.chunks.findIndex(
             (c) => c.charStart === seg.charStart && c.charEnd === seg.charEnd && c.blob.size > 0,
           )
-          if (idx < 0) {
-            ok = false
-            break
-          }
-          seg.blob = remaining[idx].blob
-          remaining.splice(idx, 1)
+          if (idx >= 0) seg.blob = clip.chunks[idx].blob
         }
-        if (ok) cached.push(...segments)
       }
 
-      const needSynth = cached.length !== segments.length || segments.some((s) => !s.blob)
+      // 计算播放起点 segment（生产者和消费者共用）
+      let startSegIdx: number
+      if (opts.startSentenceIndex != null) {
+        startSegIdx = Math.max(0, Math.min(opts.startSentenceIndex, segments.length - 1))
+      } else {
+        const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
+        const startChar = paraRanges[startIndex].start
+        startSegIdx = segments.findIndex((s) => startChar >= s.charStart && startChar < s.charEnd)
+        if (startSegIdx < 0) startSegIdx = 0
+      }
+
+      const needSynth = segments.some((s) => !s.blob)
+      let producerPromise: Promise<void> | null = null
 
       if (needSynth) {
+        // 为未缓存的段创建 deferred（消费者 await blobReady，生产者 resolve）
+        for (const seg of segments) {
+          if (!seg.blob) {
+            let resolveFn!: () => void
+            let rejectFn!: (e: Error) => void
+            seg.blobReady = new Promise<void>((res, rej) => { resolveFn = res; rejectFn = rej })
+            seg._resolveReady = resolveFn
+            seg._rejectReady = rejectFn
+            seg.blobReady.catch(() => {}) // 防止 unhandled rejection
+          }
+        }
+
         status = 'loading'
-        opts.onStatus?.('loading', '正在在线合成整章语音…')
+        opts.onStatus?.('loading', '正在在线合成语音…')
         agentLog(
           'tts.ts:playChapter',
-          'synth start',
+          'synth start (streaming)',
           {
             cacheKey,
             textVoice: textVoice.key,
@@ -477,28 +643,11 @@ export function createTtsController(): TtsController {
           },
           'A',
         )
-        await synthesizeSegments(fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知')
-        assertAlive(epoch)
-        // 写回缓存
-        const chunks: AudioChunk[] = segments.map((s) => ({
-          charStart: s.charStart,
-          charEnd: s.charEnd,
-          blob: s.blob!,
-        }))
-        clip = { chunks, textHash, voiceKey: `${textVoice.key}|${noteVoice.key}`, createdAt: Date.now() }
-        // meta 用于写外部文件（升级不被清），缺字段也没关系：此时回退只写 IDB
-        const voiceLabel = textVoice.name + (noteVoice.key !== textVoice.key ? ` · ${noteVoice.name}注释` : '')
-        const fileMeta: ChapterFileMeta = {
-          bookId: opts.bookId,
-          bookTitle: opts.bookTitle,
-          chapterId: opts.chapterId,
-          chapterTitle: opts.chapterTitle,
-          voiceKey: textVoice.key,
-          noteVoiceKey: noteVoice.key,
-          voiceLabel,
-        }
-        void putClip(cacheKey, clip, fileMeta)
-        opts.onStatus?.('loading', '合成完成，准备播放…')
+
+        // 启动生产者（不 await，后台合成，首句就绪后消费者即可播放）
+        producerPromise = synthesizeSegments(
+          fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', startSegIdx, opts.budgetYuan,
+        )
       } else {
         agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, segments: segments.length }, 'A')
         opts.onStatus?.('loading', '已缓存，直接播放…')
@@ -506,14 +655,71 @@ export function createTtsController(): TtsController {
 
       assertAlive(epoch)
       try {
-        await playSegments(segments, paraRanges, opts, epoch)
+        await playSegments(segments, paraRanges, opts, epoch, startSegIdx)
       } catch (err) {
         if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return
         }
         throw err
       } finally {
+        // 生产者 + 缓存保存改为后台执行，不阻塞 playChapter resolve
+        // （避免 HTTP 请求挂起时用户无法 stop 或再次播放）
+        if (producerPromise) {
+          void producerPromise
+            .catch(() => { /* abort 或合成错误 */ })
+            .then(() => {
+              // 生产者跑完（或已被 abort）后，保存已完成的段
+              const completedSegs = segments.filter((s) => s.blob)
+              if (completedSegs.length === 0) return
+              const chunks: AudioChunk[] = completedSegs.map((s) => ({
+                charStart: s.charStart,
+                charEnd: s.charEnd,
+                blob: s.blob!,
+              }))
+              const newClip: ChapterAudio = {
+                chunks, textHash,
+                voiceKey: `${textVoice.key}|${noteVoice.key}`,
+                createdAt: Date.now(),
+              }
+              const voiceLabel = textVoice.name + (noteVoice.key !== textVoice.key ? ` · ${noteVoice.name}注释` : '')
+              const fileMeta: ChapterFileMeta = {
+                bookId: opts.bookId,
+                bookTitle: opts.bookTitle,
+                chapterId: opts.chapterId,
+                chapterTitle: opts.chapterTitle,
+                voiceKey: textVoice.key,
+                noteVoiceKey: noteVoice.key,
+                voiceLabel,
+              }
+              void putClip(cacheKey, newClip, fileMeta)
+                .then((res) => {
+                  opts.onFileSaved?.({
+                    fileOk: res.fileOk,
+                    idbOk: res.idbOk,
+                    error: res.fileError,
+                  })
+                })
+                .catch((e) => {
+                  opts.onFileSaved?.({
+                    fileOk: false,
+                    idbOk: false,
+                    error: e instanceof Error ? e.message : String(e),
+                  })
+                })
+            })
+        }
+        // 清 segments 引用（避免 stop 再操作旧 segments）
+        if (currentSegments === segments) currentSegments = null
+        // 立即设置 status idle（不需要等生产者）
         if (epoch === speakEpoch && (status as TtsStatus) !== 'paused') status = 'idle'
+      }
+      })() // async IIFE end
+
+      currentPlayPromise = promise
+      try {
+        await promise
+      } finally {
+        if (currentPlayPromise === promise) currentPlayPromise = null
       }
     },
 
@@ -530,6 +736,20 @@ export function createTtsController(): TtsController {
     stop() {
       speakEpoch += 1
       status = 'idle'
+      // 1. 中断正在进行的 HTTP 合成请求（如果有）
+      if (synthAbortFn) {
+        try { synthAbortFn() } catch { /* ignore */ }
+        synthAbortFn = null
+      }
+      // 2. 立即 reject 所有未完成的 blobReady，让消费者从 await blobReady 中解除
+      if (currentSegments) {
+        const aborted = new SpeakAborted()
+        for (const seg of currentSegments) {
+          if (!seg.blob) seg._rejectReady?.(aborted)
+        }
+        currentSegments = null
+      }
+      // 3. 中断消费者的 playWait（如果正在播放或等待 ended）
       cleanupAudio()
       finishPlayWait(new SpeakAborted())
     },

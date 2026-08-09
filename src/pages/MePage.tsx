@@ -88,21 +88,28 @@ export function MePage() {
 
   const totalSize = useMemo(() => list.reduce((s, x) => s + (x.sizeBytes || 0), 0), [list])
 
-  // 按书名分组
+  // 按 bookId 分组（书名以书架上的原始标题为准，rebuild 文件名变形时不影响分组）
   const bookGroups = useMemo(() => {
-    const map = new Map<string, { bookTitle: string; items: AudioFileRecord[]; totalSize: number }>()
+    const bookTitleMap = new Map<string, string>()
+    for (const b of books) bookTitleMap.set(b.id, b.title)
+    const map = new Map<string, { bookId: string; bookTitle: string; items: AudioFileRecord[]; totalSize: number }>()
     for (const it of list) {
-      const g = map.get(it.bookTitle) || { bookTitle: it.bookTitle, items: [], totalSize: 0 }
+      const bid = it.bookId
+      const rawTitle = bookTitleMap.get(bid) || it.bookTitle
+      const g = map.get(bid) || { bookId: bid, bookTitle: rawTitle, items: [], totalSize: 0 }
       g.items.push(it)
       g.totalSize += it.sizeBytes || 0
-      map.set(it.bookTitle, g)
+      map.set(bid, g)
     }
     return Array.from(map.values()).sort((a, b) => b.items.length - a.items.length)
-  }, [list])
+  }, [list, books])
 
   const currentBookItems = useMemo(
-    () => (selectedBook ? list.filter((x) => x.bookTitle === selectedBook) : []),
-    [list, selectedBook],
+    () => (selectedBook ? list.filter((x) => {
+      const bid = bookGroups.find((g) => g.bookTitle === selectedBook)?.bookId
+      return bid ? x.bookId === bid : x.bookTitle === selectedBook
+    }) : []),
+    [list, selectedBook, bookGroups],
   )
 
   async function onPlay(item: AudioFileRecord) {
@@ -330,7 +337,7 @@ export function MePage() {
 
             {bookGroups.map((g) => (
               <button
-                key={g.bookTitle}
+                key={g.bookId}
                 type="button"
                 className="setting-row"
                 onClick={() => setSelectedBook(g.bookTitle)}
@@ -356,7 +363,11 @@ export function MePage() {
             书籍管理 · 仅从书架移除，不会删除原文件
           </div>
           {books.map((b) => (
-            <button key={b.id} type="button" className="setting-row" onClick={() => removeBook(b.id)}>
+            <button key={b.id} type="button" className="setting-row" onClick={() => {
+              if (confirm(`移除「${b.title}」？\n\n已合成的音频文件会保留在「已合成音频」中不会被删除。\n仅从书架移除，不会删除原文件。`)) {
+                removeBook(b.id)
+              }
+            }}>
               <span>移除「{b.title}」</span>
               <span className="val" style={{ color: 'var(--accent)' }}>
                 移除

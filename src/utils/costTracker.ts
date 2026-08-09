@@ -1,15 +1,20 @@
 /**
- * 语音合成花费记录，localStorage 持久化。
+ * 语音合成花费记录，IndexedDB 持久化（含 localStorage 旧数据迁移）。
  *
+ * 性能优化：内存缓存 + 防抖写入（每 10 次或 5 秒批量写一次）。
  * 存储结构：CostRecord[]
  * 每条记录包含：日期、书名、字符数。
  * 通过这些记录可按天/周/月/书名进行聚合统计。
  */
 import { TTS_COST_PER_MILLION } from './minimaxTts'
+import { openDb } from './audioCache'
 
-const STORAGE_KEY = 'langyue-tts-cost-records'
-const OLD_STORAGE_KEY = 'langyue-tts-cost-by-day'
+const STORE_NAME = 'costs'
+const LS_KEY = 'langyue-tts-cost-records'
+const OLD_LS_KEY = 'langyue-tts-cost-by-day'
 const MAX_RECORDS = 5000
+const SAVE_DEBOUNCE_MS = 5000
+const SAVE_BATCH_COUNT = 10
 
 export interface CostRecord {
   /** 日期 "YYYY-MM-DD" */
@@ -22,29 +27,120 @@ export interface CostRecord {
   ts: number
 }
 
-function load(): CostRecord[] {
+/* ====== 内存缓存 + 防抖持久化 ====== */
+
+let records: CostRecord[] = []
+let initPromise: Promise<void> | null = null
+let dirty = false
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let pendingCount = 0
+
+async function loadFromIdb(): Promise<CostRecord[]> {
   try {
-    // 迁移旧数据：旧 key 是按天聚合的 { "YYYY-MM-DD": chars }，清理掉
-    const oldRaw = localStorage.getItem(OLD_STORAGE_KEY)
-    if (oldRaw) {
-      try { localStorage.removeItem(OLD_STORAGE_KEY) } catch { /* ignore */ }
-    }
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return []
-    const arr = JSON.parse(raw)
-    return Array.isArray(arr) ? arr : []
+    const db = await openDb()
+    const tx = db.transaction(STORE_NAME, 'readonly')
+    const store = tx.objectStore(STORE_NAME)
+    const all: CostRecord[] = await new Promise((resolve, reject) => {
+      const req = store.getAll()
+      req.onsuccess = () => resolve(req.result ?? [])
+      req.onerror = () => reject(req.error)
+    })
+    return all
   } catch {
     return []
   }
 }
 
-function save(records: CostRecord[]) {
+async function saveToIdb(all: CostRecord[]): Promise<void> {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records))
+    const db = await openDb()
+    const tx = db.transaction(STORE_NAME, 'readwrite')
+    const store = tx.objectStore(STORE_NAME)
+    // 清空后全量写入（简单可靠，数据量小）
+    await new Promise<void>((resolve, reject) => {
+      const req = store.clear()
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+    for (let i = 0; i < all.length; i++) {
+      store.put({ ...all[i], id: i })
+    }
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
   } catch {
-    /* ignore */
+    /* IDB 写入失败不阻塞，内存数据仍有效 */
   }
 }
+
+/** 迁移 localStorage 旧数据 */
+function migrateFromLs(): CostRecord[] {
+  try {
+    // 清理旧 key
+    const oldRaw = localStorage.getItem(OLD_LS_KEY)
+    if (oldRaw) {
+      try { localStorage.removeItem(OLD_LS_KEY) } catch { /* ignore */ }
+    }
+    const raw = localStorage.getItem(LS_KEY)
+    if (!raw) return []
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr) && arr.length > 0) {
+      try { localStorage.removeItem(LS_KEY) } catch { /* ignore */ }
+      return arr
+    }
+  } catch { /* ignore */ }
+  return []
+}
+
+function flushSave() {
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  if (!dirty) return
+  dirty = false
+  pendingCount = 0
+  void saveToIdb([...records])
+}
+
+function scheduleSave() {
+  pendingCount++
+  dirty = true
+  if (saveTimer) clearTimeout(saveTimer)
+  if (pendingCount >= SAVE_BATCH_COUNT) {
+    flushSave()
+  } else {
+    saveTimer = setTimeout(flushSave, SAVE_DEBOUNCE_MS)
+  }
+}
+
+async function init(): Promise<void> {
+  if (initPromise) return initPromise
+  initPromise = (async () => {
+    // 优先从 IDB 加载
+    let stored = await loadFromIdb()
+    // IDB 为空则尝试迁移 localStorage
+    if (stored.length === 0) {
+      stored = migrateFromLs()
+      if (stored.length > 0) {
+        await saveToIdb(stored)
+      }
+    }
+    records = stored
+  })()
+  return initPromise
+}
+
+// 启动时异步初始化
+void init()
+
+/** 确保已初始化（同步等待） */
+async function ensureInit(): Promise<void> {
+  await init()
+}
+
+/* ====== 公共 API ====== */
 
 function todayKey(): string {
   const d = new Date()
@@ -55,7 +151,6 @@ function todayKey(): string {
 /** 记录一次合成调用 */
 export function addSynthChars(chars: number, bookTitle: string) {
   if (chars <= 0) return
-  const records = load()
   records.push({
     date: todayKey(),
     bookTitle: bookTitle || '未知',
@@ -66,13 +161,13 @@ export function addSynthChars(chars: number, bookTitle: string) {
   if (records.length > MAX_RECORDS) {
     records.splice(0, records.length - MAX_RECORDS)
   }
-  save(records)
+  scheduleSave()
 }
 
 /** 获取今日已合成的字符数 */
 export function getTodayChars(): number {
   const today = todayKey()
-  return load().filter((r) => r.date === today).reduce((s, r) => s + r.chars, 0)
+  return records.filter((r) => r.date === today).reduce((s, r) => s + r.chars, 0)
 }
 
 /** 获取今日已花费的金额（元） */
@@ -101,7 +196,6 @@ export interface DayStat {
 
 /** 按天聚合，返回最近 N 天（含今天），按日期倒序 */
 export function statsByDay(days = 30): DayStat[] {
-  const records = load()
   const map = new Map<string, { chars: number; records: number }>()
   for (const r of records) {
     const cur = map.get(r.date) || { chars: 0, records: 0 }
@@ -109,7 +203,6 @@ export function statsByDay(days = 30): DayStat[] {
     cur.records += 1
     map.set(r.date, cur)
   }
-  // 生成最近 N 天的列表（含今天，倒序）
   const out: DayStat[] = []
   const now = new Date()
   for (let i = 0; i < days; i++) {
@@ -136,10 +229,8 @@ export interface PeriodStat {
 
 /** 按周聚合，返回最近 N 周（含本周），按周倒序 */
 export function statsByWeek(weeks = 8): PeriodStat[] {
-  const records = load()
   const now = new Date()
-  // 找到本周一
-  const curDay = now.getDay() || 7 // 周日=7
+  const curDay = now.getDay() || 7
   const monday = new Date(now)
   monday.setDate(now.getDate() - curDay + 1)
   monday.setHours(0, 0, 0, 0)
@@ -167,7 +258,6 @@ export function statsByWeek(weeks = 8): PeriodStat[] {
 
 /** 按月聚合，返回最近 N 个月（含本月），按月倒序 */
 export function statsByMonth(months = 6): PeriodStat[] {
-  const records = load()
   const now = new Date()
   const out: PeriodStat[] = []
   for (let m = 0; m < months; m++) {
@@ -195,7 +285,6 @@ export interface BookStat {
 
 /** 按书名聚合，按字符数倒序 */
 export function statsByBook(): BookStat[] {
-  const records = load()
   const map = new Map<string, { chars: number; records: number; lastDate: string }>()
   for (const r of records) {
     const cur = map.get(r.bookTitle) || { chars: 0, records: 0, lastDate: '' }
@@ -219,10 +308,29 @@ export function statsByBook(): BookStat[] {
 
 /** 总花费 */
 export function getTotalYuan(): number {
-  return charsToYuan(load().reduce((s, r) => s + r.chars, 0))
+  return charsToYuan(records.reduce((s, r) => s + r.chars, 0))
 }
 
 /** 总字符数 */
 export function getTotalChars(): number {
-  return load().reduce((s, r) => s + r.chars, 0)
+  return records.reduce((s, r) => s + r.chars, 0)
+}
+
+/** 确保数据已持久化（页面关闭前调用） */
+export function flushCostTracker(): void {
+  flushSave()
+}
+
+/**
+ * 检查今日花费是否超出预算上限。
+ * @param budgetYuan 预算上限（元），0 或 undefined 表示不限制
+ * @returns { exceeded: true, todayYuan, budgetYuan } 如果超出预算
+ */
+export function checkBudget(budgetYuan?: number): { exceeded: boolean; todayYuan: number; budgetYuan: number } | null {
+  if (!budgetYuan || budgetYuan <= 0) return null
+  const todayYuan = getTodayCostYuan()
+  if (todayYuan >= budgetYuan) {
+    return { exceeded: true, todayYuan, budgetYuan }
+  }
+  return null
 }

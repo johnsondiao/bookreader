@@ -264,3 +264,31 @@ export function guessTitleFromContent(content: string, filename?: string): strin
 }
 
 export const COVER_COLORS = ['#8B3A3A', '#2F4A6B', '#3D5A3D', '#6B4F2F', '#4A3A6B', '#2F5A5A', '#5A3A2F', '#3A4A5A']
+
+/** 判断字符是否为句子结束标点（中英文），与 TTS planSegments 使用同一逻辑 */
+export function isSentenceEnd(ch: string): boolean {
+  return '。！？；…\n'.includes(ch) || '.!?;'.includes(ch)
+}
+
+/**
+ * 将段落文本按句子切分（与 TTS planSegments 完全一致的切分逻辑）。
+ * 返回句子数组（含结束标点），空句子被过滤。
+ * 确保 ReaderPage 的句子索引和 TTS 的 segment 索引一一对应。
+ */
+export function splitSentences(text: string): string[] {
+  if (!text) return []
+  const out: string[] = []
+  let sentStart = 0
+  for (let ci = 0; ci < text.length; ci++) {
+    if (isSentenceEnd(text[ci])) {
+      const sentence = text.slice(sentStart, ci + 1)
+      if (sentence) out.push(sentence)
+      sentStart = ci + 1
+    }
+  }
+  if (sentStart < text.length) {
+    const rest = text.slice(sentStart)
+    if (rest) out.push(rest)
+  }
+  return out
+}
