@@ -450,6 +450,9 @@ export function ReaderPage() {
 
       if (!quiet) showToast('正在准备语音…', 4000)
 
+      // 记录最后一句开始的句子索引：失败重试时从失败的句子继续，而不是每次都回到首句
+      let lastSent = -1
+
       // 共享回调：避免主流程和重试流程重复定义
       const callbacks = {
         onParagraph: (i: number) => {
@@ -458,6 +461,7 @@ export function ReaderPage() {
           scrollToPara(i)
         },
         onSentence: (si: number) => {
+          lastSent = si
           if (!speakingRef.current) return
           setActiveSentence(si)
           const pi = sentToParaRef.current[si] ?? 0
@@ -512,6 +516,12 @@ export function ReaderPage() {
         ...callbacks,
       }
 
+      // 重试前把起点推进到失败的句子（尚未开始播放则保持原起点）
+      const resumeOpts = () => {
+        if (lastSent > (playOpts.startSentenceIndex ?? 0)) playOpts.startSentenceIndex = lastSent
+        return playOpts
+      }
+
       try {
         await ttsRef.current.playChapter(playOpts)
       } catch (err) {
@@ -527,7 +537,7 @@ export function ReaderPage() {
           }
           // 解锁成功，重试一次（不再递归避免无限循环）
           try {
-            await ttsRef.current.playChapter(playOpts)
+            await ttsRef.current.playChapter(resumeOpts())
           } catch (err2) {
             if (!mountedRef.current) return
             if (
@@ -574,7 +584,7 @@ export function ReaderPage() {
           )
           if (c.retryable) {
             try {
-              await ttsRef.current.playChapter(playOpts)
+              await ttsRef.current.playChapter(resumeOpts())
             } catch (err2) {
               if (!mountedRef.current) return
               if (

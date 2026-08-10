@@ -9,6 +9,7 @@
  *     为维度缓存，textHash 校验；已缓存直接播放，绝不重复合成
  *   - 播放统一按「段落全局字符比例」估算当前段，回调高亮
  */
+import { Capacitor } from '@capacitor/core'
 import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { addSynthChars, checkBudget } from './costTracker'
@@ -107,6 +108,23 @@ class BudgetExceeded extends Error {
 
 export { BudgetExceeded }
 
+/**
+ * Blob → base64 data URI（分块编码，避免一次性展开超长参数栈溢出）。
+ * Android WebView 的 <audio> 无法加载 blob: URL（报 "The element has no
+ * supported sources."），原生端统一改用 data URI 播放。
+ */
+async function blobToDataUri(blob: Blob): Promise<string> {
+  const buf = await blob.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let bin = ''
+  const CHUNK = 0x2000
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const sub = bytes.subarray(i, i + CHUNK)
+    bin += String.fromCharCode(...(sub as unknown as number[]))
+  }
+  return `data:${blob.type || 'audio/mpeg'};base64,${btoa(bin)}`
+}
+
 /** 把原始 TTS 错误分类为用户可读的「标题 + 建议」。 */
 export function classifyTtsError(rawErr: unknown): { title: string; advice: string; retryable: boolean } {
   const msg = rawErr instanceof Error ? rawErr.message : String(rawErr ?? '')
@@ -166,7 +184,16 @@ export function classifyTtsError(rawErr: unknown): { title: string; advice: stri
     }
   }
 
-  // 7. 其他已知但不严重
+  // 7. 媒体元素加载/播放失败（Android WebView 的 blob: URL 兼容问题等）
+  if (lower.includes('no supported sources') || lower.includes('not suitable') || msg.includes('音频播放失败')) {
+    return {
+      title: '音频播放失败',
+      advice: '音频已合成成功但播放器加载失败，请重试朗读；若持续出现请重启 App 后再试。',
+      retryable: true,
+    }
+  }
+
+  // 8. 其他已知但不严重
   if (msg === 'aborted' || rawErr instanceof SpeakAborted) {
     return {
       title: '已停止',
@@ -299,6 +326,8 @@ export function createTtsController(): TtsController {
   let currentSegments: PlaySegment[] | null = null
   let synthAbortFn: (() => void) | null = null
   let currentPlayPromise: Promise<void> | null = null
+  /** 当前 waitForMetadata 的结算函数（stop 时立即释放，防止旧 Promise 永不 resolve 卡死下一次播放） */
+  let metaWaiter: (() => void) | null = null
 
   const assertAlive = (epoch: number) => {
     if (epoch !== speakEpoch) throw new SpeakAborted()
@@ -399,22 +428,24 @@ export function createTtsController(): TtsController {
     }
   }
 
-  const waitForMetadata = (el: HTMLAudioElement, epoch: number) =>
+  const waitForMetadata = (el: HTMLAudioElement) =>
     new Promise<void>((resolve) => {
       if (isFinite(el.duration) && el.duration > 0) return resolve()
-      const onMeta = () => {
+      const settle = () => {
+        if (metaWaiter !== settle) return
+        metaWaiter = null
         el.removeEventListener('loadedmetadata', onMeta)
-        resolve()
-      }
-      const onErr = () => {
         el.removeEventListener('error', onErr)
         resolve()
       }
+      const onMeta = () => settle()
+      const onErr = () => settle()
+      metaWaiter = settle
       el.addEventListener('loadedmetadata', onMeta)
       el.addEventListener('error', onErr)
-      window.setTimeout(() => {
-        if (epoch === speakEpoch) resolve()
-      }, 5000)
+      // 兜底超时：无条件结算（epoch 校验交给调用方的 assertAlive），
+      // 避免 stop 后事件不触发导致 Promise 永不 resolve
+      window.setTimeout(settle, 5000)
     })
 
   const playChunkToEnd = (el: HTMLAudioElement, epoch: number) =>
@@ -469,13 +500,22 @@ export function createTtsController(): TtsController {
         URL.revokeObjectURL(objectUrl)
         objectUrl = null
       }
-      objectUrl = URL.createObjectURL(seg.blob)
-      const el = new Audio(objectUrl)
+      let src: string
+      if (Capacitor.isNativePlatform()) {
+        // Android WebView 的媒体管线无法加载 blob: URL（报 "The element has no
+        // supported sources."），原生端改用 base64 data URI；Web 端保留 blob URL
+        src = await blobToDataUri(seg.blob)
+        assertAlive(epoch)
+      } else {
+        objectUrl = URL.createObjectURL(seg.blob)
+        src = objectUrl
+      }
+      const el = new Audio(src)
       audio = el
       el.playbackRate = clampRate(opts.rate ?? 1)
       el.volume = 1
 
-      await waitForMetadata(el, epoch)
+      await waitForMetadata(el)
       assertAlive(epoch)
 
       let lastReported = -1
@@ -544,13 +584,40 @@ export function createTtsController(): TtsController {
     opts.onStatus?.('idle')
   }
 
+  const stopInternal = () => {
+    speakEpoch += 1
+    status = 'idle'
+    // 1. 中断正在进行的 HTTP 合成请求（如果有）
+    if (synthAbortFn) {
+      try { synthAbortFn() } catch { /* ignore */ }
+      synthAbortFn = null
+    }
+    // 2. 立即 reject 所有未完成的 blobReady，让消费者从 await blobReady 中解除
+    if (currentSegments) {
+      const aborted = new SpeakAborted()
+      for (const seg of currentSegments) {
+        if (!seg.blob) seg._rejectReady?.(aborted)
+      }
+      currentSegments = null
+    }
+    // 3. 中断消费者的 playWait（如果正在播放或等待 ended）
+    cleanupAudio()
+    finishPlayWait(new SpeakAborted())
+    // 4. 释放卡在 waitForMetadata 的消费者
+    if (metaWaiter) {
+      const settle = metaWaiter
+      metaWaiter = null
+      settle()
+    }
+  }
+
   return {
     listVoices: async () => VOICE_CATALOG.map(toRef),
 
     async playChapter(opts) {
       // 串行化：先中断旧播放，再等待旧 Promise 完成，避免并发
       if (currentPlayPromise) {
-        stop()
+        stopInternal()
         try { await currentPlayPromise } catch { /* 旧播放已中止 */ }
       }
 
@@ -660,6 +727,8 @@ export function createTtsController(): TtsController {
         if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return
         }
+        // 播放失败（非中止）：立即停止后台合成，避免用户已听不了却还在持续计费
+        if (producerPromise) stopInternal()
         throw err
       } finally {
         // 生产者 + 缓存保存改为后台执行，不阻塞 playChapter resolve
@@ -734,24 +803,7 @@ export function createTtsController(): TtsController {
       void audio.play().catch(() => {})
     },
     stop() {
-      speakEpoch += 1
-      status = 'idle'
-      // 1. 中断正在进行的 HTTP 合成请求（如果有）
-      if (synthAbortFn) {
-        try { synthAbortFn() } catch { /* ignore */ }
-        synthAbortFn = null
-      }
-      // 2. 立即 reject 所有未完成的 blobReady，让消费者从 await blobReady 中解除
-      if (currentSegments) {
-        const aborted = new SpeakAborted()
-        for (const seg of currentSegments) {
-          if (!seg.blob) seg._rejectReady?.(aborted)
-        }
-        currentSegments = null
-      }
-      // 3. 中断消费者的 playWait（如果正在播放或等待 ended）
-      cleanupAudio()
-      finishPlayWait(new SpeakAborted())
+      stopInternal()
     },
     getStatus: () => status,
   }

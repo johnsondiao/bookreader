@@ -5,6 +5,7 @@
  *  - chapterParser: isSentenceEnd, splitSentences（句子切分——阅读器高亮与 TTS 分段对齐的基石）
  *  - minimaxTts: estimateTtsCost（费用计算，直接影响"今日花费"数字）
  *  - audioFileStore: safeName（文件名消毒——决定索引重建是否能找回音频）
+ *  - tts: classifyTtsError（错误分类——决定是否自动重试）
  *
  * 运行：npm test / npx vitest run tests/core.test.ts
  */
@@ -12,6 +13,7 @@ import { describe, expect, it } from 'vitest'
 import { isSentenceEnd, splitSentences } from '../src/utils/chapterParser'
 import { estimateTtsCost } from '../src/utils/minimaxTts'
 import { safeName } from '../src/utils/audioFileStore'
+import { classifyTtsError } from '../src/utils/tts'
 
 describe('isSentenceEnd', () => {
   it('中文标点', () => {
@@ -121,5 +123,21 @@ describe('safeName', () => {
   })
   it('空串返回空串', () => {
     expect(safeName('')).toBe('')
+  })
+})
+
+describe('classifyTtsError', () => {
+  it('媒体元素加载失败（Android WebView blob: URL 问题）归类为音频播放失败且可重试', () => {
+    const r = classifyTtsError(new Error('The element has no supported sources.'))
+    expect(r.title).toBe('音频播放失败')
+    expect(r.retryable).toBe(true)
+  })
+  it('网络错误可重试', () => {
+    expect(classifyTtsError(new Error('Failed to fetch')).retryable).toBe(true)
+  })
+  it('主动停止不重试', () => {
+    const r = classifyTtsError(new Error('aborted'))
+    expect(r.title).toBe('已停止')
+    expect(r.retryable).toBe(false)
   })
 })
