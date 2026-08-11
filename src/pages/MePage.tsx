@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
+import { App as CapacitorApp } from '@capacitor/app'
 import { useAppStore } from '../store/useAppStore'
 import {
   listAudioFiles,
@@ -7,7 +8,10 @@ import {
   getAudioPlayUrl,
   getAudioAbsolutePath,
   initAudioStore,
+  resetAudioStoreInit,
   getAudioDirPath,
+  isAllFilesAccessGranted,
+  requestAllFilesAccess,
   getLastFsError,
   clearLastFsError,
 } from '../utils/audioFileStore'
@@ -85,12 +89,16 @@ export function MePage() {
   const [notice, setNotice] = useState<string | null>(null)
   /** 音频存储目录绝对路径（空列表时展示，便于在文件管理器核对） */
   const [dirPath, setDirPath] = useState<string | null>(null)
+  /** Android 11+ 未授「所有文件访问权限」时引导授权 */
+  const [needAllFiles, setNeedAllFiles] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
     setLoading(true)
     setErrMsg(null)
     clearLastFsError()
+    // 重置初始化缓存：重新申请权限、重新扫描（否则授权状态变化后刷新无效）
+    resetAudioStoreInit()
     try {
       // init：建目录 → 迁移旧版本私有目录残留 → index.json 缺失时按文件名自恢复
       const init = await initAudioStore()
@@ -103,8 +111,11 @@ export function MePage() {
         }
         setList([])
       } else {
-        setList(await listAudioFiles())
+        const items = await listAudioFiles()
+        setList(items)
         setDirPath(await getAudioDirPath())
+        // 列表为空时检查「所有文件访问权限」：Android 11+ 没它就读不到共享 Documents
+        setNeedAllFiles(items.length === 0 ? !(await isAllFilesAccessGranted()) : false)
         if (init.migrated > 0 || init.recovered > 0) {
           const bits: string[] = []
           if (init.migrated > 0) bits.push(`已从旧版本目录迁移 ${init.migrated} 个音频到安全目录`)
@@ -258,6 +269,23 @@ export function MePage() {
   async function onShowPath(item: AudioFileRecord) {
     const p = await getAudioAbsolutePath(item.id)
     alert(p || '（暂无路径信息）')
+  }
+
+  /** 引导用户授「所有文件访问权限」：跳系统设置页，回到 App 后自动重新扫描 */
+  async function onGrantAllFiles() {
+    const r = await requestAllFilesAccess()
+    if (r.granted) {
+      void reload()
+      return
+    }
+    if (r.openedSettings) {
+      const h = await CapacitorApp.addListener('resume', () => {
+        void h.remove()
+        void reload()
+      })
+    } else {
+      alert('未能打开系统设置页。请手动到：设置→应用→朗阅→权限，允许「所有文件访问权限」后回来点刷新。')
+    }
   }
 
   return (
@@ -474,13 +502,37 @@ export function MePage() {
             {list.length === 0 && !loading && fsOk !== false && (
               <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px', display: 'block' }}>
                 <div>还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。</div>
+                {needAllFiles && (
+                  <div style={{ marginTop: 10, padding: '10px 12px', background: 'rgba(198, 40, 40, 0.06)', borderRadius: 8, border: '1px solid rgba(198, 40, 40, 0.25)' }}>
+                    <div style={{ color: 'var(--text)', fontSize: 13, fontWeight: 600 }}>
+                      之前生成过音频但列表为空？Android 11 及以上读取共享目录里的音频需授予「所有文件访问权限」（重装 App 后该权限不会自动保留）。
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ marginTop: 8, width: '100%' }}
+                      onClick={() => void onGrantAllFiles()}
+                    >
+                      去授权「所有文件访问权限」
+                    </button>
+                    <div style={{ marginTop: 6, fontSize: 12 }}>授权后返回本页会自动重新扫描，历史音频自动恢复，收听不重复扣费。</div>
+                  </div>
+                )}
                 {dirPath && (
                   <div style={{ marginTop: 8, fontSize: 12, wordBreak: 'break-all' }}>
                     存储位置：{dirPath}
                     <br />
-                    若之前生成过音频，可打开系统文件管理器到该目录核对；若文件在但列表为空，请在系统设置里给本 App 授予存储权限后点「刷新」。
+                    若之前生成过音频：① 若系统弹出过存储权限框请选允许；② Android 11 及以上请在系统设置→应用→朗阅→权限（或搜“所有文件访问权限”）中允许存储/文件访问；③ 然后点“刷新”。
                   </div>
                 )}
+                {(() => {
+                  const e = getLastFsError()
+                  return e ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: 'var(--danger, #c0392b)', wordBreak: 'break-all' }}>
+                      诊断信息：{e}
+                    </div>
+                  ) : null
+                })()}
               </div>
             )}
 

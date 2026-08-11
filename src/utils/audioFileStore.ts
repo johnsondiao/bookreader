@@ -21,7 +21,7 @@
  * 即使 index.json 丢失，rebuildIndexFromFiles() 会扫描目录、
  * 解析文件名重建索引，确保已合成的音频不会丢失。
  */
-import { Capacitor } from '@capacitor/core'
+import { Capacitor, registerPlugin } from '@capacitor/core'
 import {
   Directory,
   Filesystem,
@@ -43,6 +43,39 @@ let cachedAvailable: boolean | null = null
 let cachedIndex: AudioFileRecord[] | null = null
 let lastError: string | null = null
 let initPromise: Promise<AudioStoreInit> | null = null
+
+/** 原生自定义插件（MainActivity 注册）：「所有文件访问权限」检测与跳转 */
+interface AllFilesAccessPlugin {
+  isManager(): Promise<{ granted: boolean }>
+  requestManager(): Promise<{ granted: boolean; openedSettings?: boolean }>
+}
+const AllFilesAccess = registerPlugin<AllFilesAccessPlugin>('AllFilesAccess')
+
+/**
+ * 是否已授予「所有文件访问权限」。
+ * Android 11+ 分区存储下，普通运行时权限无法让 File API 读写公共 Documents，
+ * 必须授此特殊权限才能扫描到历史音频（非原生环境视为已授予）。
+ */
+export async function isAllFilesAccessGranted(): Promise<boolean> {
+  if (!Capacitor.isNativePlatform()) return true
+  try {
+    const r = await AllFilesAccess.isManager()
+    return !!r.granted
+  } catch {
+    // 旧版 APK 没有该插件：不阻断主流程
+    return true
+  }
+}
+
+/** 跳转系统「所有文件访问权限」设置页（无法静默授权），返回当前授权状态 */
+export async function requestAllFilesAccess(): Promise<{ granted: boolean; openedSettings: boolean }> {
+  try {
+    const r = await AllFilesAccess.requestManager()
+    return { granted: !!r.granted, openedSettings: !!r.openedSettings }
+  } catch {
+    return { granted: false, openedSettings: false }
+  }
+}
 
 export interface AudioStoreInit {
   /** 音频目录是否可用 */
@@ -145,6 +178,13 @@ async function ensureAvailable(): Promise<boolean> {
   }
   cachedAvailable = false
   return false
+}
+
+/** 重置初始化状态：下次调用重新申请权限、重新扫描（「刷新」按钮用） */
+export function resetAudioStoreInit(): void {
+  initPromise = null
+  cachedAvailable = null
+  cachedIndex = null
 }
 
 /** 兼容旧接口：等价于 initAudioStore() 的 ok 字段 */
@@ -310,35 +350,42 @@ async function writeIndex(list: AudioFileRecord[]): Promise<void> {
 /**
  * 扫描音频目录，从文件名重建 index.json，返回恢复出的条数。
  * 当 index.json 丢失或为空时自动调用（卸载重装后索引随之丢失，靠文件名自恢复）。
+ * 失败原因会写入 lastError 供 UI 展示，不再静默吞掉。
  */
 async function rebuildIndexFromFiles(): Promise<number> {
   if (!(await ensureAvailable())) return 0
+  let result: Awaited<ReturnType<typeof Filesystem.readdir>>
   try {
-    const result = await Filesystem.readdir({
+    result = await Filesystem.readdir({
       path: AUDIO_SUB_DIR,
       directory: STORAGE_DIR,
     })
-    const records: AudioFileRecord[] = []
-    for (const file of result.files) {
-      if (!file.name.endsWith('.mp3')) continue
-      const parsed = parseFileName(file.name)
-      if (!parsed) continue
-      records.push({
-        ...parsed,
-        voiceLabel: parsed.voiceKey,
-        sizeBytes: file.size ?? 0,
-        createdAt: file.mtime ?? Date.now(),
-      })
-    }
-    if (records.length > 0) {
-      cachedIndex = records
-      await writeIndex(records)
-    }
-    return records.length
-  } catch {
-    /* 目录为空或读取失败：不阻断 */
+  } catch (err) {
+    lastError =
+      '扫描音频目录失败（可能未获得存储权限，或系统限制了公共目录访问）：' +
+      ((err as Error)?.message ?? String(err))
     return 0
   }
+  const mp3s = result.files.filter((f) => f.name.endsWith('.mp3'))
+  const records: AudioFileRecord[] = []
+  for (const file of mp3s) {
+    const parsed = parseFileName(file.name)
+    if (!parsed) continue
+    records.push({
+      ...parsed,
+      voiceLabel: parsed.voiceKey,
+      sizeBytes: file.size ?? 0,
+      createdAt: file.mtime ?? Date.now(),
+    })
+  }
+  if (mp3s.length > 0 && records.length === 0) {
+    lastError = `目录中有 ${mp3s.length} 个 mp3 文件但文件名不符合命名规范，无法解析（可能被重命名过）`
+  }
+  if (records.length > 0) {
+    cachedIndex = records
+    await writeIndex(records)
+  }
+  return records.length
 }
 
 export async function saveAudioFile(params: {
