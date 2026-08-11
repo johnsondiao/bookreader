@@ -1,17 +1,24 @@
 /**
  * 章节音频 → 物理文件存储。
  *
- * 目标：「升级软件不把音频文件删了」+「文件名可自恢复索引」。
+ * 目标：「升级软件不把音频文件删了」+「卸载重装不丢」+「文件名可自恢复索引」。
  *
- * 存储位置：Capacitor `Directory.Data`
- *   · Android：/data/data/<package-id>/files/LangyueReader/audio/
+ * 存储位置：Capacitor `Directory.Documents`（共享存储，独立于应用私有目录）
+ *   · Android 11+：MediaStore 共享 Documents 目录
+ *     /storage/emulated/0/Documents/LangyueReader/audio/
+ *     —— 系统卸载时**不会删除**；同包名同签名重装后仍可继续读写自己创建的文件
+ *   · Android 10 及以下：外部存储 Documents（需 READ/WRITE_EXTERNAL_STORAGE，
+ *     manifest 已限 maxSdkVersion=29，首次失败时自动申请权限）
  *   · iOS：App Documents/LangyueReader/audio/
+ *
+ * 历史兼容：旧版本写在 Directory.Data（/data/data/<pkg>/files/，卸载即被系统清空），
+ * 覆盖升级场景下 initAudioStore() 会把旧目录残留的 .mp3 自动迁移到新位置。
  *
  * 文件名设计（结构化，可从文件名重建 index.json）：
  *   {bookTitle}~~{chapterTitle}~~{bookId}~~{chapterId}~~{voiceKey}~~{noteVoiceKey}~~{charStart}-{charEnd}~~{textHash}.mp3
  *   示例：毛泽东选集~~湖南农民考察报告~~a1b2c3~~ch-0~~minimax-warm-girl~~minimax-warm-girl~~0-5200~~abc12345.mp3
  *
- * 即使 index.json 丢失，启动时 rebuildIndexFromFiles() 会扫描目录、
+ * 即使 index.json 丢失，rebuildIndexFromFiles() 会扫描目录、
  * 解析文件名重建索引，确保已合成的音频不会丢失。
  */
 import { Capacitor } from '@capacitor/core'
@@ -24,7 +31,10 @@ import type { AudioFileRecord } from '../types'
 
 const AUDIO_SUB_DIR = 'LangyueReader/audio'
 const INDEX_FILE = 'index.json'
-const DATA_DIR: Directory = Directory.Data
+/** 新存储位置：共享 Documents 目录（卸载重装不丢，PRD §5.3） */
+const STORAGE_DIR: Directory = Directory.Documents
+/** 旧版本存储位置：应用私有目录（卸载即被系统清空，仅覆盖升级时可迁移） */
+const LEGACY_DIR: Directory = Directory.Data
 
 /** 文件名各字段分隔符（safeName 不会产生 ~~） */
 const SEP = '~~'
@@ -32,6 +42,16 @@ const SEP = '~~'
 let cachedAvailable: boolean | null = null
 let cachedIndex: AudioFileRecord[] | null = null
 let lastError: string | null = null
+let initPromise: Promise<AudioStoreInit> | null = null
+
+export interface AudioStoreInit {
+  /** 音频目录是否可用 */
+  ok: boolean
+  /** 从旧版本私有目录迁移过来的文件数 */
+  migrated: number
+  /** index.json 缺失时通过文件名自恢复出的历史音频条数 */
+  recovered: number
+}
 
 export function getLastFsError(): string | null {
   return lastError
@@ -40,25 +60,115 @@ export function clearLastFsError() {
   lastError = null
 }
 
-export async function isAudioFsAvailable(): Promise<boolean> {
+/**
+ * 音频库初始化（幂等，一个会话只跑一次）：
+ *  1. 在 Documents 下建音频目录（Android 10 及以下失败时自动申请权限重试）
+ *  2. 迁移旧版本 Directory.Data 里的残留文件（仅覆盖升级场景；卸载后该目录已被清空）
+ *  3. index.json 缺失/为空时扫描文件名自恢复索引（重装恢复流程，PRD §5.3）
+ */
+export function initAudioStore(): Promise<AudioStoreInit> {
+  if (!initPromise) initPromise = doInitAudioStore()
+  return initPromise
+}
+
+async function doInitAudioStore(): Promise<AudioStoreInit> {
+  const ok = await ensureAvailable()
+  if (!ok) return { ok: false, migrated: 0, recovered: 0 }
+  const migrated = await migrateLegacyFiles()
+  let recovered = 0
+  const hasIndex = await tryLoadIndex()
+  if (!hasIndex) recovered = await rebuildIndexFromFiles()
+  return { ok: true, migrated, recovered }
+}
+
+/**
+ * 创建音频目录。
+ * 注意：@capacitor/filesystem v8（IONFILE 实现）的 mkdir 即使传 recursive:true，
+ * 目录已存在时也会报 "already exists, cannot be overwritten"，必须容错处理，
+ * 否则听书写入音频后再进音频列表页就会初始化失败。
+ * 返回：'ok'（含已存在）/ 'fail'（附 lastError）
+ */
+async function tryMkdir(): Promise<'ok' | 'fail'> {
+  try {
+    await Filesystem.mkdir({ path: AUDIO_SUB_DIR, directory: STORAGE_DIR, recursive: true })
+    return 'ok'
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err)
+    // 目录已存在：等价于创建成功
+    if (/already exists/i.test(msg)) return 'ok'
+    lastError = msg
+    return 'fail'
+  }
+}
+
+/** 创建音频目录；失败（Android 10 及以下常见为权限问题）时申请权限后重试一次 */
+async function ensureAvailable(): Promise<boolean> {
   if (cachedAvailable !== null) return cachedAvailable
   if (!Capacitor.isNativePlatform()) {
     cachedAvailable = false
     return false
   }
-  try {
-    await Filesystem.mkdir({
-      path: AUDIO_SUB_DIR,
-      directory: DATA_DIR,
-      recursive: true,
-    })
+  if ((await tryMkdir()) === 'ok') {
     cachedAvailable = true
     lastError = null
-  } catch (err) {
-    cachedAvailable = false
-    lastError = (err as Error)?.message ?? String(err)
+    return true
   }
-  return cachedAvailable
+  try {
+    const st = await Filesystem.requestPermissions()
+    if (st.publicStorage === 'granted' && (await tryMkdir()) === 'ok') {
+      cachedAvailable = true
+      lastError = null
+      return true
+    }
+  } catch {
+    /* 权限申请失败：按原错误处理 */
+  }
+  cachedAvailable = false
+  return false
+}
+
+/** 兼容旧接口：等价于 initAudioStore() 的 ok 字段 */
+export async function isAudioFsAvailable(): Promise<boolean> {
+  return (await initAudioStore()).ok
+}
+
+/**
+ * 把旧版本残留在 Directory.Data 的音频文件迁移到新的 Documents 位置：
+ * 复制 → 校验 → 删旧文件。仅覆盖升级时有东西可迁；卸载重装后旧目录已被系统清空。
+ */
+async function migrateLegacyFiles(): Promise<number> {
+  let moved = 0
+  try {
+    const legacy = await Filesystem.readdir({ path: AUDIO_SUB_DIR, directory: LEGACY_DIR })
+    for (const f of legacy.files) {
+      if (!f.name.endsWith('.mp3')) continue
+      const rel = `${AUDIO_SUB_DIR}/${f.name}`
+      // 新位置已有同名文件 → 跳过
+      try {
+        await Filesystem.stat({ path: rel, directory: STORAGE_DIR })
+        continue
+      } catch {
+        /* 不存在，需要迁移 */
+      }
+      try {
+        const r = await Filesystem.readFile({ path: rel, directory: LEGACY_DIR })
+        await Filesystem.writeFile({ path: rel, directory: STORAGE_DIR, data: r.data as string, recursive: true })
+        // 校验写入成功后才删旧文件（迁移完成，避免两处重复计入索引）
+        await Filesystem.stat({ path: rel, directory: STORAGE_DIR })
+        try {
+          await Filesystem.deleteFile({ path: rel, directory: LEGACY_DIR })
+        } catch {
+          /* 旧文件删除失败不影响：新位置已安全保存 */
+        }
+        moved++
+      } catch (e) {
+        lastError = (e as Error)?.message ?? String(e)
+      }
+    }
+  } catch {
+    /* 旧目录不存在：没有可迁移的内容 */
+  }
+  return moved
 }
 
 /** 去掉文件名中非法字符（不触碰小数点，避免"毛选 2.0"变形） */
@@ -130,14 +240,13 @@ function parseFileName(fileName: string): Omit<AudioFileRecord, 'sizeBytes' | 'c
   }
 }
 
-/** 读 index.json，失败返回空数组 */
-async function readIndex(): Promise<AudioFileRecord[]> {
-  if (cachedIndex) return cachedIndex
-  if (!(await isAudioFsAvailable())) return []
+/** 把 index.json 载入缓存，返回是否有效且非空（不触发 init，供初始化流程内部使用） */
+async function tryLoadIndex(): Promise<boolean> {
+  if (cachedIndex && cachedIndex.length > 0) return true
   try {
     const r = await Filesystem.readFile({
       path: `${AUDIO_SUB_DIR}/${INDEX_FILE}`,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
       encoding: Encoding.UTF8,
     })
     const raw = typeof r.data === 'string' ? r.data : new TextDecoder().decode(r.data as any)
@@ -146,21 +255,29 @@ async function readIndex(): Promise<AudioFileRecord[]> {
   } catch {
     cachedIndex = []
   }
-  // index 为空时尝试从文件名重建
-  if (cachedIndex.length === 0) {
+  return cachedIndex.length > 0
+}
+
+/** 读 index.json，失败返回空数组 */
+async function readIndex(): Promise<AudioFileRecord[]> {
+  if (cachedIndex && cachedIndex.length > 0) return cachedIndex
+  if (!(await isAudioFsAvailable())) return []
+  await tryLoadIndex()
+  // index 为空时尝试从文件名重建（重装恢复场景）
+  if (!cachedIndex || cachedIndex.length === 0) {
     await rebuildIndexFromFiles()
   }
-  return cachedIndex!
+  return cachedIndex ?? []
 }
 
 /** 写 index.json */
 async function writeIndex(list: AudioFileRecord[]): Promise<void> {
   cachedIndex = list
-  if (!(await isAudioFsAvailable())) return
+  if (!(await ensureAvailable())) return
   try {
     await Filesystem.writeFile({
       path: `${AUDIO_SUB_DIR}/${INDEX_FILE}`,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
       encoding: Encoding.UTF8,
       data: JSON.stringify(list, null, 2),
       recursive: true,
@@ -171,15 +288,15 @@ async function writeIndex(list: AudioFileRecord[]): Promise<void> {
 }
 
 /**
- * 扫描音频目录，从文件名重建 index.json。
- * 当 index.json 丢失或为空时自动调用，确保已合成的音频不会丢失。
+ * 扫描音频目录，从文件名重建 index.json，返回恢复出的条数。
+ * 当 index.json 丢失或为空时自动调用（卸载重装后索引随之丢失，靠文件名自恢复）。
  */
-async function rebuildIndexFromFiles(): Promise<void> {
-  if (!(await isAudioFsAvailable())) return
+async function rebuildIndexFromFiles(): Promise<number> {
+  if (!(await ensureAvailable())) return 0
   try {
     const result = await Filesystem.readdir({
       path: AUDIO_SUB_DIR,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
     })
     const records: AudioFileRecord[] = []
     for (const file of result.files) {
@@ -197,8 +314,10 @@ async function rebuildIndexFromFiles(): Promise<void> {
       cachedIndex = records
       await writeIndex(records)
     }
+    return records.length
   } catch {
     /* 目录为空或读取失败：不阻断 */
+    return 0
   }
 }
 
@@ -232,7 +351,7 @@ export async function saveAudioFile(params: {
     const b64 = bytesToBase64(mp3Bytes)
     await Filesystem.writeFile({
       path: relPath,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
       data: b64,
       recursive: true,
     })
@@ -246,7 +365,7 @@ export async function saveAudioFile(params: {
     try {
       await Filesystem.deleteFile({
         path: `${AUDIO_SUB_DIR}/${existing.fileName}`,
-        directory: DATA_DIR,
+        directory: STORAGE_DIR,
       })
     } catch {
       /* 旧文件可能已不存在 */
@@ -285,7 +404,7 @@ export async function loadAudioFile(id: string, expectedTextHash?: string): Prom
   try {
     const r = await Filesystem.readFile({
       path: `${AUDIO_SUB_DIR}/${rec.fileName}`,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
     })
     const b64 = typeof r.data === 'string' ? r.data : bytesToBase64(new Uint8Array(r.data as any))
     return base64ToBytes(b64)
@@ -324,7 +443,7 @@ export async function deleteAudioFile(id: string): Promise<void> {
     try {
       await Filesystem.deleteFile({
         path: `${AUDIO_SUB_DIR}/${rec.fileName}`,
-        directory: DATA_DIR,
+        directory: STORAGE_DIR,
       })
     } catch {
       /* 忽略 */
@@ -342,7 +461,7 @@ export async function getAudioPlayUrl(id: string): Promise<string | null> {
   try {
     const uri = await Filesystem.getUri({
       path: `${AUDIO_SUB_DIR}/${rec.fileName}`,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
     })
     return Capacitor.convertFileSrc(uri.uri)
   } catch (err) {
@@ -360,7 +479,7 @@ export async function getAudioAbsolutePath(id: string): Promise<string | null> {
   try {
     const uri = await Filesystem.getUri({
       path: `${AUDIO_SUB_DIR}/${rec.fileName}`,
-      directory: DATA_DIR,
+      directory: STORAGE_DIR,
     })
     return uri.uri
   } catch {

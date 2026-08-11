@@ -6,7 +6,7 @@ import {
   deleteAudioFile,
   getAudioPlayUrl,
   getAudioAbsolutePath,
-  isAudioFsAvailable,
+  initAudioStore,
   getLastFsError,
   clearLastFsError,
 } from '../utils/audioFileStore'
@@ -43,6 +43,8 @@ export function MePage() {
   const [errMsg, setErrMsg] = useState<string | null>(null)
   const [playingId, setPlayingId] = useState<string | null>(null)
   const [selectedBook, setSelectedBook] = useState<string | null>(null)
+  /** 重装/升级后的自动恢复提示（PRD §5.3） */
+  const [notice, setNotice] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
@@ -50,9 +52,10 @@ export function MePage() {
     setErrMsg(null)
     clearLastFsError()
     try {
-      const ok = await isAudioFsAvailable()
-      setFsOk(ok)
-      if (!ok) {
+      // init：建目录 → 迁移旧版本私有目录残留 → index.json 缺失时按文件名自恢复
+      const init = await initAudioStore()
+      setFsOk(init.ok)
+      if (!init.ok) {
         // 原生环境下如果不可用，把底层错误掏出来展示
         if (Capacitor.isNativePlatform()) {
           const e = getLastFsError()
@@ -61,6 +64,12 @@ export function MePage() {
         setList([])
       } else {
         setList(await listAudioFiles())
+        if (init.migrated > 0 || init.recovered > 0) {
+          const bits: string[] = []
+          if (init.migrated > 0) bits.push(`已从旧版本目录迁移 ${init.migrated} 个音频到安全目录`)
+          if (init.recovered > 0) bits.push(`已自动恢复 ${init.recovered} 条历史音频`)
+          setNotice(`✅ ${bits.join('；')}，继续收听不会重复扣费`)
+        }
       }
     } catch (err) {
       setErrMsg((err as Error)?.message || String(err))
@@ -358,7 +367,7 @@ export function MePage() {
                     {loading
                       ? '正在读取…'
                       : fsOk
-                      ? `${list.length} 条 · 共 ${fmtSize(totalSize)} · 覆盖升级不会丢失`
+                      ? `${list.length} 条 · 共 ${fmtSize(totalSize)} · 覆盖升级/卸载重装不会丢失`
                       : errMsg
                       ? `初始化失败：${errMsg}`
                       : '当前环境不支持文件系统存储（仅 Android App 下生效）'}
@@ -374,6 +383,27 @@ export function MePage() {
                 </button>
               </div>
             </div>
+
+            {notice && (
+              <div
+                className="setting-row"
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  background: 'rgba(46, 160, 67, 0.1)', borderRadius: 8,
+                  fontSize: 13, padding: '10px 16px',
+                }}
+              >
+                <span>{notice}</span>
+                <button
+                  type="button"
+                  className="tts-debug-toggle"
+                  style={{ fontSize: 12, padding: '2px 8px', flexShrink: 0 }}
+                  onClick={() => setNotice(null)}
+                >
+                  知道了
+                </button>
+              </div>
+            )}
 
             {list.length === 0 && !loading && fsOk !== false && (
               <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px' }}>

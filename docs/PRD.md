@@ -280,8 +280,11 @@ phone-shell（手机外壳）
 
 #### 4.4.3 文件系统存储
 
-- 位置：Capacitor `Directory.Data`（Android: `/data/data/<pkg>/files/LangyueReader/audio/`），与应用安装目录解耦
-- **资产属性**：此目录下的 `.mp3` 文件均为用户付费产生的重要资产，升级/覆盖安装/清理缓存均不得删除；卸载时的保留策略见 5.3
+- 位置：Capacitor `Directory.Documents`（共享存储，与应用安装目录、私有数据目录均解耦）：
+  - Android 11+：MediaStore 共享 Documents 目录 `/storage/emulated/0/Documents/LangyueReader/audio/`，**系统卸载时不会删除**，同包名同签名重装后仍可继续读写
+  - Android 10 及以下：外部存储 Documents（需 READ/WRITE_EXTERNAL_STORAGE，manifest 以 maxSdkVersion=29 限定）
+  - 历史兼容：旧版本写在 `Directory.Data`（卸载即被系统清空），覆盖升级时自动迁移残留文件到新位置
+- **资产属性**：此目录下的 `.mp3` 文件均为用户付费产生的重要资产，升级/覆盖安装/清理缓存均不得删除；卸载重装后靠目录留存 + 索引自恢复找回
 - 文件名格式：`{书名}~~{章节名}~~{bookId}~~{chapterId}~~{voiceKey}~~{noteVoiceKey}~~{charStart}-{charEnd}~~{textHash}.mp3`
 - 索引文件：`index.json` 记录所有音频元数据
 - **索引自恢复**：`index.json` 丢失、损坏或重装后不存在时，扫描目录下所有 `.mp3` 文件名，按 8 段结构解析并重建索引，确保重装后仍可直接使用历史音频
@@ -348,8 +351,8 @@ phone-shell（手机外壳）
 
 ### 5.1 存储位置独立原则
 
-- 必须使用设备上**独立于应用 APK 安装目录**的持久化路径存储音频文件（Android 端使用 `Context.getFilesDir()` 对应的 Capacitor `Directory.Data`，路径形如 `/data/data/<package-id>/files/LangyueReader/audio/`）
-- 禁止将音频文件写入 `cacheDir`、`externalCacheDir` 或任意会被系统清理机制自动回收的目录
+- 必须使用设备上**独立于应用 APK 安装目录与私有数据目录**的持久化路径存储音频文件（Android 端使用共享 Documents 目录 `/storage/emulated/0/Documents/LangyueReader/audio/`；Android 11+ 经 MediaStore 访问）。注意：`Directory.Data`（`/data/data/<pkg>/files/`）属于应用私有目录，**卸载时会被系统整体删除**，不得作为唯一存储位置
+- 禁止将音频文件写入 `cacheDir`、`externalCacheDir` 或任意会被系统清理机制自动回收的目录（含 `/sdcard/Android/data/<pkg>/`，同样随卸载删除）
 - 禁止将音频文件存放在应用 APK 解包资源目录或 assets 中
 - 每次启动时必须校验音频目录存在，不存在则静默创建
 
@@ -361,10 +364,11 @@ phone-shell（手机外壳）
 
 ### 5.3 卸载与重装的保护要求
 
-- **卸载保留（高优先级，需实现原生策略）**：Android 系统默认卸载会删除 `/data/data/<pkg>/` 整个目录。为避免用户卸载后音频资产被清空，必须采用以下任一策略（按推荐顺序）：
-  1. 启用 `android:allowBackup="true"` 并通过 Auto Backup 规则包含 `LangyueReader/audio/` 目录，卸载后重装从 Google 云端恢复
-  2. 存储在 Android 外部存储（`Environment.getExternalStorageDirectory()` / `Context.getExternalFilesDir()`）的私有 `LangyueReader/audio/` 子目录，系统卸载时不会删除外部存储；重装后通过扫描外部目录恢复索引
-  3. 在"我的 → 已合成音频"页提供**导出备份**入口，用户可主动打包所有音频到 `Downloads` 或指定路径，并能在重装后导入
+- **卸载保留（已实现）**：音频存储在共享 Documents 目录（Android 11+ 经 MediaStore，同包名同签名重装后仍可访问自己创建的文件），系统卸载不会删除；Android 10 及以下通过外部存储权限实现同等效果。补充策略：
+  1. 启用 `android:allowBackup="true"` 通过 Auto Backup 从 Google 云端恢复（依赖 Google 服务，仅作补充）
+  2. ~~`Context.getExternalFilesDir()`（`/sdcard/Android/data/<pkg>/`）~~：同样随卸载删除，不可用；必须用共享 Documents
+  3. 在"我的 → 已合成音频"页提供**导出备份**入口，用户可主动打包所有音频到 `Downloads` 或指定路径，并能在重装后导入（待实现）
+  4. 历史兼容：旧版本存在 `Directory.Data` 的文件在覆盖升级时由 `initAudioStore()` 自动迁移到共享 Documents（卸载后旧目录已被系统清空，无从迁移）
 - **重装后的自动识别**：新安装首次进入"我的 → 已合成音频"页面时，必须执行以下恢复流程：
   1. 读取 `index.json`，若存在且有效则直接使用
   2. 若 `index.json` 为空、损坏或不存在，调用**索引自恢复流程**：扫描音频目录下所有 `.mp3` 文件，逐个解析结构化文件名重建索引（见 5.4）
@@ -400,7 +404,7 @@ phone-shell（手机外壳）
 ### 5.7 硬性约束（违反视为 P0 缺陷）
 
 1. 任何非用户主动触发（即不通过"已合成音频"页的删除按钮）的流程，均不得删除或覆盖任意 `.mp3` 物理文件
-2. 音频目录与应用安装目录在文件系统层面必须相互独立；清理应用数据（系统设置中「清除数据」）不应同时清除音频——若 `Directory.Data` 无法豁免，必须改为 `getExternalFilesDir(null) + /LangyueReader/audio/`
+2. 音频目录与应用安装目录、应用私有数据目录在文件系统层面必须相互独立；卸载、清理应用数据（系统设置中「清除数据」）均不应清除音频——存储于共享 Documents 目录（`Directory.Documents`）；注意 `Directory.Data` 与 `getExternalFilesDir(null)`（`/sdcard/Android/data/<pkg>/`）均随卸载删除，不得作为唯一存储位置
 3. 格式变更必须保证向下兼容解析；新版本发布前必须通过"旧版本生成 N 条音频 → 升级新版本 → 音频列表可见且可播放 → 朗读同章不重新合成"的回归测试
 4. 重装流程必须经过"安装 1.0 → 生成 3 条音频 → 卸载 → 安装 1.1 → 进入音频列表 → 自动恢复 3 条"的端到端验证
 
@@ -512,7 +516,7 @@ interface ReaderSettings {
 | IndexedDB `langyue-reader-v2` | Zustand persist | 书籍、快照、设置 |
 | IndexedDB `langyue-reader-audio` (v3) | 独立 | 音频缓存（clips）、花费记录（costs） |
 | IndexedDB `langyue-reader-secure` | 独立 | 解锁的明文 API Key |
-| 文件系统 `Directory.Data` | Capacitor | 合并 MP3 文件 + index.json |
+| 文件系统 `Directory.Documents` | Capacitor（共享 Documents，卸载不丢） | 合并 MP3 文件 + index.json |
 
 ---
 
