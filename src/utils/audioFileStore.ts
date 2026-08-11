@@ -72,6 +72,10 @@ export function initAudioStore(): Promise<AudioStoreInit> {
 }
 
 async function doInitAudioStore(): Promise<AudioStoreInit> {
+  // Android 10 及以下读写共享 Documents 需要运行时权限，必须先申请：
+  // 否则卸载重装后目录仍在（会被 mkdir 判为"已存在=可用"），
+  // 但无权限时 readdir 读不到任何文件，造成"音频丢失"的假象
+  if (Capacitor.isNativePlatform()) await ensureStoragePermission()
   const ok = await ensureAvailable()
   if (!ok) return { ok: false, migrated: 0, recovered: 0 }
   const migrated = await migrateLegacyFiles()
@@ -79,6 +83,22 @@ async function doInitAudioStore(): Promise<AudioStoreInit> {
   const hasIndex = await tryLoadIndex()
   if (!hasIndex) recovered = await rebuildIndexFromFiles()
   return { ok: true, migrated, recovered }
+}
+
+/** 检查并申请外部存储权限（仅 Android 10 及以下会真正弹窗，更高版本直接返回） */
+async function ensureStoragePermission(): Promise<boolean> {
+  try {
+    const chk = await Filesystem.checkPermissions()
+    if (chk.publicStorage === 'granted') return true
+  } catch {
+    /* 检查不支持时直接走申请 */
+  }
+  try {
+    const req = await Filesystem.requestPermissions()
+    return req.publicStorage === 'granted'
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -481,6 +501,17 @@ export async function getAudioAbsolutePath(id: string): Promise<string | null> {
       path: `${AUDIO_SUB_DIR}/${rec.fileName}`,
       directory: STORAGE_DIR,
     })
+    return uri.uri
+  } catch {
+    return null
+  }
+}
+
+/** 返回音频目录的绝对路径（展示/排查用：可在系统文件管理器里核对文件是否存在） */
+export async function getAudioDirPath(): Promise<string | null> {
+  if (!(await isAudioFsAvailable())) return null
+  try {
+    const uri = await Filesystem.getUri({ path: AUDIO_SUB_DIR, directory: STORAGE_DIR })
     return uri.uri
   } catch {
     return null

@@ -7,6 +7,7 @@ import {
   getAudioPlayUrl,
   getAudioAbsolutePath,
   initAudioStore,
+  getAudioDirPath,
   getLastFsError,
   clearLastFsError,
 } from '../utils/audioFileStore'
@@ -82,6 +83,8 @@ export function MePage() {
   const [selectedBook, setSelectedBook] = useState<string | null>(null)
   /** 重装/升级后的自动恢复提示（PRD §5.3） */
   const [notice, setNotice] = useState<string | null>(null)
+  /** 音频存储目录绝对路径（空列表时展示，便于在文件管理器核对） */
+  const [dirPath, setDirPath] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
@@ -101,6 +104,7 @@ export function MePage() {
         setList([])
       } else {
         setList(await listAudioFiles())
+        setDirPath(await getAudioDirPath())
         if (init.migrated > 0 || init.recovered > 0) {
           const bits: string[] = []
           if (init.migrated > 0) bits.push(`已从旧版本目录迁移 ${init.migrated} 个音频到安全目录`)
@@ -468,8 +472,15 @@ export function MePage() {
             )}
 
             {list.length === 0 && !loading && fsOk !== false && (
-              <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px' }}>
-                还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。
+              <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px', display: 'block' }}>
+                <div>还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。</div>
+                {dirPath && (
+                  <div style={{ marginTop: 8, fontSize: 12, wordBreak: 'break-all' }}>
+                    存储位置：{dirPath}
+                    <br />
+                    若之前生成过音频，可打开系统文件管理器到该目录核对；若文件在但列表为空，请在系统设置里给本 App 授予存储权限后点「刷新」。
+                  </div>
+                )}
               </div>
             )}
 
