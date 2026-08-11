@@ -146,29 +146,39 @@ button {
 }
 
 /* —— Home shell —— */
+/* 滚动容器用绝对定位确定高度：比 flex 链条更可靠，
+   规避部分 Android WebView 上 flex 项 overflow 不滚动的问题 */
 .home {
   flex: 1;
-  display: flex;
-  flex-direction: column;
   min-height: 0;
   background: var(--bg);
+  position: relative;
 }
 
 .home-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--nav-h) + var(--safe-bottom));
+  overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding-bottom: 16px;
 }
 
 .bottom-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   height: calc(var(--nav-h) + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   background: var(--surface);
   border-top: 1px solid var(--border);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  flex-shrink: 0;
 }
 
 .nav-item {
@@ -533,7 +543,7 @@ button {
 
 .me-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   margin-top: 16px;
   text-align: center;

@@ -11,6 +11,7 @@ import {
   clearLastFsError,
 } from '../utils/audioFileStore'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
+import { splitParagraphs, splitSentences } from '../utils/chapterParser'
 import type { AudioFileRecord } from '../types'
 
 function fmtSize(bytes: number): string {
@@ -24,6 +25,42 @@ function fmtTs(ts: number): string {
   const d = new Date(ts)
   const pad = (n: number) => n.toString().padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+/** 估算时长：MiniMax 输出为 128kbps CBR mp3，按字节数估算误差小于 1 秒 */
+function fmtDuration(bytes: number): string {
+  if (!bytes || bytes <= 0) return '—'
+  const sec = Math.round((bytes * 8) / 128000)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}小时${m}分`
+  if (m > 0) return `${m}分${s.toString().padStart(2, '0')}秒`
+  return `${s}秒`
+}
+/**
+ * 按 tts.ts 相同的切分规则（段落以 \n 拼接、splitSentences 断句），
+ * 把字符区间 [charStart, charEnd) 映射为句子序号范围（0-based）。
+ */
+function sentenceRangeOf(content: string, charStart: number, charEnd: number): { first: number; last: number } | null {
+  const paras = splitParagraphs(content).filter((p) => p.text)
+  let offset = 0
+  let first = -1
+  let last = -1
+  let idx = 0
+  for (const p of paras) {
+    for (const s of splitSentences(p.text)) {
+      const sStart = offset
+      const sEnd = offset + s.length
+      if (sEnd > charStart && sStart < charEnd) {
+        if (first < 0) first = idx
+        last = idx
+      }
+      offset = sEnd
+      idx++
+    }
+    offset += 1 // 段落间 \n（与 tts.ts buildTextAndRanges 一致）
+  }
+  return first >= 0 ? { first, last } : null
 }
 
 export function MePage() {
@@ -154,6 +191,27 @@ export function MePage() {
     }) : []),
     [list, selectedBook, bookGroups],
   )
+
+  // 每条音频对应的句子范围（如“第1~18句”）：按书名找到原书章节后按字符区间映射；
+  // 原书已移除或章节不匹配时退化为字符区间展示
+  const sentLabels = useMemo(() => {
+    const map = new Map<string, string>()
+    if (!selectedBook) return map
+    const g = bookGroups.find((x) => x.bookTitle === selectedBook)
+    const book = books.find((b) => b.id === (g?.bookId ?? ''))
+    for (const it of currentBookItems) {
+      const ch = book?.chapters.find((c) => c.id === it.chapterId)
+      if (ch?.content) {
+        const r = sentenceRangeOf(ch.content, it.charStart, it.charEnd)
+        if (r) {
+          map.set(it.id, r.first === r.last ? `第${r.first + 1}句` : `第${r.first + 1}~${r.last + 1}句`)
+          continue
+        }
+      }
+      map.set(it.id, `第${it.charStart + 1}~${it.charEnd}字`)
+    }
+    return map
+  }, [selectedBook, bookGroups, currentBookItems, books])
 
   async function onPlay(item: AudioFileRecord) {
     const audio = audioRef.current
@@ -290,7 +348,7 @@ export function MePage() {
             <div className="setting-row" style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 4 }}>
               <div style={{ fontWeight: 600, fontSize: 16 }}>《{selectedBook}》</div>
               <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                {currentBookItems.length} 条音频 · 共 {fmtSize(currentBookItems.reduce((s, x) => s + (x.sizeBytes || 0), 0))}
+                {currentBookItems.length} 条音频 · 共 {fmtSize(currentBookItems.reduce((s, x) => s + (x.sizeBytes || 0), 0))} · 总时长 {fmtDuration(currentBookItems.reduce((s, x) => s + (x.sizeBytes || 0), 0))}
               </div>
             </div>
             {currentBookItems.map((it) => {
@@ -308,6 +366,10 @@ export function MePage() {
                       </div>
                       <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                         <span>{it.voiceLabel}</span>
+                        <span>·</span>
+                        <span>{fmtDuration(it.sizeBytes)}</span>
+                        <span>·</span>
+                        <span>{sentLabels.get(it.id)}</span>
                         <span>·</span>
                         <span>{fmtSize(it.sizeBytes)}</span>
                         <span>·</span>
@@ -423,7 +485,7 @@ export function MePage() {
                     《{g.bookTitle}》
                   </div>
                   <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-muted)' }}>
-                    {g.items.length} 条音频 · {fmtSize(g.totalSize)}
+                    {g.items.length} 条音频 · {fmtDuration(g.totalSize)} · {fmtSize(g.totalSize)}
                   </div>
                 </div>
                 <span className="val" style={{ color: 'var(--accent)' }}>查看</span>
