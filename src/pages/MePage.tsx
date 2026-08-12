@@ -208,22 +208,29 @@ export function MePage() {
   )
 
   // 每条音频对应的句子范围（如“第1~18句”）：按书名找到原书章节后按字符区间映射；
-  // 原书已移除或章节不匹配时退化为字符区间展示
+  // 旧版 index.json 可能没有 charStart/charEnd（合并文件即整章），此时按整章处理；
+  // 原书已移除且区间缺失时不显示位置信息
   const sentLabels = useMemo(() => {
     const map = new Map<string, string>()
     if (!selectedBook) return map
     const g = bookGroups.find((x) => x.bookTitle === selectedBook)
     const book = books.find((b) => b.id === (g?.bookId ?? ''))
     for (const it of currentBookItems) {
+      const hasRange = Number.isFinite(it.charStart) && Number.isFinite(it.charEnd)
+      // 区间缺失（旧索引）→ 视为整章；区间存在 → 按区间映射
+      const cs = hasRange ? it.charStart : 0
+      const ce = hasRange ? it.charEnd : Number.MAX_SAFE_INTEGER
       const ch = book?.chapters.find((c) => c.id === it.chapterId)
       if (ch?.content) {
-        const r = sentenceRangeOf(ch.content, it.charStart, it.charEnd)
+        const r = sentenceRangeOf(ch.content, cs, ce)
         if (r) {
           map.set(it.id, r.first === r.last ? `第${r.first + 1}句` : `第${r.first + 1}~${r.last + 1}句`)
           continue
         }
       }
-      map.set(it.id, `第${it.charStart + 1}~${it.charEnd}字`)
+      if (hasRange) {
+        map.set(it.id, `第${it.charStart + 1}~${it.charEnd}字`)
+      }
     }
     return map
   }, [selectedBook, bookGroups, currentBookItems, books])
