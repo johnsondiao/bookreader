@@ -1,4 +1,4 @@
-import type { ReaderSettings } from '../types'
+import { READER_THEMES, type ReaderSettings } from '../types'
 import { voicesForLang, VOICE_CATALOG } from '../utils/tts'
 
 interface SettingsPanelProps {
@@ -21,18 +21,12 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
         <div className="row">
           <span>背景</span>
           <div className="theme-pills">
-            {(
-              [
-                ['day', '日间'],
-                ['eye', '护眼'],
-                ['night', '夜间'],
-              ] as const
-            ).map(([k, label]) => (
+            {READER_THEMES.map(({ key, label }) => (
               <button
-                key={k}
+                key={key}
                 type="button"
-                className={`${k}${settings.theme === k ? ' on' : ''}`}
-                onClick={() => onUpdateSettings({ theme: k })}
+                className={`${key}${settings.theme === key ? ' on' : ''}`}
+                onClick={() => onUpdateSettings({ theme: key })}
               >
                 {label}
               </button>

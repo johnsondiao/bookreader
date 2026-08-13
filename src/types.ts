@@ -1,4 +1,14 @@
-export type ThemeMode = 'day' | 'night' | 'eye'
+export type ThemeMode = 'day' | 'eye' | 'paper' | 'green' | 'pink' | 'night'
+
+/** 阅读器背景主题选项（新增主题时同步 index.css 的 .reader.theme-* 与 .theme-pills 色块） */
+export const READER_THEMES: { key: ThemeMode; label: string }[] = [
+  { key: 'day', label: '日间' },
+  { key: 'eye', label: '护眼' },
+  { key: 'paper', label: '羊皮纸' },
+  { key: 'green', label: '青绿' },
+  { key: 'pink', label: '樱粉' },
+  { key: 'night', label: '夜间' },
+]
 
 export interface Chapter {
   id: string

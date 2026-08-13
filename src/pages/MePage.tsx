@@ -17,7 +17,7 @@ import {
 } from '../utils/audioFileStore'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
 import { splitParagraphs, splitSentences } from '../utils/chapterParser'
-import type { AudioFileRecord } from '../types'
+import { READER_THEMES, type AudioFileRecord } from '../types'
 
 function fmtSize(bytes: number): string {
   if (bytes == null) return '—'
@@ -361,13 +361,12 @@ export function MePage() {
           type="button"
           className="setting-row"
           onClick={() => {
-            const themes = ['day', 'eye', 'night'] as const
-            const i = themes.indexOf(settings.theme)
-            updateSettings({ theme: themes[(i + 1) % themes.length] })
+            const i = READER_THEMES.findIndex((t) => t.key === settings.theme)
+            updateSettings({ theme: READER_THEMES[(i + 1) % READER_THEMES.length].key })
           }}
         >
           <span>阅读主题</span>
-          <span className="val">{settings.theme === 'day' ? '日间' : settings.theme === 'eye' ? '护眼' : '夜间'}</span>
+          <span className="val">{READER_THEMES.find((t) => t.key === settings.theme)?.label ?? '日间'}</span>
         </button>
         <button type="button" className="setting-row" onClick={promptDailyBudget}>
           <span>每日 TTS 预算上限</span>

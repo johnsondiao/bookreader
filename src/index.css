@@ -9,7 +9,10 @@
   --border: #ebebeb;
   --shelf-card: #ffffff;
   --reader-day: #f7f2e9;
-  --reader-eye: #dce9d0;
+  --reader-eye: #f2e6c9;
+  --reader-paper: #e9d7ae;
+  --reader-green: #dce9d0;
+  --reader-pink: #f7e3e7;
   --reader-night: #1c1c1c;
   --reader-night-text: #c8c8c8;
   --shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
@@ -604,7 +607,16 @@ button {
   to { opacity: 1; transform: translateX(0); }
 }
 
-.reader.theme-eye { background: var(--reader-eye); }
+.reader.theme-eye {
+  background: var(--reader-eye);
+  color: #33302a;
+}
+.reader.theme-paper {
+  background: var(--reader-paper);
+  color: #33302a;
+}
+.reader.theme-green { background: var(--reader-green); }
+.reader.theme-pink { background: var(--reader-pink); }
 .reader.theme-night {
   background: var(--reader-night);
   color: var(--reader-night-text);
@@ -1095,6 +1107,8 @@ button {
 
 .theme-pills {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -1111,7 +1125,10 @@ button {
 }
 
 .theme-pills .day { background: #f7f2e9; color: #333; }
-.theme-pills .eye { background: #dce9d0; color: #333; }
+.theme-pills .eye { background: #f2e6c9; color: #333; }
+.theme-pills .paper { background: #e9d7ae; color: #333; }
+.theme-pills .green { background: #dce9d0; color: #333; }
+.theme-pills .pink { background: #f7e3e7; color: #333; }
 .theme-pills .night { background: #333; color: #ddd; }
 
 .stepper {
