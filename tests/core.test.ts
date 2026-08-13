@@ -94,6 +94,17 @@ describe('parseChapters', () => {
     expect(chapters.length).toBe(1)
     expect(chapters[0].title).toBe('正文')
   })
+  it('段落间无空行（单换行）的网文也能识别数字标题', () => {
+    const txt =
+      '楔子内容。\n' +
+      '001 【穿越】\n正文一。\n' +
+      '002 【初来驾到】\n正文二。\n' +
+      '003 【风波起】\n正文三。\n' +
+      '004 【杀人越货】\n正文四。'
+    const chapters = parseChapters(txt)
+    expect(chapters.length).toBeGreaterThanOrEqual(4)
+    expect(chapters.some((c) => c.title.includes('杀人越货'))).toBe(true)
+  })
   it('无明显章节结构的短文不拆分', () => {
     const txt = '这是一篇没有章节结构的短文，只有几个段落。\n\n第二段内容。\n\n第三段内容。'
     const chapters = parseChapters(txt)

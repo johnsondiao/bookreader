@@ -97,6 +97,8 @@ function looksLikeStandaloneTitle(line: LinePos): boolean {
 /**
  * 数字编号标题探测（仅当严格标题太少时调用）。
  * 防误判：命中数 ≥ 3 且编号大体递增（容忍少量噪声）才采信。
+ * 注意：不要求标题行前后有空行——很多网文 TXT 每段只有一个换行，
+ * 强制空行会把真实标题全部滤掉。
  */
 function findNumberedTitles(lines: LinePos[]): TitleHit[] {
   const cand: { line: LinePos; num: number }[] = []
@@ -105,8 +107,6 @@ function findNumberedTitles(lines: LinePos[]): TitleHit[] {
     if (!t || t.length > TITLE_MAX_LEN) continue
     if (!NUM_TITLE_RE.test(t)) continue
     if (ENDS_SENTENCE_RE.test(t)) continue
-    // 标题行前应是空行（避免段内数字开头的正文句）
-    if (!line.precededByBlank) continue
     const num = parseInt(t.match(/^\d+/)?.[0] ?? '', 10)
     cand.push({ line, num })
   }
@@ -135,10 +135,10 @@ export function parseChapters(content: string): Chapter[] {
     })
   }
 
-  // —— 2. 严格标题太少时，先试数字编号标题（网文风格），再启用"孤立短标题兜底" ——
+  // —— 2. 严格标题不足 3 个时，先试数字编号标题（网文风格），再启用"孤立短标题兜底" ——
   const lines = getAllLines(text)
   const numHits: TitleHit[] =
-    strictHits.length < MIN_STRICT_CHAPTERS ? findNumberedTitles(lines) : []
+    strictHits.length < MIN_CHAPTERS_TOTAL ? findNumberedTitles(lines) : []
   const fallbackHits: TitleHit[] = []
   if (strictHits.length + numHits.length < MIN_STRICT_CHAPTERS) {
     for (let i = 0; i < lines.length; i++) {

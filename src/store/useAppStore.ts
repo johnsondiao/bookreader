@@ -85,13 +85,16 @@ function normalizeBook(book: Book): Book {
 
 /** 单巨章自动重分章的最小字数阈值（小书不折腾） */
 const AUTO_CHAPTERIZE_MIN_CHARS = 30000
+/** 重分章算法版本：改进解析规则后 bump，让之前失败的书重新尝试 */
+const CHAPTERIZE_TRY_VERSION = 2
 
 /**
  * 只有一章的大部头：用最新解析规则（含网文数字编号标题）重新切章，
  * 并把已保存的阅读进度重映射到新章节。无可切分时返回 null。
  */
 function autoChapterizeIfNeeded(book: Book): Book | null {
-  if (book.chapters.length !== 1 || book.chapterizeTried) return null
+  if (book.chapters.length !== 1) return null
+  if ((book.chapterizeTryVersion ?? 0) >= CHAPTERIZE_TRY_VERSION) return null
   const only = book.chapters[0]
   if (!only?.content || only.content.length < AUTO_CHAPTERIZE_MIN_CHARS) return null
   let chapters: Chapter[]
@@ -101,8 +104,8 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
     return null
   }
   if (chapters.length < 3) {
-    // 无法切分：打上标记，避免每次启动都对大文本重复全文解析（阻塞水合）
-    return { ...book, chapterizeTried: true }
+    // 无法切分：打上版本标记，避免每次启动都对大文本重复全文解析（阻塞水合）
+    return { ...book, chapterizeTryVersion: CHAPTERIZE_TRY_VERSION }
   }
   chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
 
@@ -137,7 +140,7 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
     toc: tocFromChapters(chapters),
     chapterId: target.id,
     paragraphIndex: pIdx,
-    chapterizeTried: true,
+    chapterizeTryVersion: CHAPTERIZE_TRY_VERSION,
     readChapterIds:
       (book.readChapterIds?.length ?? 0) > 0
         ? chapters.slice(0, targetIdx + 1).map((c) => c.id)

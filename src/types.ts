@@ -55,8 +55,8 @@ export interface Book {
   furthestChapterIndex: number
   /** 实际打开过的章节 id */
   readChapterIds: string[]
-  /** 已尝试过自动重分章（无论成败），避免无法切分的书每次启动重复全文解析 */
-  chapterizeTried?: boolean
+  /** 自动重分章已尝试过的算法版本号（避免无法切分的书每次启动重复全文解析；算法升级时 bump 版本可重试） */
+  chapterizeTryVersion?: number
 }
 
 export interface ReaderSettings {
