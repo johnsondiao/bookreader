@@ -91,7 +91,7 @@ const AUTO_CHAPTERIZE_MIN_CHARS = 30000
  * 并把已保存的阅读进度重映射到新章节。无可切分时返回 null。
  */
 function autoChapterizeIfNeeded(book: Book): Book | null {
-  if (book.chapters.length !== 1) return null
+  if (book.chapters.length !== 1 || book.chapterizeTried) return null
   const only = book.chapters[0]
   if (!only?.content || only.content.length < AUTO_CHAPTERIZE_MIN_CHARS) return null
   let chapters: Chapter[]
@@ -100,7 +100,10 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
   } catch {
     return null
   }
-  if (chapters.length < 3) return null
+  if (chapters.length < 3) {
+    // 无法切分：打上标记，避免每次启动都对大文本重复全文解析（阻塞水合）
+    return { ...book, chapterizeTried: true }
+  }
   chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
 
   // 进度重映射：旧段落号 → 全局字符偏移（近似） → 所在新章节 → 章内段落号
@@ -134,6 +137,7 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
     toc: tocFromChapters(chapters),
     chapterId: target.id,
     paragraphIndex: pIdx,
+    chapterizeTried: true,
     readChapterIds:
       (book.readChapterIds?.length ?? 0) > 0
         ? chapters.slice(0, targetIdx + 1).map((c) => c.id)

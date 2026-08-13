@@ -21,6 +21,7 @@ import {
   type DebugPayload,
 } from '../utils/agentLog'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
+import { isAllFilesAccessGranted } from '../utils/audioFileStore'
 
 type Panel = null | 'toc' | 'settings'
 
@@ -388,6 +389,8 @@ export function ReaderPage() {
     if (!el) return
     const remain = el.scrollHeight - el.scrollTop - el.clientHeight
     if (remain < 400) loadMore()
+    // 朗读中位置由 TTS 主导：自动平滑滚动的中间态会把进度往回写，短路掉
+    if (speakingRef.current) return
     // 滚动阅读时记住位置（节流 800ms，不写快照避免刷屏）：
     // 找到当前视口顶部附近的段落，与正在朗读的段落一致时不重复写入
     const now = Date.now()
@@ -522,19 +525,30 @@ export function ReaderPage() {
         },
         onFileSaved: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => {
           if (r.fileOk) return
-          const detail = r.error ? `：${r.error}` : ''
-          const msg =
-            `⚠️ 音频文件保存失败${detail}\n` +
-            `本章已扣费且可继续播放，但"已合成音频"里没有文件。` +
-            `请检查手机存储空间，稍后可再次从本章开头朗读（不重复扣费，会自动重存）。`
-          agentLog(
-            'ReaderPage:onFileSaved',
-            'audio file save failed',
-            { chapterId: chapter.id, bookId: book.id, err: r.error, idbOk: r.idbOk },
-            'E',
-          )
-          setDebugOpenPersistent(true)
-          showToast(msg, 16000)
+          void (async () => {
+            // Android 11+ 未授「所有文件访问权限」时写不进共享 Documents，优先提示授权而非查存储
+            let permTip = ''
+            try {
+              if (!(await isAllFilesAccessGranted())) {
+                permTip = '\n原因：未授予「所有文件访问权限」。请到「我的」页点「去授权」，或在系统设置中给本 App 允许后重新朗读本章。'
+              }
+            } catch {
+              /* 非原生环境无此插件 */
+            }
+            const detail = r.error ? `：${r.error}` : ''
+            const msg =
+              `⚠️ 音频文件保存失败${detail}${permTip}\n` +
+              `本章已扣费且可继续播放，但"已合成音频"里没有文件。` +
+              `稍后可再次从本章开头朗读（不重复扣费，会自动重存）。`
+            agentLog(
+              'ReaderPage:onFileSaved',
+              'audio file save failed',
+              { chapterId: chapter.id, bookId: book.id, err: r.error, idbOk: r.idbOk, permTip: permTip !== '' },
+              'E',
+            )
+            setDebugOpenPersistent(true)
+            showToast(msg, 16000)
+          })()
         },
       }
 

@@ -603,11 +603,11 @@ export function createTtsController(): TtsController {
     // 3. 中断消费者的 playWait（如果正在播放或等待 ended）
     cleanupAudio()
     finishPlayWait(new SpeakAborted())
-    // 4. 释放卡在 waitForMetadata 的消费者
+    // 4. 释放卡在 waitForMetadata 的消费者。
+    // 注意：不能先置空再调用——settle 内部有 metaWaiter !== settle 守卫，
+    // 先置空会导致守卫命中、永不 resolve，playChapter 永久挂起（P0）
     if (metaWaiter) {
-      const settle = metaWaiter
-      metaWaiter = null
-      settle()
+      metaWaiter()
     }
   }
 

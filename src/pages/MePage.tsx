@@ -91,6 +91,8 @@ export function MePage() {
   const [dirPath, setDirPath] = useState<string | null>(null)
   /** Android 11+ 未授「所有文件访问权限」时引导授权 */
   const [needAllFiles, setNeedAllFiles] = useState(false)
+  /** 授权跳转后注册的 resume 监听（卸载时清理，避免对已卸载组件重扫） */
+  const resumeListenerRef = useRef<{ remove: () => Promise<void> } | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   async function reload() {
@@ -108,6 +110,8 @@ export function MePage() {
         if (Capacitor.isNativePlatform()) {
           const e = getLastFsError()
           setErrMsg(e || '初始化失败（未捕获到具体错误）')
+          // 初始化失败时同样需要授权引导（全新安装无权限时 mkdir 直接失败是最常见原因）
+          setNeedAllFiles(!(await isAllFilesAccessGranted()))
         }
         setList([])
       } else {
@@ -145,6 +149,8 @@ export function MePage() {
         a.pause()
       } catch { /* ignore */ }
       a.src = ''
+      void resumeListenerRef.current?.remove()
+      resumeListenerRef.current = null
     }
   }, [])
 
@@ -287,9 +293,11 @@ export function MePage() {
     }
     if (r.openedSettings) {
       const h = await CapacitorApp.addListener('resume', () => {
+        resumeListenerRef.current = null
         void h.remove()
         void reload()
       })
+      resumeListenerRef.current = h
     } else {
       alert('未能打开系统设置页。请手动到：设置→应用→朗阅→权限，允许「所有文件访问权限」后回来点刷新。')
     }
@@ -506,7 +514,7 @@ export function MePage() {
               </div>
             )}
 
-            {list.length === 0 && !loading && fsOk !== false && (
+            {list.length === 0 && !loading && (
               <div className="setting-row" style={{ color: 'var(--text-muted)', fontSize: 13, padding: '12px 16px', display: 'block' }}>
                 <div>还没有合成过音频。进入书籍，点击右下角「听」按钮开始朗读后，音频会自动保存到这里。</div>
                 {needAllFiles && (
