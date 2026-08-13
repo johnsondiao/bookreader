@@ -75,6 +75,8 @@ export interface ReaderSettings {
   theme: ThemeMode
   ttsRate: number
   autoScroll: boolean
+  /** 睡眠定时（分钟）：记住上次设置的时长，0=关闭 */
+  ttsSleepMinutes?: number
   /** 中文正文音色 key：lang||name */
   ttsVoiceZh: string
   /** 注释音色 */

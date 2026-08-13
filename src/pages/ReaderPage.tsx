@@ -42,6 +42,16 @@ function findNextSpeakableChapterId(
   return null
 }
 
+/** 睡眠定时剩余秒数 → mm:ss / h:mm:ss */
+function fmtSleepRemain(sec: number): string {
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  const mm = String(m).padStart(2, '0')
+  const ss = String(s).padStart(2, '0')
+  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`
+}
+
 function pickStartChapter(book: {
   chapterId: string
   paragraphIndex: number
@@ -120,6 +130,10 @@ export function ReaderPage() {
   const pendingScrollRef = useRef<number | null>(null)
   /** 滚动保存进度的节流时间戳 */
   const lastScrollSaveRef = useRef(0)
+  /** 睡眠定时：到点自动停止朗读 */
+  const [sleepRemainSec, setSleepRemainSec] = useState<number | null>(null)
+  const sleepDeadlineRef = useRef<number | null>(null)
+  const sleepIntervalRef = useRef<number | null>(null)
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
   const pendingAutoSpeakRef = useRef(false)
@@ -248,6 +262,10 @@ export function ReaderPage() {
       if (toastTimerRef.current !== null) {
         window.clearTimeout(toastTimerRef.current)
         toastTimerRef.current = null
+      }
+      if (sleepIntervalRef.current !== null) {
+        window.clearInterval(sleepIntervalRef.current)
+        sleepIntervalRef.current = null
       }
     }
   }, [])
@@ -428,6 +446,74 @@ export function ReaderPage() {
     setTtsPaused(false)
     setActiveSentence(-1)
   }, [])
+
+  /** 清除睡眠定时 */
+  const clearSleepTimer = useCallback(() => {
+    if (sleepIntervalRef.current !== null) {
+      window.clearInterval(sleepIntervalRef.current)
+      sleepIntervalRef.current = null
+    }
+    sleepDeadlineRef.current = null
+    setSleepRemainSec(null)
+  }, [])
+
+  /** 启动睡眠定时：倒计时归零时若正在朗读则自动停止 */
+  const startSleepTimer = useCallback(
+    (minutes: number) => {
+      if (sleepIntervalRef.current !== null) {
+        window.clearInterval(sleepIntervalRef.current)
+      }
+      sleepDeadlineRef.current = Date.now() + minutes * 60 * 1000
+      setSleepRemainSec(Math.round(minutes * 60))
+      sleepIntervalRef.current = window.setInterval(() => {
+        const deadline = sleepDeadlineRef.current
+        if (deadline == null || sleepIntervalRef.current == null) return
+        const remain = Math.round((deadline - Date.now()) / 1000)
+        if (remain > 0) {
+          setSleepRemainSec(remain)
+          return
+        }
+        // 到点：清理定时器；正在朗读才停，未在朗读则静默结束（避免下次开播被立即打断）
+        window.clearInterval(sleepIntervalRef.current)
+        sleepIntervalRef.current = null
+        sleepDeadlineRef.current = null
+        setSleepRemainSec(null)
+        if (speakingRef.current) {
+          stopTts()
+          showToast('定时时间到，已停止朗读')
+        }
+      }, 1000)
+    },
+    [stopTts],
+  )
+
+  /** 睡眠定时设置：输入分钟数，0=关闭；记住上次时长 */
+  const promptSleepTimer = () => {
+    const activeMin = sleepDeadlineRef.current
+      ? Math.max(1, Math.round((sleepDeadlineRef.current - Date.now()) / 60000))
+      : settings.ttsSleepMinutes || 0
+    const input = window.prompt(
+      '睡眠定时（分钟）\n时间到自动停止朗读，输入 0 关闭。\n常用：15 / 30 / 60 / 90',
+      activeMin ? String(activeMin) : '',
+    )
+    if (input == null) return
+    const trimmed = input.trim()
+    if (trimmed === '') return
+    const n = Number(trimmed)
+    if (!Number.isFinite(n) || n < 0) {
+      alert('请输入 0 或正数。')
+      return
+    }
+    const minutes = Math.round(n)
+    updateSettings({ ttsSleepMinutes: minutes })
+    if (minutes === 0) {
+      clearSleepTimer()
+      showToast('已关闭睡眠定时')
+    } else {
+      startSleepTimer(minutes)
+      showToast(`${minutes} 分钟后自动停止朗读`)
+    }
+  }
 
   const jumpChapter = useCallback(
     (cid: string) => {
@@ -1016,6 +1102,19 @@ export function ReaderPage() {
               }}
             >
               下句
+            </button>
+            <button
+              type="button"
+              className="side-btn"
+              title="睡眠定时：时间到自动停止朗读"
+              onClick={promptSleepTimer}
+              style={
+                sleepRemainSec != null
+                  ? { color: 'var(--accent)', border: '1px solid var(--accent)', fontSize: 12, minWidth: 52 }
+                  : { minWidth: 52 }
+              }
+            >
+              {sleepRemainSec != null ? fmtSleepRemain(sleepRemainSec) : '定时'}
             </button>
           </div>
         )}
