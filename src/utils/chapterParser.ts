@@ -172,7 +172,12 @@ export function parseChapters(content: string): Chapter[] {
   }
 
   // —— 5. 按命中切分章节 ——
-  const chapters: Chapter[] = []
+  const rawChapters: Omit<Chapter, 'id'>[] = []
+  // 首个命中之前的内容（引子/书籍信息页）独立成章，避免书首内容丢失
+  const preface = text.slice(0, allHits[0].index).trim()
+  if (preface) {
+    rawChapters.push({ title: '序章', startIndex: 0, content: preface })
+  }
   for (let i = 0; i < allHits.length; i++) {
     const hit = allHits[i]
     const start = hit.index
@@ -185,14 +190,23 @@ export function parseChapters(content: string): Chapter[] {
       bodyStartLine = 2
     }
     const body = lines2.slice(bodyStartLine).join('\n').trim()
-    chapters.push({
-      id: `ch-${i}`,
-      title: hit.title,
-      startIndex: start,
-      content: body || chunk,
-    })
+    // 只有标题没有正文的章跳过：避免产生整排"无正文"的空章
+    if (!body) continue
+    rawChapters.push({ title: hit.title, startIndex: start, content: body })
   }
-  return chapters
+
+  // 过滤后不足 3 章视为无明显结构，不拆分
+  if (rawChapters.length < MIN_CHAPTERS_TOTAL) {
+    return [
+      {
+        id: 'ch-0',
+        title: '正文',
+        startIndex: 0,
+        content: text,
+      },
+    ]
+  }
+  return rawChapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
 }
 
 /** 段落类型：正文 vs 注释（注释段朗读时会切换到注释音色） */

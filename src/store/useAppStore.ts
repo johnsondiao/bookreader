@@ -7,6 +7,7 @@ import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
 import { createIdbStorage } from '../utils/idbStorage'
 import { DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
+import { agentLog } from '../utils/agentLog'
 
 interface AppState {
   books: Book[]
@@ -52,7 +53,11 @@ function normalizeBook(book: Book): Book {
   const b = autoChapterizeIfNeeded(book) ?? book
   const chapters = b.chapters || []
   let toc = b.toc
-  if (!toc?.length) {
+  // TXT 书章节无 href，bind 流程永远匹配不上，直接按章节生成目录，
+  // 避免持久化的坏 toc（无 chapterId → 目录整排"无正文"）残留
+  if (chapters.length && chapters.every((c) => !c.href)) {
+    toc = tocFromChapters(chapters)
+  } else if (!toc?.length) {
     toc = tocFromChapters(chapters)
   } else if (chapters.length && toc.some((t) => !t.chapterId)) {
     toc = bindTocToChapters(
@@ -86,7 +91,7 @@ function normalizeBook(book: Book): Book {
 /** 单巨章自动重分章的最小字数阈值（小书不折腾） */
 const AUTO_CHAPTERIZE_MIN_CHARS = 30000
 /** 重分章算法版本：改进解析规则后 bump，让之前失败的书重新尝试 */
-const CHAPTERIZE_TRY_VERSION = 2
+const CHAPTERIZE_TRY_VERSION = 3
 
 /**
  * 只有一章的大部头：用最新解析规则（含网文数字编号标题）重新切章，
@@ -107,6 +112,12 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
     // 无法切分：打上版本标记，避免每次启动都对大文本重复全文解析（阻塞水合）
     return { ...book, chapterizeTryVersion: CHAPTERIZE_TRY_VERSION }
   }
+  agentLog(
+    'useAppStore:autoChapterize',
+    're-chapterized',
+    { bookId: book.id, title: book.title, chapters: chapters.length },
+    'A',
+  )
   chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
 
   // 进度重映射：旧段落号 → 全局字符偏移（近似） → 所在新章节 → 章内段落号
@@ -118,6 +129,14 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
   for (const c of chapters) {
     if (c.startIndex <= charsBefore) target = c
     else break
+  }
+  // 落在空章时向后找最近的非空章（防御性兜底）
+  if (!target.content?.trim()) {
+    const idx = chapters.findIndex((c) => c.id === target.id)
+    const better =
+      chapters.find((c, i) => i > idx && c.content?.trim()) ??
+      chapters.find((c) => c.content?.trim())
+    if (better) target = better
   }
   const paras = splitParagraphTexts(target.content)
   const rel = Math.max(0, charsBefore - target.startIndex)

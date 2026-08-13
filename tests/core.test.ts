@@ -105,6 +105,20 @@ describe('parseChapters', () => {
     expect(chapters.length).toBeGreaterThanOrEqual(4)
     expect(chapters.some((c) => c.title.includes('杀人越货'))).toBe(true)
   })
+  it('书首引子独立成序章；只有标题没正文的章被过滤', () => {
+    const txt =
+      '引子内容，崇祯元年夏。\n\n' +
+      '001 【甲】\n正文一。\n\n' +
+      '002 【乙】\n\n' +
+      '003 【丙】\n正文三。\n\n' +
+      '004 【丁】\n正文四。'
+    const chapters = parseChapters(txt)
+    expect(chapters[0].title).toBe('序章')
+    // 每一章都有正文，"002 【乙】"（无正文）不在其中
+    for (const c of chapters) expect(c.content.trim().length).toBeGreaterThan(0)
+    expect(chapters.some((c) => c.title.includes('乙'))).toBe(false)
+    expect(chapters.every((c) => c.id.length > 0)).toBe(true)
+  })
   it('无明显章节结构的短文不拆分', () => {
     const txt = '这是一篇没有章节结构的短文，只有几个段落。\n\n第二段内容。\n\n第三段内容。'
     const chapters = parseChapters(txt)

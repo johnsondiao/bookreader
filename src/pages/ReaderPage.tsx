@@ -50,9 +50,13 @@ function pickStartChapter(book: {
   let cid = book.chapterId || book.chapters[0]?.id || ''
   let pIndex = book.paragraphIndex || 0
   const current = book.chapters.find((c) => c.id === cid) ?? book.chapters[0]
-  if (current && (current.content?.length || 0) < TINY_CHAPTER && pIndex === 0) {
+  // 当前章无正文（或短扉页且未读进）时，跳到第一个有内容的章，避免开书即见"本章暂无正文"
+  const needSkip =
+    !current?.content?.trim() ||
+    ((current.content?.length || 0) < TINY_CHAPTER && pIndex === 0)
+  if (needSkip) {
     const better = book.chapters.find((c) => (c.content?.length || 0) >= TINY_CHAPTER)
-    if (better) {
+    if (better && better.id !== cid) {
       cid = better.id
       pIndex = 0
     }
