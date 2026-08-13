@@ -111,6 +111,10 @@ export function ReaderPage() {
   const unlockResolverRef = useRef<((ok: boolean) => void) | null>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([])
+  /** 打开书籍时待定位到的记忆段落（渲染就绪后滚动过去） */
+  const pendingScrollRef = useRef<number | null>(null)
+  /** 滚动保存进度的节流时间戳 */
+  const lastScrollSaveRef = useRef(0)
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
   const pendingAutoSpeakRef = useRef(false)
@@ -195,6 +199,8 @@ export function ReaderPage() {
     setParaIndex(pIndex)
     setVisibleCount(INITIAL_VISIBLE)
     setMenuOpen(true)
+    // 恢复阅读位置：记住目标段落，等它被渲染后滚动过去（见下方定位 effect）
+    pendingScrollRef.current = pIndex > 0 ? pIndex : null
     if (cid !== book.chapterId) {
       updateReadingProgress({
         bookId: book.id,
@@ -208,9 +214,21 @@ export function ReaderPage() {
   }, [book?.id])
 
   useEffect(() => {
+    // 恢复定位场景由专门 effect 处理，不能重置到顶部
+    if (pendingScrollRef.current != null) return
     setVisibleCount(INITIAL_VISIBLE)
     contentRef.current?.scrollTo({ top: 0 })
   }, [chapter?.id])
+
+  // 恢复定位：目标段落进入渲染范围后，立即（非动画）滚动过去
+  useEffect(() => {
+    const target = pendingScrollRef.current
+    if (target == null) return
+    const el = paraRefs.current[target]
+    if (!el) return
+    pendingScrollRef.current = null
+    el.scrollIntoView({ block: 'center' })
+  }, [visibleCount, chapterId, paragraphs.length])
 
   useEffect(() => {
     if (paraIndex + 5 >= visibleCount && visibleCount < paragraphs.length) {
@@ -370,6 +388,24 @@ export function ReaderPage() {
     if (!el) return
     const remain = el.scrollHeight - el.scrollTop - el.clientHeight
     if (remain < 400) loadMore()
+    // 滚动阅读时记住位置（节流 800ms，不写快照避免刷屏）：
+    // 找到当前视口顶部附近的段落，与正在朗读的段落一致时不重复写入
+    const now = Date.now()
+    if (now - lastScrollSaveRef.current < 800) return
+    if (!chapter) return
+    const boxTop = el.getBoundingClientRect().top
+    let idx = -1
+    const refs = paraRefs.current
+    for (let i = 0; i < refs.length; i++) {
+      const p = refs[i]
+      if (!p) break
+      if (p.getBoundingClientRect().top - boxTop <= 140) idx = i
+      else break
+    }
+    if (idx < 0 || idx === paraIndex) return
+    lastScrollSaveRef.current = now
+    setParaIndex(idx)
+    saveProgress(chapter.id, idx, 'read', '滚动定位', false)
   }
 
   const stopTts = useCallback(() => {

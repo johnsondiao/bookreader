@@ -48,8 +48,10 @@ const defaultSettings: ReaderSettings = {
 }
 
 function normalizeBook(book: Book): Book {
-  const chapters = book.chapters || []
-  let toc = book.toc
+  // 单巨章书籍自动重分章（旧导入的无目录网文也能生成目录）
+  const b = autoChapterizeIfNeeded(book) ?? book
+  const chapters = b.chapters || []
+  let toc = b.toc
   if (!toc?.length) {
     toc = tocFromChapters(chapters)
   } else if (chapters.length && toc.some((t) => !t.chapterId)) {
@@ -62,22 +64,81 @@ function normalizeBook(book: Book): Book {
       toc = tocFromChapters(chapters)
     }
   }
-  const readChapterIds = book.readChapterIds || []
-  const fromCurrent = chapters.findIndex((c) => c.id === book.chapterId)
-  const validChapterId = fromCurrent >= 0 ? book.chapterId : chapters[0]?.id ?? ''
+  const readChapterIds = b.readChapterIds || []
+  const fromCurrent = chapters.findIndex((c) => c.id === b.chapterId)
+  const validChapterId = fromCurrent >= 0 ? b.chapterId : chapters[0]?.id ?? ''
   const furthestChapterIndex =
-    typeof book.furthestChapterIndex === 'number' &&
-    book.furthestChapterIndex >= 0 &&
-    book.furthestChapterIndex < chapters.length
-      ? book.furthestChapterIndex
+    typeof b.furthestChapterIndex === 'number' &&
+    b.furthestChapterIndex >= 0 &&
+    b.furthestChapterIndex < chapters.length
+      ? b.furthestChapterIndex
       : Math.max(0, fromCurrent)
   return {
-    ...book,
+    ...b,
     chapterId: validChapterId,
     content: '',
     toc,
     readChapterIds,
     furthestChapterIndex: furthestChapterIndex < 0 ? 0 : furthestChapterIndex,
+  }
+}
+
+/** 单巨章自动重分章的最小字数阈值（小书不折腾） */
+const AUTO_CHAPTERIZE_MIN_CHARS = 30000
+
+/**
+ * 只有一章的大部头：用最新解析规则（含网文数字编号标题）重新切章，
+ * 并把已保存的阅读进度重映射到新章节。无可切分时返回 null。
+ */
+function autoChapterizeIfNeeded(book: Book): Book | null {
+  if (book.chapters.length !== 1) return null
+  const only = book.chapters[0]
+  if (!only?.content || only.content.length < AUTO_CHAPTERIZE_MIN_CHARS) return null
+  let chapters: Chapter[]
+  try {
+    chapters = parseChapters(only.content)
+  } catch {
+    return null
+  }
+  if (chapters.length < 3) return null
+  chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
+
+  // 进度重映射：旧段落号 → 全局字符偏移（近似） → 所在新章节 → 章内段落号
+  const oldParas = splitParagraphTexts(only.content)
+  const oldIdx = Math.min(Math.max(0, book.paragraphIndex || 0), Math.max(0, oldParas.length - 1))
+  let charsBefore = 0
+  for (let i = 0; i < oldIdx; i++) charsBefore += oldParas[i].length + 1
+  let target = chapters[0]
+  for (const c of chapters) {
+    if (c.startIndex <= charsBefore) target = c
+    else break
+  }
+  const paras = splitParagraphTexts(target.content)
+  const rel = Math.max(0, charsBefore - target.startIndex)
+  let acc = 0
+  let pIdx = 0
+  for (let i = 0; i < paras.length; i++) {
+    if (acc >= rel) {
+      pIdx = i
+      break
+    }
+    acc += paras[i].length + 1
+    pIdx = i + 1
+  }
+  pIdx = Math.min(pIdx, Math.max(0, paras.length - 1))
+  const targetIdx = chapters.findIndex((c) => c.id === target.id)
+
+  return {
+    ...book,
+    chapters,
+    toc: tocFromChapters(chapters),
+    chapterId: target.id,
+    paragraphIndex: pIdx,
+    readChapterIds:
+      (book.readChapterIds?.length ?? 0) > 0
+        ? chapters.slice(0, targetIdx + 1).map((c) => c.id)
+        : book.readChapterIds || [],
+    furthestChapterIndex: targetIdx,
   }
 }
 

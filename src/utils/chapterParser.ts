@@ -33,6 +33,12 @@ const MIN_STRICT_CHAPTERS = 2
 /** 严格/兜底都命中 < MIN_CHAPTERS_TOTAL 时，说明无明显章节结构，不拆分（避免乱切） */
 const MIN_CHAPTERS_TOTAL = 3
 
+/** 4. 数字编号标题（网文常见）："004 【杀人越货】"、"12、风起长安"、"3. 暗流"
+ *  —— 数字后必须有标题性文字，纯数字行不算 */
+const NUM_TITLE_RE = /^\d{1,4}\s*[.、．:：]?\s*[【\[《（(]?.{1,38}$/
+/** 行尾句末标点（含可选的引号收尾）：有则视为正文句而非标题 */
+const ENDS_SENTENCE_RE = /[。，、；：！？,.;:!?…]["”’』」\])》]*$/
+
 type TitleHit = {
   index: number
   /** 标题文本（含可能的日期副标题） */
@@ -88,6 +94,31 @@ function looksLikeStandaloneTitle(line: LinePos): boolean {
   return true
 }
 
+/**
+ * 数字编号标题探测（仅当严格标题太少时调用）。
+ * 防误判：命中数 ≥ 3 且编号大体递增（容忍少量噪声）才采信。
+ */
+function findNumberedTitles(lines: LinePos[]): TitleHit[] {
+  const cand: { line: LinePos; num: number }[] = []
+  for (const line of lines) {
+    const t = line.text.trim()
+    if (!t || t.length > TITLE_MAX_LEN) continue
+    if (!NUM_TITLE_RE.test(t)) continue
+    if (ENDS_SENTENCE_RE.test(t)) continue
+    // 标题行前应是空行（避免段内数字开头的正文句）
+    if (!line.precededByBlank) continue
+    const num = parseInt(t.match(/^\d+/)?.[0] ?? '', 10)
+    cand.push({ line, num })
+  }
+  if (cand.length < MIN_CHAPTERS_TOTAL) return []
+  let increasing = 0
+  for (let i = 1; i < cand.length; i++) {
+    if (cand[i].num > cand[i - 1].num) increasing++
+  }
+  if (increasing < (cand.length - 1) * 0.7) return []
+  return cand.map((c) => ({ index: c.line.start, title: c.line.text.trim(), strict: true }))
+}
+
 export function parseChapters(content: string): Chapter[] {
   // 兼容 \r\n 和单独 \r（老 txt 文件可能只有 \r）
   const text = content.replace(/\r\n?/g, '\n').trim()
@@ -104,10 +135,12 @@ export function parseChapters(content: string): Chapter[] {
     })
   }
 
-  // —— 2. 如果严格标题太少，启用"孤立短标题兜底" ——
+  // —— 2. 严格标题太少时，先试数字编号标题（网文风格），再启用"孤立短标题兜底" ——
   const lines = getAllLines(text)
+  const numHits: TitleHit[] =
+    strictHits.length < MIN_STRICT_CHAPTERS ? findNumberedTitles(lines) : []
   const fallbackHits: TitleHit[] = []
-  if (strictHits.length < MIN_STRICT_CHAPTERS) {
+  if (strictHits.length + numHits.length < MIN_STRICT_CHAPTERS) {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       const next = lines[i + 1]
@@ -124,7 +157,7 @@ export function parseChapters(content: string): Chapter[] {
   }
 
   // —— 3. 合并排序 ——
-  const allHits = [...strictHits, ...fallbackHits].sort((a, b) => a.index - b.index)
+  const allHits = [...strictHits, ...numHits, ...fallbackHits].sort((a, b) => a.index - b.index)
 
   // —— 4. 如果总共命中的章节太少，说明无明显章节结构，不拆分 ——
   if (allHits.length < MIN_CHAPTERS_TOTAL) {

@@ -10,7 +10,7 @@
  * 运行：npm test / npx vitest run tests/core.test.ts
  */
 import { describe, expect, it } from 'vitest'
-import { isSentenceEnd, splitSentences } from '../src/utils/chapterParser'
+import { isSentenceEnd, splitSentences, parseChapters } from '../src/utils/chapterParser'
 import { estimateTtsCost } from '../src/utils/minimaxTts'
 import { safeName } from '../src/utils/audioFileStore'
 import { classifyTtsError } from '../src/utils/tts'
@@ -70,6 +70,34 @@ describe('splitSentences', () => {
     expect(arr[0]).toBe('沉默良久…')
     expect(arr[1]).toBe('…')
     expect(arr[2]).toBe('终于开口了。')
+  })
+})
+
+describe('parseChapters', () => {
+  it('网文数字编号标题（004 【xxx】风格）能自动切章', () => {
+    const body = '这是正文内容，发生了一些事情。\n\n'
+    const txt =
+      '楔子\n\n开篇引子内容。\n\n' +
+      '001 【穿越】\n' + body +
+      '002 【初来驾到】\n' + body +
+      '003 【风波起】\n' + body +
+      '004 【杀人越货】\n' + body
+    const chapters = parseChapters(txt)
+    expect(chapters.length).toBeGreaterThanOrEqual(4)
+    expect(chapters.some((c) => c.title.includes('杀人越货'))).toBe(true)
+    // 每章正文都应非空
+    for (const c of chapters) expect(c.content.trim().length).toBeGreaterThan(0)
+  })
+  it('编号不递增的数字行不采信（避免正文误切）', () => {
+    const txt = '正文开头。\n\n5 他说。\n\n3 她说。\n\n4 大家说。\n\n正文结尾。'
+    const chapters = parseChapters(txt)
+    expect(chapters.length).toBe(1)
+    expect(chapters[0].title).toBe('正文')
+  })
+  it('无明显章节结构的短文不拆分', () => {
+    const txt = '这是一篇没有章节结构的短文，只有几个段落。\n\n第二段内容。\n\n第三段内容。'
+    const chapters = parseChapters(txt)
+    expect(chapters.length).toBe(1)
   })
 })
 
