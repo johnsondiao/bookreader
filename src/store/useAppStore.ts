@@ -44,6 +44,7 @@ const defaultSettings: ReaderSettings = {
   theme: 'day',
   ttsRate: 1,
   autoScroll: true,
+  pagingMode: 'scroll',
   ttsSleepMinutes: 0,
   ttsVoiceZh: DEFAULT_VOICE_ZH,
   ttsVoiceNote: DEFAULT_VOICE_NOTE,

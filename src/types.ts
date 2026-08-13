@@ -75,6 +75,8 @@ export interface ReaderSettings {
   theme: ThemeMode
   ttsRate: number
   autoScroll: boolean
+  /** 翻页方式：scroll=上下滚动（默认），flip=左右翻页 */
+  pagingMode?: 'scroll' | 'flip'
   /** 睡眠定时（分钟）：记住上次设置的时长，0=关闭 */
   ttsSleepMinutes?: number
   /** 中文正文音色 key：lang||name */

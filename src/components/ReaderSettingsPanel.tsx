@@ -45,6 +45,30 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
             </button>
           </div>
         </div>
+        <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+          <span>翻页方式</span>
+          <div className="theme-pills" style={{ justifyContent: 'flex-start' }}>
+            {(
+              [
+                ['scroll', '上下滚动'],
+                ['flip', '左右翻页'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={`day${(settings.pagingMode ?? 'scroll') === k ? ' on' : ''}`}
+                style={{ width: 'auto', minWidth: 72, padding: '0 10px', height: 34 }}
+                onClick={() => onUpdateSettings({ pagingMode: k })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
+            上下滚动：横滑切换章节，点按上/下方跳句。左右翻页：横滑或点按左/右侧整屏翻页，章节切换用底部滑条或目录。
+          </span>
+        </div>
         <div className="row">
           <span>语速</span>
           <div className="stepper">

@@ -848,13 +848,32 @@ export function ReaderPage() {
     setMenuOpen((v) => !v)
   }
 
+  /** 左右翻页模式：整屏翻一页（保留约两行重叠便于衔接），滚动事件会自动更新阅读进度 */
+  const pageTurn = (dir: 1 | -1) => {
+    const el = contentRef.current
+    if (!el) return
+    const overlap = Math.round((settings.fontSize + 8) * settings.lineHeight * 2)
+    const step = Math.max(120, el.clientHeight - overlap)
+    el.scrollBy({ top: dir * step, behavior: 'smooth' })
+  }
+
   const onTapContent = (e: React.MouseEvent<HTMLDivElement>) => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false
       return
     }
-    const y = e.clientY
     const rect = e.currentTarget.getBoundingClientRect()
+    // 左右翻页模式：左侧 1/3 上一页、右侧 1/3 下一页、中间唤出菜单
+    if (settings.pagingMode === 'flip') {
+      const xr = (e.clientX - rect.left) / rect.width
+      if (xr > 0.33 && xr < 0.67) {
+        toggleMenu()
+        return
+      }
+      pageTurn(xr <= 0.33 ? -1 : 1)
+      return
+    }
+    const y = e.clientY
     const ratio = (y - rect.top) / rect.height
     if (ratio > 0.28 && ratio < 0.72) {
       toggleMenu()
@@ -896,6 +915,11 @@ export function ReaderPage() {
     // 有效滑动：150ms 内抑制一次后续 click 事件，避免滑动结束又触发菜单/跳句
     suppressClickRef.current = true
     window.setTimeout(() => { suppressClickRef.current = false }, 300)
+    if (settings.pagingMode === 'flip') {
+      // 左右翻页模式：横滑翻一页（章节切换用底部滑条或目录）
+      pageTurn(dx < 0 ? 1 : -1)
+      return
+    }
     goRelativeChapter(dx < 0 ? 1 : -1)
   }
 
