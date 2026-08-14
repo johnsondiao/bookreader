@@ -14,6 +14,8 @@ import { isSentenceEnd, splitSentences, parseChapters } from '../src/utils/chapt
 import { estimateTtsCost } from '../src/utils/minimaxTts'
 import { safeName } from '../src/utils/audioFileStore'
 import { classifyTtsError } from '../src/utils/tts'
+import { autoChapterizeIfNeeded } from '../src/store/useAppStore'
+import type { Book } from '../src/types'
 
 describe('isSentenceEnd', () => {
   it('中文标点', () => {
@@ -176,6 +178,37 @@ describe('safeName', () => {
   })
   it('空串返回空串', () => {
     expect(safeName('')).toBe('')
+  })
+})
+
+describe('autoChapterizeIfNeeded', () => {
+  it('旧算法（v2）切出的多章书会还原文本重切，淘汰垃圾章', () => {
+    const chapters = [
+      { id: 'ch-0', title: '001 【穿越】', startIndex: 0, content: '赵瀚迷迷糊糊，并未彻底醒来。' },
+      // v2 垃圾章：正文就是标题行本身
+      { id: 'ch-1', title: '002 【空章】', startIndex: 0, content: '002 【空章】' },
+      { id: 'ch-2', title: '003 【风波起】', startIndex: 0, content: '正文三，发生了一些事情。' },
+      { id: 'ch-3', title: '004 【杀人越货】', startIndex: 0, content: '正文四，继续往下写。' },
+    ]
+    const book = {
+      id: 'b1', title: '朕', author: '', coverColor: '', coverEmoji: '',
+      content: '', chapters, toc: [], addedAt: 0, lastReadAt: 0,
+      chapterId: 'ch-2', paragraphIndex: 0, charOffset: 0, progressPercent: 0,
+      furthestChapterIndex: 2, readChapterIds: ['ch-0', 'ch-1', 'ch-2'],
+      chapterizeTryVersion: 2,
+    } as Book
+    const r = autoChapterizeIfNeeded(book)
+    expect(r).not.toBeNull()
+    // 垃圾章被淘汰，剩下的章都有正文
+    expect(r!.chapters.some((c) => c.title.includes('空章'))).toBe(false)
+    expect(r!.chapters.length).toBeGreaterThanOrEqual(3)
+    for (const c of r!.chapters) expect(c.content.trim().length).toBeGreaterThan(0)
+    // 进度仍落在原来的「风波起」章
+    const cur = r!.chapters.find((c) => c.id === r!.chapterId)
+    expect(cur?.title.includes('风波起')).toBe(true)
+    expect(r!.chapterizeTryVersion).toBe(4)
+    // v4 结果不会再被重切
+    expect(autoChapterizeIfNeeded(r!)).toBeNull()
   })
 })
 

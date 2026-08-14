@@ -522,6 +522,8 @@ export function ReaderPage() {
       // #endregion
       pendingAutoSpeakRef.current = false
       continueQuietRef.current = false
+      // 主动跳转不继承开书时的恢复定位目标，避免卡住的 pendingScroll 干扰滚动位置
+      pendingScrollRef.current = null
       try {
         stopTts()
       } catch {

@@ -92,21 +92,58 @@ function normalizeBook(book: Book): Book {
 
 /** 单巨章自动重分章的最小字数阈值（小书不折腾） */
 const AUTO_CHAPTERIZE_MIN_CHARS = 30000
-/** 重分章算法版本：改进解析规则后 bump，让之前失败的书重新尝试 */
-const CHAPTERIZE_TRY_VERSION = 3
+/** 重分章算法版本：改进解析规则后 bump，让之前失败/旧版切分的书重新尝试 */
+const CHAPTERIZE_TRY_VERSION = 4
+
+/** 段落号 → 章内字符偏移（近似：每段按 length+1 计） */
+function paraOffsetOf(content: string, paragraphIndex: number): number {
+  const paras = splitParagraphTexts(content)
+  const idx = Math.min(Math.max(0, paragraphIndex), Math.max(0, paras.length - 1))
+  let off = 0
+  for (let i = 0; i < idx; i++) off += paras[i].length + 1
+  return off
+}
 
 /**
- * 只有一章的大部头：用最新解析规则（含网文数字编号标题）重新切章，
- * 并把已保存的阅读进度重映射到新章节。无可切分时返回 null。
+ * 用最新解析规则自动重新切章，并把已保存的阅读进度重映射到新章节。无可切分时返回 null。
+ * 两种场景：
+ *  1. 单巨章书（>3万字）：直接切分；
+ *  2. 旧算法（v3 之前）已切过的书：把标题行放回还原文本后重切，
+ *     淘汰旧版产生的垃圾章（空章/重复标题章）。
  */
-function autoChapterizeIfNeeded(book: Book): Book | null {
-  if (book.chapters.length !== 1) return null
+export function autoChapterizeIfNeeded(book: Book): Book | null {
   if ((book.chapterizeTryVersion ?? 0) >= CHAPTERIZE_TRY_VERSION) return null
-  const only = book.chapters[0]
-  if (!only?.content || only.content.length < AUTO_CHAPTERIZE_MIN_CHARS) return null
+  const old = book.chapters || []
+  if (old.length === 0) return null
+  // EPUB 等带 href 的书不碰
+  if (old.some((c) => c.href)) return null
+
+  let sourceText = ''
+  let charsBefore = 0
+  if (old.length === 1) {
+    const only = old[0]
+    if (!only?.content || only.content.length < AUTO_CHAPTERIZE_MIN_CHARS) return null
+    sourceText = only.content
+    charsBefore = paraOffsetOf(only.content, book.paragraphIndex || 0)
+  } else {
+    // 只升级 v3 之前切出来的旧结果；v3+ 新切的已是最新规则
+    if ((book.chapterizeTryVersion ?? 0) >= 3) return null
+    // 还原文本：标题行 + 正文（空章的正文就是标题行，还原为重复标题行，
+    // 重解析时会被空章过滤规则淘汰）
+    sourceText = old.map((c) => `${c.title}\n${c.content}`).join('\n')
+    const idx = Math.max(0, old.findIndex((c) => c.id === book.chapterId))
+    for (let i = 0; i < idx; i++) {
+      charsBefore += old[i].title.length + 1 + (old[i].content?.length ?? 0) + 1
+    }
+    const cur = old[idx]
+    if (cur) {
+      charsBefore += cur.title.length + 1 + paraOffsetOf(cur.content || '', book.paragraphIndex || 0)
+    }
+  }
+
   let chapters: Chapter[]
   try {
-    chapters = parseChapters(only.content)
+    chapters = parseChapters(sourceText)
   } catch {
     return null
   }
@@ -117,16 +154,12 @@ function autoChapterizeIfNeeded(book: Book): Book | null {
   agentLog(
     'useAppStore:autoChapterize',
     're-chapterized',
-    { bookId: book.id, title: book.title, chapters: chapters.length },
+    { bookId: book.id, title: book.title, chapters: chapters.length, from: old.length },
     'A',
   )
   chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
 
-  // 进度重映射：旧段落号 → 全局字符偏移（近似） → 所在新章节 → 章内段落号
-  const oldParas = splitParagraphTexts(only.content)
-  const oldIdx = Math.min(Math.max(0, book.paragraphIndex || 0), Math.max(0, oldParas.length - 1))
-  let charsBefore = 0
-  for (let i = 0; i < oldIdx; i++) charsBefore += oldParas[i].length + 1
+  // 进度重映射：旧位置的全局字符偏移 → 所在新章节 → 章内段落号
   let target = chapters[0]
   for (const c of chapters) {
     if (c.startIndex <= charsBefore) target = c
