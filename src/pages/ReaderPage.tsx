@@ -134,6 +134,8 @@ export function ReaderPage() {
   const [sleepRemainSec, setSleepRemainSec] = useState<number | null>(null)
   const sleepDeadlineRef = useRef<number | null>(null)
   const sleepIntervalRef = useRef<number | null>(null)
+  /** 翻页动画进行中，防止连续触发 */
+  const flippingRef = useRef(false)
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
   const pendingAutoSpeakRef = useRef(false)
@@ -850,13 +852,42 @@ export function ReaderPage() {
     setMenuOpen((v) => !v)
   }
 
-  /** 左右翻页模式：整屏翻一页（保留约两行重叠便于衔接），滚动事件会自动更新阅读进度 */
+  /**
+   * 左右翻页模式：整屏翻一页，横滑出→换页→横滑进的翻书动画；
+   * 翻到本章头/尾继续翻则切换上/下一章（像真实翻书）。滚动事件照常更新阅读进度。
+   */
   const pageTurn = (dir: 1 | -1) => {
     const el = contentRef.current
-    if (!el) return
+    if (!el || flippingRef.current) return
+    const maxTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    // 已在本章末尾/开头还继续翻 → 切章
+    if ((dir > 0 && el.scrollTop >= maxTop - 8) || (dir < 0 && el.scrollTop <= 8)) {
+      goRelativeChapter(dir)
+      return
+    }
     const overlap = Math.round((settings.fontSize + 8) * settings.lineHeight * 2)
     const step = Math.max(120, el.clientHeight - overlap)
-    el.scrollBy({ top: dir * step, behavior: 'smooth' })
+    const clamped = Math.max(0, Math.min(maxTop, el.scrollTop + dir * step))
+    flippingRef.current = true
+    let swapped = false
+    // 横向滑出淡出 → 中点换滚动位置 → 从另一侧滑入淡入
+    const anim = el.animate(
+      [
+        { transform: 'translateX(0)', opacity: 1 },
+        { transform: `translateX(${-dir * 30}%)`, opacity: 0, offset: 0.4 },
+        { transform: `translateX(${dir * 30}%)`, opacity: 0, offset: 0.6 },
+        { transform: 'translateX(0)', opacity: 1 },
+      ],
+      { duration: 320, easing: 'ease-in-out' },
+    )
+    window.setTimeout(() => {
+      swapped = true
+      el.scrollTo({ top: clamped })
+    }, 150)
+    anim.onfinish = () => {
+      if (!swapped) el.scrollTo({ top: clamped })
+      flippingRef.current = false
+    }
   }
 
   const onTapContent = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -877,7 +908,7 @@ export function ReaderPage() {
     }
     const y = e.clientY
     const ratio = (y - rect.top) / rect.height
-    if (ratio > 0.28 && ratio < 0.72) {
+    if (ratio > 0.22 && ratio < 0.78) {
       toggleMenu()
       return
     }
@@ -1028,11 +1059,12 @@ export function ReaderPage() {
         </div>
       </div>
 
-      <div className={`reader-topbar${menuOpen ? '' : ' hidden'}`}>
+      <div className={`reader-topbar${menuOpen ? '' : ' hidden'}`} onClick={toggleMenu}>
         <button
           type="button"
           className="back"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation()
             stopTts()
             closeReader()
           }}

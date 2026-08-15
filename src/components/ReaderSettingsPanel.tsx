@@ -66,7 +66,8 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
             ))}
           </div>
           <span style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
-            上下滚动：横滑切换章节，点按上/下方跳句。左右翻页：横滑或点按左/右侧整屏翻页，章节切换用底部滑条或目录。
+            上下滚动：横滑切换章节，点按上/下方跳句。左右翻页：横滑或点按左/右侧像翻书一样整屏翻页，翻到本章末尾继续翻自动切章。
+            两种模式都可点屏幕中间或顶部标题栏收起/展开菜单。
           </span>
         </div>
         <div className="row">
