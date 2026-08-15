@@ -45,6 +45,18 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
             </button>
           </div>
         </div>
+        <div className="row">
+          <span>行距</span>
+          <div className="stepper">
+            <button type="button" onClick={() => onUpdateSettings({ lineHeight: Math.max(1.4, +(settings.lineHeight - 0.1).toFixed(1)) })}>
+              −
+            </button>
+            <span>{settings.lineHeight.toFixed(1)}</span>
+            <button type="button" onClick={() => onUpdateSettings({ lineHeight: Math.min(2.6, +(settings.lineHeight + 0.1).toFixed(1)) })}>
+              +
+            </button>
+          </div>
+        </div>
         <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
           <span>翻页方式</span>
           <div className="theme-pills" style={{ justifyContent: 'flex-start' }}>
