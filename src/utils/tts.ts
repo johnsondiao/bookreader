@@ -322,6 +322,9 @@ function planSegments(
 
 const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 
+/** 合成节流：每合成完一段后等待的间隔（ms），控制 API 请求频率避免触发平台限流 */
+const SYNTH_GAP_MS = 1000
+
 export function createTtsController(): TtsController {
   let status: TtsStatus = 'idle'
   let audio: HTMLAudioElement | null = null
@@ -337,6 +340,18 @@ export function createTtsController(): TtsController {
   const assertAlive = (epoch: number) => {
     if (epoch !== speakEpoch) throw new SpeakAborted()
   }
+
+  /** 可中断的等待：每 100ms 检查一次 epoch，用户停止时立即返回（由调用方 assertAlive 抛出中止） */
+  const sleepInterruptible = (ms: number, epoch: number) =>
+    new Promise<void>((resolve) => {
+      const startedAt = Date.now()
+      const tick = window.setInterval(() => {
+        if (epoch !== speakEpoch || Date.now() - startedAt >= ms) {
+          window.clearInterval(tick)
+          resolve()
+        }
+      }, 100)
+    })
 
   const cleanupAudio = () => {
     if (audio) {
@@ -424,6 +439,13 @@ export function createTtsController(): TtsController {
         await addSynthChars(text.length, bookTitle)
         seg._resolveReady?.()
         done++
+        // 节流：合成完一段等 1 秒再发下一个请求，控制请求频率，
+        // 避免生产者冲刺备货时每分钟上百次请求触发平台 Rate Limit（429）。
+        // 全部就绪则不等；等待可被 stop 中断
+        if (segments.some((s) => !s.blob)) {
+          await sleepInterruptible(SYNTH_GAP_MS, epoch)
+          assertAlive(epoch)
+        }
       }
     } catch (e) {
       // 合成失败/中止：拒绝所有未完成的 deferred，防止消费者死等
