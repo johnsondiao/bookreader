@@ -136,6 +136,9 @@ export function ReaderPage() {
   const sleepIntervalRef = useRef<number | null>(null)
   /** 翻页动画进行中，防止连续触发 */
   const flippingRef = useRef(false)
+  /** 手动合成中（只合成不播放） */
+  const [synthing, setSynthing] = useState(false)
+  const [synthMsg, setSynthMsg] = useState('')
   const ttsRef = useRef(createTtsController())
   const speakingRef = useRef(false)
   const pendingAutoSpeakRef = useRef(false)
@@ -514,6 +517,80 @@ export function ReaderPage() {
     } else {
       startSleepTimer(minutes)
       showToast(`${minutes} 分钟后自动停止朗读`)
+    }
+  }
+
+  /**
+   * 手动合成开关：点一下开始合成当前章（只合成不播放，从当前位置向后到章尾再回头），
+   * 再点一下停止。已合成的段存缓存+文件，之后朗读不重复扣费。
+   */
+  const toggleSynth = async () => {
+    if (synthing) {
+      ttsRef.current.stop()
+      setSynthing(false)
+      setSynthMsg('')
+      showToast('已停止合成，已完成部分已保存')
+      return
+    }
+    if (ttsOn) {
+      showToast('正在朗读中，后台已在自动合成')
+      return
+    }
+    if (!book || !chapter) return
+    // 未解锁先弹密码框
+    if (!(await hasTtsKey())) {
+      if (!mountedRef.current) return
+      const ok = await requestUnlock()
+      if (!mountedRef.current || !ok) return
+    }
+    setSynthing(true)
+    setMenuOpen(true)
+    const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
+    const noteKey = migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE
+    const startSent = paraSentStart[paraIndex] ?? 0
+    agentLog('ReaderPage:toggleSynth', 'start', { chapterId: chapter.id, startSent, zhKey, noteKey }, 'A')
+    try {
+      await ttsRef.current.synthChapter({
+        bookId: book.id,
+        bookTitle: book.title,
+        chapterId: chapter.id,
+        chapterTitle: chapter.title,
+        paragraphs,
+        startSentenceIndex: startSent,
+        voiceKey: zhKey,
+        noteVoiceKey: noteKey,
+        budgetYuan: settings.dailyBudgetYuan,
+        onSynthProgress: (p: { progress: number; message: string; stage: string }) => {
+          updateTodayCost()
+          setSynthMsg(`${p.message || '合成中'} ${Math.round((p.progress || 0) * 100)}%`)
+        },
+        onStatus: (_s: string, msg?: string) => {
+          if (msg) setSynthMsg(msg)
+        },
+        onFileSaved: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => {
+          if (r.fileOk) return
+          agentLog('ReaderPage:toggleSynth', 'audio file save failed', { err: r.error }, 'E')
+          showToast(`⚠️ 音频文件保存失败：${r.error ?? '未知原因'}（已存入应用内缓存）`, 10000)
+        },
+      })
+      if (mountedRef.current) showToast('本章合成完成，朗读时不再扣费')
+    } catch (err) {
+      if (!mountedRef.current) return
+      if (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted')) {
+        // 用户主动停止或被新任务中断：静默
+      } else if (err instanceof BudgetExceeded) {
+        showToast(`⚠️ ${err.message}`, 10000)
+      } else {
+        const c = classifyTtsError(err)
+        agentLog('ReaderPage:toggleSynth', 'synth failed', { err: err instanceof Error ? err.message : String(err) }, 'C')
+        showToast(`${c.title}${c.advice ? '\n' + c.advice : ''}`, 10000)
+      }
+    } finally {
+      if (mountedRef.current) {
+        setSynthing(false)
+        setSynthMsg('')
+        updateTodayCost()
+      }
     }
   }
 
@@ -1111,6 +1188,15 @@ export function ReaderPage() {
             <span className="mi">听</span>
             听书
           </button>
+          <button
+            type="button"
+            className={synthing ? 'active' : ''}
+            title="只合成不播放：提前生成整章音频，再点一下停止"
+            onClick={() => void toggleSynth()}
+          >
+            <span className="mi">合</span>
+            {synthing ? '停止' : '合成'}
+          </button>
         </div>
 
         {(ttsOn || menuOpen) && (
@@ -1136,7 +1222,13 @@ export function ReaderPage() {
               {!ttsOn || ttsPaused ? '▶' : '❚❚'}
             </button>
             <div className="tts-info">
-              <div>{ttsOn ? (ttsPaused ? '已暂停' : '正在朗读…') : '点击播放开始朗读'}</div>
+              <div>
+                {synthing
+                  ? (synthMsg || '正在合成…')
+                  : ttsOn
+                  ? (ttsPaused ? '已暂停' : '正在朗读…')
+                  : '点击播放开始朗读'}
+              </div>
               <div className="muted">
                 {chapter.title} · 第 {activeSentence >= 0 ? activeSentence + 1 : (paraSentStart[paraIndex] ?? 0) + 1}/{totalSentences || 1} 句 · {settings.ttsRate.toFixed(1)}x
               </div>

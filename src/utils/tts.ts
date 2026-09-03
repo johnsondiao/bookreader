@@ -77,8 +77,27 @@ export interface PlayChapterOpts {
   budgetYuan?: number
 }
 
+export interface SynthChapterOpts {
+  bookId: string
+  bookTitle: string
+  chapterId: string
+  chapterTitle: string
+  /** 章节段落（带 text/note 类型，兼容纯字符串数组） */
+  paragraphs: Paragraph[] | string[]
+  /** 从第几个句子开始合成（默认章首；顺序为起点向后到末尾，再回头到起点） */
+  startSentenceIndex?: number
+  voiceKey?: string
+  noteVoiceKey?: string
+  budgetYuan?: number
+  onSynthProgress?: (p: TtsProgress) => void
+  onStatus?: (status: TtsStatus, message?: string) => void
+  onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void
+}
+
 export interface TtsController {
   playChapter: (opts: PlayChapterOpts) => Promise<void>
+  /** 只合成不播放：提前生成整章音频（stop() 可中断，已完成部分照常存缓存） */
+  synthChapter: (opts: SynthChapterOpts) => Promise<void>
   pause: () => void
   resume: () => void
   stop: () => void
@@ -324,6 +343,123 @@ const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 
 /** 合成节流：每合成完一段后等待的间隔（ms），控制 API 请求频率避免触发平台限流 */
 const SYNTH_GAP_MS = 1000
+
+/** 章节预处理结果（playChapter / synthChapter 共用） */
+interface PreparedChapter {
+  fullText: string
+  paraRanges: CharRange[]
+  textHash: string
+  cacheKey: string
+  segments: PlaySegment[]
+  startSegIdx: number
+}
+
+/**
+ * 段落规范化 → 构建全文与区间 → 缓存还原 blob → 计算起始段。
+ * 无可读内容时返回 null。
+ */
+async function prepareChapter(
+  opts: {
+    bookId: string
+    chapterId: string
+    paragraphs: Paragraph[] | string[]
+    startSentenceIndex?: number
+    startParagraphIndex?: number
+  },
+  textVoice: VoiceDef,
+  noteVoice: VoiceDef,
+): Promise<PreparedChapter | null> {
+  const rawParas = opts.paragraphs
+  if (rawParas.length === 0) return null
+  // 兼容调用方传纯文本字符串数组（旧签名 paragraphs: string[]）
+  const paras: Paragraph[] = rawParas.map((p) =>
+    typeof p === 'string' ? { text: p.trim(), kind: 'text' as ParagraphKind } : p,
+  ).filter((p) => p.text)
+
+  const { fullText, paraRanges } = buildTextAndRanges(paras)
+  const textHash = hashText(fullText)
+  // 缓存维度：正文音色 + 注释音色。
+  // __v2：合成参数版本——修复 language_boost:'auto' 被误判成粤语的问题，
+  // 旧缓存音频语种错误，整键作废强制重合成
+  const cacheKey = `${opts.bookId}__${opts.chapterId}__${textVoice.key}__${noteVoice.key}__v2`
+
+  let clip: ChapterAudio | null = null
+  try {
+    clip = await getClip(cacheKey)
+  } catch {
+    clip = null
+  }
+
+  const segments = planSegments(paras, paraRanges, textVoice, noteVoice)
+
+  // 尝试用缓存还原 segments.blob（支持部分命中，不 break）
+  if (clip && clip.textHash === textHash && clip.chunks?.length) {
+    for (const seg of segments) {
+      const idx = clip.chunks.findIndex(
+        (c) => c.charStart === seg.charStart && c.charEnd === seg.charEnd && c.blob.size > 0,
+      )
+      if (idx >= 0) seg.blob = clip.chunks[idx].blob
+    }
+  }
+
+  // 计算起始 segment（生产者和消费者共用）
+  let startSegIdx: number
+  if (opts.startSentenceIndex != null) {
+    startSegIdx = Math.max(0, Math.min(opts.startSentenceIndex, segments.length - 1))
+  } else {
+    const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
+    const startChar = paraRanges[startIndex].start
+    startSegIdx = segments.findIndex((s) => startChar >= s.charStart && startChar < s.charEnd)
+    if (startSegIdx < 0) startSegIdx = 0
+  }
+
+  return { fullText, paraRanges, textHash, cacheKey, segments, startSegIdx }
+}
+
+/** 保存已有 blob 的段：IDB 缓存 + 物理文件（fire-and-forget，结果回调 onFileSaved） */
+function persistSegments(
+  segments: PlaySegment[],
+  prep: Pick<PreparedChapter, 'textHash' | 'cacheKey'>,
+  textVoice: VoiceDef,
+  noteVoice: VoiceDef,
+  meta: { bookId: string; bookTitle: string; chapterId: string; chapterTitle: string },
+  onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void,
+): void {
+  const completedSegs = segments.filter((s) => s.blob)
+  if (completedSegs.length === 0) return
+  const chunks: AudioChunk[] = completedSegs.map((s) => ({
+    charStart: s.charStart,
+    charEnd: s.charEnd,
+    blob: s.blob!,
+  }))
+  const newClip: ChapterAudio = {
+    chunks,
+    textHash: prep.textHash,
+    voiceKey: `${textVoice.key}|${noteVoice.key}`,
+    createdAt: Date.now(),
+  }
+  const voiceLabel = textVoice.name + (noteVoice.key !== textVoice.key ? ` · ${noteVoice.name}注释` : '')
+  const fileMeta: ChapterFileMeta = {
+    bookId: meta.bookId,
+    bookTitle: meta.bookTitle,
+    chapterId: meta.chapterId,
+    chapterTitle: meta.chapterTitle,
+    voiceKey: textVoice.key,
+    noteVoiceKey: noteVoice.key,
+    voiceLabel,
+  }
+  void putClip(prep.cacheKey, newClip, fileMeta)
+    .then((res) => {
+      onFileSaved?.({ fileOk: res.fileOk, idbOk: res.idbOk, error: res.fileError })
+    })
+    .catch((e) => {
+      onFileSaved?.({
+        fileOk: false,
+        idbOk: false,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    })
+}
 
 export function createTtsController(): TtsController {
   let status: TtsStatus = 'idle'
@@ -660,54 +796,14 @@ export function createTtsController(): TtsController {
         ? getVoice(opts.noteVoiceKey) || textVoice
         : textVoice
 
-      const rawParas = opts.paragraphs
-      if (rawParas.length === 0) {
+      const prep = await prepareChapter(opts, textVoice, noteVoice)
+      if (!prep) {
         status = 'idle'
         opts.onStatus?.('idle', '本章无可朗读内容')
         return
       }
-      // 兼容调用方传纯文本字符串数组（旧签名 paragraphs: string[]）
-      const paras: Paragraph[] = rawParas.map((p) =>
-        typeof p === 'string' ? { text: p.trim(), kind: 'text' as ParagraphKind } : p,
-      ).filter((p) => p.text)
-
-      const { fullText, paraRanges } = buildTextAndRanges(paras)
-      const textHash = hashText(fullText)
-      // 缓存维度：正文音色 + 注释音色。
-      // __v2：合成参数版本——修复 language_boost:'auto' 被误判成粤语的问题，
-      // 旧缓存音频语种错误，整键作废强制重合成
-      const cacheKey = `${opts.bookId}__${opts.chapterId}__${textVoice.key}__${noteVoice.key}__v2`
-
-      let clip: ChapterAudio | null = null
-      try {
-        clip = await getClip(cacheKey)
-      } catch {
-        clip = null
-      }
-
-      let segments: PlaySegment[] = planSegments(paras, paraRanges, textVoice, noteVoice)
+      const { segments, paraRanges, fullText, cacheKey, startSegIdx } = prep
       currentSegments = segments
-
-      // 尝试用缓存还原 segments.blob（支持部分命中，不 break）
-      if (clip && clip.textHash === textHash && clip.chunks?.length) {
-        for (const seg of segments) {
-          const idx = clip.chunks.findIndex(
-            (c) => c.charStart === seg.charStart && c.charEnd === seg.charEnd && c.blob.size > 0,
-          )
-          if (idx >= 0) seg.blob = clip.chunks[idx].blob
-        }
-      }
-
-      // 计算播放起点 segment（生产者和消费者共用）
-      let startSegIdx: number
-      if (opts.startSentenceIndex != null) {
-        startSegIdx = Math.max(0, Math.min(opts.startSentenceIndex, segments.length - 1))
-      } else {
-        const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
-        const startChar = paraRanges[startIndex].start
-        startSegIdx = segments.findIndex((s) => startChar >= s.charStart && startChar < s.charEnd)
-        if (startSegIdx < 0) startSegIdx = 0
-      }
 
       const needSynth = segments.some((s) => !s.blob)
       let producerPromise: Promise<void> | null = null
@@ -768,43 +864,7 @@ export function createTtsController(): TtsController {
             .catch(() => { /* abort 或合成错误 */ })
             .then(() => {
               // 生产者跑完（或已被 abort）后，保存已完成的段
-              const completedSegs = segments.filter((s) => s.blob)
-              if (completedSegs.length === 0) return
-              const chunks: AudioChunk[] = completedSegs.map((s) => ({
-                charStart: s.charStart,
-                charEnd: s.charEnd,
-                blob: s.blob!,
-              }))
-              const newClip: ChapterAudio = {
-                chunks, textHash,
-                voiceKey: `${textVoice.key}|${noteVoice.key}`,
-                createdAt: Date.now(),
-              }
-              const voiceLabel = textVoice.name + (noteVoice.key !== textVoice.key ? ` · ${noteVoice.name}注释` : '')
-              const fileMeta: ChapterFileMeta = {
-                bookId: opts.bookId,
-                bookTitle: opts.bookTitle,
-                chapterId: opts.chapterId,
-                chapterTitle: opts.chapterTitle,
-                voiceKey: textVoice.key,
-                noteVoiceKey: noteVoice.key,
-                voiceLabel,
-              }
-              void putClip(cacheKey, newClip, fileMeta)
-                .then((res) => {
-                  opts.onFileSaved?.({
-                    fileOk: res.fileOk,
-                    idbOk: res.idbOk,
-                    error: res.fileError,
-                  })
-                })
-                .catch((e) => {
-                  opts.onFileSaved?.({
-                    fileOk: false,
-                    idbOk: false,
-                    error: e instanceof Error ? e.message : String(e),
-                  })
-                })
+              persistSegments(segments, prep, textVoice, noteVoice, opts, opts.onFileSaved)
             })
         }
         // 清 segments 引用（避免 stop 再操作旧 segments）
@@ -813,6 +873,71 @@ export function createTtsController(): TtsController {
         if (epoch === speakEpoch && (status as TtsStatus) !== 'paused') status = 'idle'
       }
       })() // async IIFE end
+
+      currentPlayPromise = promise
+      try {
+        await promise
+      } finally {
+        if (currentPlayPromise === promise) currentPlayPromise = null
+      }
+    },
+
+    async synthChapter(opts) {
+      // 串行化：先中断旧的播放/合成任务
+      if (currentPlayPromise) {
+        stopInternal()
+        try { await currentPlayPromise } catch { /* 旧任务已中止 */ }
+      }
+
+      const promise = (async () => {
+        const epoch = ++speakEpoch
+        cleanupAudio()
+        status = 'loading'
+        opts.onStatus?.('loading', '正在准备合成…')
+
+        const textVoice = getVoice(opts.voiceKey) || VOICE_CATALOG[0]
+        const noteVoice = opts.noteVoiceKey
+          ? getVoice(opts.noteVoiceKey) || textVoice
+          : textVoice
+
+        const prep = await prepareChapter(opts, textVoice, noteVoice)
+        if (!prep) {
+          status = 'idle'
+          opts.onStatus?.('idle', '本章无可合成内容')
+          return
+        }
+        currentSegments = prep.segments
+
+        const needCount = prep.segments.filter((s) => !s.blob).length
+        if (needCount === 0) {
+          agentLog('tts.ts:synthChapter', 'all cached', { cacheKey: prep.cacheKey, segments: prep.segments.length }, 'A')
+          status = 'idle'
+          opts.onStatus?.('idle', '本章已全部合成过')
+          return
+        }
+
+        agentLog(
+          'tts.ts:synthChapter',
+          'start',
+          { cacheKey: prep.cacheKey, segments: prep.segments.length, need: needCount, chars: prep.fullText.length },
+          'A',
+        )
+        opts.onStatus?.('loading', `开始合成 ${needCount} 段…`)
+
+        try {
+          // 纯合成模式无播放消费者，不需要创建 blobReady deferred；
+          // stop() 通过 epoch + synthAbortFn 中断，抛出 SpeakAborted 由调用方处理
+          await synthesizeSegments(
+            prep.fullText, prep.segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', prep.startSegIdx, opts.budgetYuan,
+          )
+          opts.onStatus?.('idle', '合成完成')
+        } finally {
+          // 无论正常完成还是被中断，已完成的段都保存（钱已花，不保存就白扣了）
+          persistSegments(prep.segments, prep, textVoice, noteVoice, opts, opts.onFileSaved)
+          if (currentSegments === prep.segments) currentSegments = null
+          if (epoch === speakEpoch && (status as TtsStatus) !== 'paused') status = 'idle'
+        }
+      })()
 
       currentPlayPromise = promise
       try {
