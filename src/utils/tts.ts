@@ -235,6 +235,8 @@ interface CharRange {
 interface PlaySegment {
   voiceKey: string
   voiceId: string
+  /** t2a_v2 language_boost：普通话 'Chinese' / 英文 'English'（禁用 'auto'，会被误判成粤语） */
+  languageBoost: string
   firstPara: number
   lastPara: number
   charStart: number
@@ -272,6 +274,7 @@ function planSegments(
   noteVoice: VoiceDef,
 ): PlaySegment[] {
   const pickVoice = (k: ParagraphKind) => (k === 'note' ? noteVoice : textVoice)
+  const boostOf = (v: VoiceDef) => (v.lang === 'en' ? 'English' : 'Chinese')
   const out: PlaySegment[] = []
 
   for (let pi = 0; pi < paras.length; pi++) {
@@ -290,6 +293,7 @@ function planSegments(
           out.push({
             voiceKey: voice.key,
             voiceId: voice.voiceId,
+            languageBoost: boostOf(voice),
             firstPara: pi,
             lastPara: pi,
             charStart: absStart,
@@ -304,6 +308,7 @@ function planSegments(
       out.push({
         voiceKey: voice.key,
         voiceId: voice.voiceId,
+        languageBoost: boostOf(voice),
         firstPara: pi,
         lastPara: pi,
         charStart: range.start + sentStart,
@@ -412,6 +417,7 @@ export function createTtsController(): TtsController {
           },
           () => assertAlive(epoch),
           (abortFn) => { synthAbortFn = abortFn },
+          seg.languageBoost,
         )
         synthAbortFn = null
         seg.blob = blob
@@ -645,8 +651,10 @@ export function createTtsController(): TtsController {
 
       const { fullText, paraRanges } = buildTextAndRanges(paras)
       const textHash = hashText(fullText)
-      // 缓存维度：正文音色 + 注释音色
-      const cacheKey = `${opts.bookId}__${opts.chapterId}__${textVoice.key}__${noteVoice.key}`
+      // 缓存维度：正文音色 + 注释音色。
+      // __v2：合成参数版本——修复 language_boost:'auto' 被误判成粤语的问题，
+      // 旧缓存音频语种错误，整键作废强制重合成
+      const cacheKey = `${opts.bookId}__${opts.chapterId}__${textVoice.key}__${noteVoice.key}__v2`
 
       let clip: ChapterAudio | null = null
       try {

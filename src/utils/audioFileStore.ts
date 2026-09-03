@@ -458,7 +458,9 @@ export async function saveAudioFile(params: {
   const nextList = existing
     ? list.map((x) => (x.id === id ? record : x))
     : [...list, record]
-  await writeIndex(nextList)
+  // 同名文件被覆盖写入时（如缓存 key 版本升级导致 id 变化），
+  // 去掉指向同一文件的旧记录，避免列表里出现两条
+  await writeIndex(nextList.filter((x) => x.id === id || x.fileName !== record.fileName))
   return record
 }
 

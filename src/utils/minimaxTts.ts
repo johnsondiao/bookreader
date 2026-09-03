@@ -240,6 +240,7 @@ export async function synthesizeChunk(
   onProgress: (p: SynthProgress) => void,
   isAlive: () => void,
   registerAbort?: (fn: () => void) => void,
+  languageBoost: string = 'auto',
 ): Promise<Blob> {
   isAlive()
   onProgress({ stage: 'synthesizing', progress: 0.3, message: '在线合成中…（同步）' })
@@ -253,27 +254,23 @@ export async function synthesizeChunk(
     })
   }
 
-  // 请求体：参考 Java 示例（speech-02-hd）+ Apifox 文档。
-  // 顶层放 voice_id / speed / vol / pitch / audio_sample_rate / bitrate
-  // voice_setting 作为兜底（文档说 timbre_weights 优先级 > voice_id）
+  // 请求体：按 speech-2.8-turbo 官方标准格式。
+  // 注意：不要再传顶层 voice_id/speed/vol/pitch 和 timbre_weights（旧 speech-02 风格，
+  // 与 voice_setting 冲突会导致服务端行为不可预期）；
+  // language_boost 由调用方显式指定（普通话传 'Chinese'），不能用 'auto'：
+  // auto 会把网文文本误判成粤语等其他语种。
   const resp = await httpPostSync('/v1/t2a_v2', {
     model: MODEL,
     text,
-    voice_id: voiceId,
-    speed: 1,
-    vol: 1,
-    pitch: 0,
-    audio_sample_rate: 32000,
-    bitrate: 128000,
-    voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 1 },
+    stream: false,
+    voice_setting: { voice_id: voiceId, speed: 1, vol: 1, pitch: 0 },
     audio_setting: {
-      audio_sample_rate: 32000,
+      sample_rate: 32000,
       bitrate: 128000,
       format: 'mp3',
       channel: 1,
     },
-    timbre_weights: [{ voice_id: voiceId, weight: 1 }],
-    language_boost: 'auto',
+    language_boost: languageBoost,
   }, controller?.signal)
 
   if (resp.base_resp?.status_code !== 0 && resp.base_resp?.status_code !== undefined) {
