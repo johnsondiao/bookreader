@@ -7,12 +7,15 @@ import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs, splitSentences } from '../utils/chapterParser'
 import {
   BudgetExceeded,
+  chapterCacheKey,
   classifyTtsError,
   createTtsController,
   DEFAULT_VOICE_NOTE,
   DEFAULT_VOICE_ZH,
+  VOICE_CATALOG,
 } from '../utils/tts'
-import { migrateVoiceKey } from '../utils/ttsVoices'
+import { migrateVoiceKey, getVoice } from '../utils/ttsVoices'
+import { getClip, hashText } from '../utils/audioCache'
 import { hasTtsKey, unlockTtsKey, TtsKeyLockedError } from '../utils/ttsKeyStore'
 import {
   agentLog,
@@ -211,6 +214,68 @@ export function ReaderPage() {
     })
     return map
   }, [paraSentences])
+
+  /** 已合成句子的全局索引集合（正文下划线标记） */
+  const [synthedSentences, setSynthedSentences] = useState<Set<number>>(() => new Set())
+  /** 缓存写入后 bump，触发下划线标记刷新 */
+  const [marksVersion, setMarksVersion] = useState(0)
+
+  /**
+   * 从音频缓存读出当前章+当前音色已合成的句子区间，映射为全局句子索引。
+   * 区间计算与 tts.ts 完全一致（段落 \n 拼接 + splitSentences）。
+   */
+  const refreshSynthMarks = useCallback(async () => {
+    if (!book || !chapter) {
+      setSynthedSentences(new Set())
+      return
+    }
+    try {
+      const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
+      const noteKey = migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE
+      const textVoice = getVoice(zhKey) || VOICE_CATALOG[0]
+      const noteVoice = getVoice(noteKey) || textVoice
+      const clip = await getClip(chapterCacheKey(book.id, chapter.id, textVoice.key, noteVoice.key))
+      if (!clip?.chunks?.length) {
+        setSynthedSentences(new Set())
+        return
+      }
+      // textHash 校验：正文变了则标记全部作废（与 tts.ts 缓存命中规则一致）
+      let fullText = ''
+      for (const p of paragraphs) {
+        fullText += p.text
+        fullText += '\n'
+      }
+      if (clip.textHash !== hashText(fullText)) {
+        setSynthedSentences(new Set())
+        return
+      }
+      const chunks = clip.chunks.filter((c) => c.blob.size > 0)
+      const set = new Set<number>()
+      let offset = 0
+      let gi = 0
+      for (const p of paragraphs) {
+        let so = offset
+        for (const s of splitSentences(p.text)) {
+          const se = so + s.length
+          // 任一缓存块覆盖该句即视为已合成
+          if (chunks.some((c) => c.charStart <= so && c.charEnd >= se)) set.add(gi)
+          so = se
+          gi++
+        }
+        offset += p.text.length + 1
+      }
+      setSynthedSentences(set)
+    } catch {
+      /* 缓存读取失败：不显示下划线，不影响阅读 */
+      setSynthedSentences(new Set())
+    }
+    // 依赖用 id 而非对象：进度保存会频繁替换 book 对象，用对象会触发过度刷新
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [book?.id, chapter?.id, paragraphs, settings.ttsVoiceZh, settings.ttsVoiceNote])
+
+  useEffect(() => {
+    void refreshSynthMarks()
+  }, [refreshSynthMarks, marksVersion])
 
   useEffect(() => {
     chapterIdRef.current = chapterId
@@ -568,6 +633,8 @@ export function ReaderPage() {
           if (msg) setSynthMsg(msg)
         },
         onFileSaved: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => {
+          // 缓存已写入：刷新正文的已合成下划线标记
+          setMarksVersion((v) => v + 1)
           if (r.fileOk) return
           agentLog('ReaderPage:toggleSynth', 'audio file save failed', { err: r.error }, 'E')
           showToast(`⚠️ 音频文件保存失败：${r.error ?? '未知原因'}（已存入应用内缓存）`, 10000)
@@ -695,6 +762,8 @@ export function ReaderPage() {
           setEngineStatus(`${p.message || p.stage} ${pct}%`)
         },
         onFileSaved: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => {
+          // 缓存已写入：刷新正文的已合成下划线标记
+          setMarksVersion((v) => v + 1)
           if (r.fileOk) return
           void (async () => {
             // Android 11+ 未授「所有文件访问权限」时写不进共享 Documents，优先提示授权而非查存储
@@ -1082,7 +1151,7 @@ export function ReaderPage() {
                   return (
                     <span
                       key={si}
-                      className={`sent-clickable${isActive ? ' active-sent' : ''}`}
+                      className={`sent-clickable${isActive ? ' active-sent' : ''}${synthedSentences.has(globalIdx) ? ' synthed' : ''}`}
                       onClick={(e) => {
                         e.stopPropagation()
                         setActiveSentence(globalIdx)

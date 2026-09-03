@@ -715,6 +715,14 @@ button {
   background: rgba(255, 255, 255, 0.06);
 }
 
+/* 已合成音频的句子：下划线标记（颜色随主题文字色，夜间模式也清晰） */
+.reader-content .sent-clickable.synthed {
+  text-decoration-line: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 42%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
 /* 注释段视觉提示：与正文略区分，不改变朗读内容 */
 .reader-content p.note-para {
   padding-left: 0.5em;

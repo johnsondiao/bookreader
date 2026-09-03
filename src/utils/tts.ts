@@ -344,6 +344,15 @@ const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 /** 合成节流：每合成完一段后等待的间隔（ms），控制 API 请求频率避免触发平台限流 */
 const SYNTH_GAP_MS = 1000
 
+/**
+ * 章节音频缓存键（唯一出处，合成/播放/下划线标记共用）。
+ * __v2：合成参数版本——修复 language_boost:'auto' 被误判成粤语的问题，
+ * 旧缓存音频语种错误，整键作废强制重合成。
+ */
+export function chapterCacheKey(bookId: string, chapterId: string, voiceKey: string, noteVoiceKey: string): string {
+  return `${bookId}__${chapterId}__${voiceKey}__${noteVoiceKey}__v2`
+}
+
 /** 章节预处理结果（playChapter / synthChapter 共用） */
 interface PreparedChapter {
   fullText: string
@@ -378,10 +387,7 @@ async function prepareChapter(
 
   const { fullText, paraRanges } = buildTextAndRanges(paras)
   const textHash = hashText(fullText)
-  // 缓存维度：正文音色 + 注释音色。
-  // __v2：合成参数版本——修复 language_boost:'auto' 被误判成粤语的问题，
-  // 旧缓存音频语种错误，整键作废强制重合成
-  const cacheKey = `${opts.bookId}__${opts.chapterId}__${textVoice.key}__${noteVoice.key}__v2`
+  const cacheKey = chapterCacheKey(opts.bookId, opts.chapterId, textVoice.key, noteVoice.key)
 
   let clip: ChapterAudio | null = null
   try {
