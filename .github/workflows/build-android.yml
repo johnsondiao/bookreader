@@ -57,20 +57,37 @@ jobs:
       - name: Prepare APK artifact
         run: |
           mkdir -p out
-          cp android/app/build/outputs/apk/release/app-release.apk out/朗阅-release.apk
+          cp android/app/build/outputs/apk/release/app-release.apk out/langyue-release.apk
           ls -lh out/
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: bookreader-release-apk
-          path: out/朗阅-release.apk
+          path: out/langyue-release.apk
           # 免费版 GitHub Actions 存储额度只有 ~500MB，retention 3 天避免堆积；
-          # 正式版本以 Release 页面的附件为准（打 tag 时会自动发 Release）。
+          # 日常下载走滚动 Release（公开仓库免登录），正式版以 tag Release 为准。
           retention-days: 3
+
+      - name: Publish rolling Release (main/master push)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=latest-build
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "最新构建（自动更新）" \
+              --notes "每次推送 main 自动更新附件；公开仓库可直接下载，无需登录。"
+          fi
+          gh release upload "$TAG" out/langyue-release.apk --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "commit: ${GITHUB_SHA}
+          run: #${{ github.run_number }}
+          时间: $(date -u '+%Y-%m-%d %H:%M UTC')
+          说明: $(git log -1 --pretty=%s)"
 
       - name: Publish to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: out/朗阅-release.apk
+          files: out/langyue-release.apk
