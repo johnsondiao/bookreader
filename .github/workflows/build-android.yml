@@ -86,6 +86,29 @@ jobs:
           时间: $(date -u '+%Y-%m-%d %H:%M UTC')
           说明: $(git log -1 --pretty=%s)"
 
+      - name: Publish APK to apk-dist branch (git 通道下载，不依赖 github.com HTTPS 直连)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          rm -rf apk-branch && mkdir apk-branch
+          cp out/langyue-release.apk apk-branch/
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "run=${{ github.run_number }}"
+            echo "built_at=$(date -u '+%Y-%m-%d %H:%M UTC')"
+            echo "message=$(git log -1 --pretty=%s)"
+          } > apk-branch/BUILD_INFO.txt
+          cd apk-branch
+          git init -q -b apk-dist
+          git config user.name "langyue-ci"
+          git config user.email "ci@langyue.local"
+          git add -A
+          git commit -q -m "apk build ${GITHUB_SHA}"
+          # 孤分支强推：不累积历史，仓库体积恒定
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk-dist:apk-dist
+
       - name: Publish to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2

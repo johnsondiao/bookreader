@@ -43,3 +43,6 @@ key.env
 
 # TRAE local workspace metadata
 .evolver/
+
+# 本地下载的 APK 产物目录
+apk/
