@@ -21,6 +21,26 @@ const AAR_PATH = join(ROOT, 'android/app/libs/sherpa-onnx-1.13.7.aar')
 const MANIFEST = join(ROOT, 'android/app/src/main/assets/tts-models/manifest.json')
 const ASSETS = join(ROOT, 'android/app/src/main/assets/tts-models')
 
+async function fetchWithFallback(url) {
+  // 清单里的地址默认走 hf-mirror（国内快）；CI 跑在海外节点，镜像不一定可达，
+  // 失败时回退 huggingface.co 官方源
+  const candidates = [url]
+  if (url.startsWith('https://hf-mirror.com')) {
+    candidates.push(url.replace('https://hf-mirror.com', 'https://huggingface.co'))
+  }
+  let lastErr = null
+  for (const u of candidates) {
+    try {
+      const res = await fetch(u, { redirect: 'follow' })
+      if (res.ok && res.body) return res
+      lastErr = new Error(`HTTP ${res.status}`)
+    } catch (e) {
+      lastErr = e
+    }
+  }
+  throw lastErr ?? new Error(`下载失败：${url}`)
+}
+
 async function download(url, dest, expectSize) {
   if (existsSync(dest) && expectSize > 0 && statSync(dest).size === expectSize) {
     console.log(`跳过（已存在）: ${dest}`)
@@ -28,7 +48,7 @@ async function download(url, dest, expectSize) {
   }
   mkdirSync(dirname(dest), { recursive: true })
   console.log(`下载 ${url}`)
-  const res = await fetch(url, { redirect: 'follow' })
+  const res = await fetchWithFallback(url)
   if (!res.ok || !res.body) throw new Error(`下载失败 ${url}: ${res.status}`)
   const tmp = dest + '.part'
   const out = createWriteStream(tmp)
