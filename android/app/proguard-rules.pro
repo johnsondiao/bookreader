@@ -19,3 +19,9 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# sherpa-onnx：native(JNI) 会反向读写这些 Kotlin 数据类的字段，
+# 混淆/裁剪后字段名对不上，release 包一加载模型就崩。必须全量保留。
+-keep class com.k2fsa.sherpa.onnx.** { *; }
+-keepclassmembers class com.k2fsa.sherpa.onnx.** { *; }
+-dontwarn com.k2fsa.sherpa.onnx.**

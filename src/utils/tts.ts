@@ -14,6 +14,7 @@ import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { addSynthChars, checkBudget } from './costTracker'
 import { countBillableChars } from './charStats'
+import { synthLocalSegment, DEFAULT_LOCAL_MODEL } from './localTts'
 import { getClip, hashText, putClip, restoreClipFromFile, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -76,6 +77,12 @@ export interface PlayChapterOpts {
   onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void
   /** 每日花费预算上限（元），0 或不传表示不限制 */
   budgetYuan?: number
+  /** 合成引擎：local=本地 sherpa-onnx（免费离线），online=MiniMax（扣费） */
+  engine?: 'local' | 'online'
+  /** local 引擎用哪个模型（见 localTts 清单） */
+  localModelId?: string
+  /** local 引擎发音人 id（多说话人模型用） */
+  localSpeakerId?: number
 }
 
 export interface SynthChapterOpts {
@@ -90,6 +97,9 @@ export interface SynthChapterOpts {
   voiceKey?: string
   noteVoiceKey?: string
   budgetYuan?: number
+  engine?: 'local' | 'online'
+  localModelId?: string
+  localSpeakerId?: number
   onSynthProgress?: (p: TtsProgress) => void
   onStatus?: (status: TtsStatus, message?: string) => void
   onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void
@@ -387,6 +397,9 @@ async function prepareChapter(
     paragraphs: Paragraph[] | string[]
     startSentenceIndex?: number
     startParagraphIndex?: number
+    engine?: 'local' | 'online'
+    localModelId?: string
+    localSpeakerId?: number
   },
   textVoice: VoiceDef,
   noteVoice: VoiceDef,
@@ -400,7 +413,12 @@ async function prepareChapter(
 
   const { fullText, paraRanges } = buildTextAndRanges(paras)
   const textHash = hashText(fullText)
-  const cacheKey = chapterCacheKey(opts.bookId, opts.chapterId, textVoice.key, noteVoice.key)
+  // 缓存键必须区分引擎/模型/发音人：本地合成的音频不能喂给在线引擎，反之亦然
+  const engineTag =
+    opts.engine === 'local'
+      ? `local:${opts.localModelId ?? ''}:${opts.localSpeakerId ?? 0}`
+      : 'online'
+  const cacheKey = `${chapterCacheKey(opts.bookId, opts.chapterId, textVoice.key, noteVoice.key)}__${engineTag}`
 
   let clip: ChapterAudio | null = null
   try {
@@ -416,7 +434,8 @@ async function prepareChapter(
 
   // IDB 缓存被 LRU 淘汰（上限 200MB，大书必然发生）时，试着从外部整章 MP3 切回分段。
   // 不做这一步，淘汰过的章节重听就得重新合成重新扣费——钱花了，音频却还在磁盘上躺着。
-  if (segments.some((s) => !s.blob)) {
+  // 本地引擎不花钱，重合成只是费时间，不走这条回灌路径。
+  if (opts.engine !== 'local' && segments.some((s) => !s.blob)) {
     const fromFile = await restoreClipFromFile(cacheKey, textHash)
     restoreBlobs(segments, fromFile, textHash)
   }
@@ -610,6 +629,9 @@ export function createTtsController(): TtsController {
     startSegIdx: number,
     budgetYuan?: number,
     onSegmentDone?: () => void,
+    engine?: 'local' | 'online',
+    localModelId?: string,
+    localSpeakerId?: number,
   ): Promise<void> => {
     // 合成顺序：从播放起点开始，确保首句最快就绪
     const order: number[] = []
@@ -632,44 +654,52 @@ export function createTtsController(): TtsController {
           message: `合成${voiceLabel.startsWith('note:') ? '注释' : '正文'}段 ${done + 1}/${needCount}（${text.length} 字）`,
         })
         agentLog('tts.ts:synth', 'segment start', { seg: idx + 1, total: segments.length, chars: text.length, voice: voiceLabel }, 'C')
-        // 预算检查：超出上限则停止后续合成
-        const budgetCheck = await checkBudget(budgetYuan)
-        if (budgetCheck?.exceeded) {
-          const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
-          // 拒绝所有未完成的段
-          for (const seg of segments) {
-            if (!seg.blob) seg._rejectReady?.(err)
+        let blob: Blob
+        if (engine === 'local') {
+          // 本地推理：不联网不扣费，无需预算检查与请求节流
+          blob = await synthLocalSegment(text, localModelId || DEFAULT_LOCAL_MODEL, localSpeakerId ?? 0)
+          // 只记阅读量（字数），计费字符记 0：花费页金额只反映在线引擎
+          await addSynthChars(text.length, 0, bookTitle)
+        } else {
+          // 预算检查：超出上限则停止后续合成
+          const budgetCheck = await checkBudget(budgetYuan)
+          if (budgetCheck?.exceeded) {
+            const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
+            // 拒绝所有未完成的段
+            for (const seg of segments) {
+              if (!seg.blob) seg._rejectReady?.(err)
+            }
+            throw err
           }
-          throw err
+          blob = await synthesizeChunk(
+            text,
+            seg.voiceId,
+            (p: SynthProgress) => {
+              const overall = (done + p.progress) / Math.max(1, needCount)
+              onSynthProgress?.({
+                stage: p.stage,
+                progress: Math.min(0.99, overall),
+                message: p.message,
+              })
+            },
+            () => assertAlive(epoch),
+            (abortFn) => { synthAbortFn = abortFn },
+            seg.languageBoost,
+          )
+          synthAbortFn = null
+          // 记账双口径：text.length 是给人看的字数，countBillableChars 才是 MiniMax 扣费的量
+          // （官方规则：1 个汉字 = 2 个计费字符）。只记 text.length 会让花费/预算少一半。
+          await addSynthChars(text.length, countBillableChars(text), bookTitle)
         }
-        const blob = await synthesizeChunk(
-          text,
-          seg.voiceId,
-          (p: SynthProgress) => {
-            const overall = (done + p.progress) / Math.max(1, needCount)
-            onSynthProgress?.({
-              stage: p.stage,
-              progress: Math.min(0.99, overall),
-              message: p.message,
-            })
-          },
-          () => assertAlive(epoch),
-          (abortFn) => { synthAbortFn = abortFn },
-          seg.languageBoost,
-        )
-        synthAbortFn = null
         seg.blob = blob
-        // 记账双口径：text.length 是给人看的字数，countBillableChars 才是 MiniMax 扣费的量
-        // （官方规则：1 个汉字 = 2 个计费字符）。只记 text.length 会让花费/预算少一半。
-        await addSynthChars(text.length, countBillableChars(text), bookTitle)
-        // 钱已花：立即排队增量落盘，中断也不会丢这一段
+        // 钱已花（或本地已合成）：立即排队增量落盘，中断也不会丢这一段
         onSegmentDone?.()
         seg._resolveReady?.()
         done++
         // 节流：合成完一段等 1 秒再发下一个请求，控制请求频率，
         // 避免生产者冲刺备货时每分钟上百次请求触发平台 Rate Limit（429）。
-        // 全部就绪则不等；等待可被 stop 中断
-        if (segments.some((s) => !s.blob)) {
+        // 本地引擎没有服务端限流，不需要等；全部就绪则不等；等待可被 stop 中断
+        if (engine !== 'local' && segments.some((s) => !s.blob)) {
           await sleepInterruptible(SYNTH_GAP_MS, epoch)
           assertAlive(epoch)
         }
@@ -941,7 +971,7 @@ export function createTtsController(): TtsController {
         activeFlush = persister.flush
         producerPromise = synthesizeSegments(
           fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', startSegIdx, opts.budgetYuan,
-          persister.onSegmentDone,
+          persister.onSegmentDone, opts.engine, opts.localModelId, opts.localSpeakerId,
         )
       } else {
         agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, segments: segments.length }, 'A')
@@ -1034,7 +1064,7 @@ export function createTtsController(): TtsController {
           activeFlush = persister.flush
           await synthesizeSegments(
             prep.fullText, prep.segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', prep.startSegIdx, opts.budgetYuan,
-            persister.onSegmentDone,
+            persister.onSegmentDone, opts.engine, opts.localModelId, opts.localSpeakerId,
           )
           opts.onStatus?.('idle', '合成完成')
         } finally {

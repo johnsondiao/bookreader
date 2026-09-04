@@ -36,6 +36,11 @@ jobs:
           VITE_TTS_KEY_IV: ${{ secrets.VITE_TTS_KEY_IV }}
           VITE_TTS_KEY_SALT: ${{ secrets.VITE_TTS_KEY_SALT }}
 
+      # 本地 TTS 依赖：sherpa-onnx AAR + 随包模型（melo）。
+      # 两者都不进 git（共约 107MB），构建前按 manifest.json 拉取，脚本幂等。
+      - name: Fetch local TTS deps (AAR + bundled model)
+        run: node scripts/fetch-local-tts.mjs
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:

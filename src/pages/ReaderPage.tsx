@@ -25,6 +25,7 @@ import {
 } from '../utils/agentLog'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
 import { costOfBillable, formatCharCount, formatCostEstimate } from '../utils/charStats'
+import { isLocalTtsAvailable } from '../utils/localTts'
 import { isAllFilesAccessGranted } from '../utils/audioFileStore'
 
 type Panel = null | 'toc' | 'settings'
@@ -611,8 +612,11 @@ export function ReaderPage() {
       return
     }
     if (!book || !chapter) return
-    // 未解锁先弹密码框
-    if (!(await hasTtsKey())) {
+    // 网页预览没有原生插件，本地引擎不可用时自动回退在线
+    const engine: 'local' | 'online' =
+      isLocalTtsAvailable() && settings.ttsEngine !== 'online' ? 'local' : 'online'
+    // 本地引擎不需要 MiniMax key，不弹解锁框
+    if (engine === 'online' && !(await hasTtsKey())) {
       if (!mountedRef.current) return
       const ok = await requestUnlock()
       if (!mountedRef.current || !ok) return
@@ -622,7 +626,7 @@ export function ReaderPage() {
     const zhKey = migrateVoiceKey(settings.ttsVoiceZh) || DEFAULT_VOICE_ZH
     const noteKey = migrateVoiceKey(settings.ttsVoiceNote) || DEFAULT_VOICE_NOTE
     const startSent = paraSentStart[paraIndex] ?? 0
-    agentLog('ReaderPage:toggleSynth', 'start', { chapterId: chapter.id, startSent, zhKey, noteKey }, 'A')
+    agentLog('ReaderPage:toggleSynth', 'start', { chapterId: chapter.id, startSent, zhKey, noteKey, engine: settings.ttsEngine }, 'A')
     try {
       await ttsRef.current.synthChapter({
         bookId: book.id,
@@ -634,6 +638,9 @@ export function ReaderPage() {
         voiceKey: zhKey,
         noteVoiceKey: noteKey,
         budgetYuan: settings.dailyBudgetYuan,
+        engine,
+        localModelId: settings.localModelId,
+        localSpeakerId: settings.localSpeakerId,
         onSynthProgress: (p: { progress: number; message: string; stage: string }) => {
           updateTodayCost()
           setSynthMsg(`${p.message || '合成中'} ${Math.round((p.progress || 0) * 100)}%`)
@@ -712,8 +719,10 @@ export function ReaderPage() {
     async (startSent: number) => {
       if (!book || !chapter) return
 
-      // 首次朗读需解锁语音（输入密码解密 MiniMax key）；已解锁则跳过
-      if (!(await hasTtsKey())) {
+      // 首次朗读需解锁语音（输入密码解密 MiniMax key）；本地引擎不需要
+      const engine: 'local' | 'online' =
+        isLocalTtsAvailable() && settings.ttsEngine !== 'online' ? 'local' : 'online'
+      if (engine === 'online' && !(await hasTtsKey())) {
         if (!mountedRef.current) return
         const ok = await requestUnlock()
         if (!mountedRef.current) return
@@ -812,6 +821,9 @@ export function ReaderPage() {
         noteVoiceKey: noteKey,
         rate: settings.ttsRate,
         budgetYuan: settings.dailyBudgetYuan,
+        engine,
+        localModelId: settings.localModelId,
+        localSpeakerId: settings.localSpeakerId,
         ...callbacks,
       }
 

@@ -8,6 +8,7 @@ import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, split
 import { withCharStats, CHAR_STATS_VERSION } from '../utils/charStats'
 import { createIdbStorage } from '../utils/idbStorage'
 import { DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
+import { DEFAULT_LOCAL_MODEL } from '../utils/localTts'
 import { agentLog } from '../utils/agentLog'
 
 interface AppState {
@@ -54,6 +55,10 @@ const defaultSettings: ReaderSettings = {
   ttsSleepMinutes: 0,
   ttsVoiceZh: DEFAULT_VOICE_ZH,
   ttsVoiceNote: DEFAULT_VOICE_NOTE,
+  // 默认本地免费引擎；网页预览没有原生插件时 ReaderPage 会报错提示切回在线
+  ttsEngine: 'local',
+  localModelId: DEFAULT_LOCAL_MODEL,
+  localSpeakerId: 0,
 }
 
 function normalizeBook(book: Book): Book {

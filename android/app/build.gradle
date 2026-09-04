@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
@@ -16,12 +17,17 @@ android {
         versionCode 2
         versionName "1.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            // sherpa-onnx AAR 带全部 ABI（约 49MB）；只打 arm64 控制包体积
+            abiFilters 'arm64-v8a'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
             // Web 资源（mjs 模块不能被 aapt 压缩）
-            noCompress 'data', 'mjs'
+            // 模型/词表不压缩：onnx 解压读取太慢，不压缩才能从 APK 直接 mmap
+            noCompress 'data', 'mjs', 'onnx', 'bin', 'fst', 'far', 'utf8'
         }
     }
     signingConfigs {
@@ -43,6 +49,15 @@ android {
             }
         }
     }
+    // 注意：capacitor.build.gradle（cap sync 生成，后应用）会把 javac 钉在 21，
+    // 这里 Kotlin 必须同取 21，否则报 Inconsistent JVM-target
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    kotlinOptions {
+        jvmTarget = '21'
+    }
 }
 
 repositories {
@@ -53,6 +68,8 @@ repositories {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
+    // 本地 TTS 推理引擎（CI/本地脚本下载进 libs/，不进 git）
+    implementation(name: 'sherpa-onnx-1.13.7', ext: 'aar')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"

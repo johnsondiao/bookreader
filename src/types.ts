@@ -89,10 +89,16 @@ export interface ReaderSettings {
   pagingMode?: 'scroll' | 'flip'
   /** 睡眠定时（分钟）：记住上次设置的时长，0=关闭 */
   ttsSleepMinutes?: number
-  /** 中文正文音色 key：lang||name */
+  /** 中文正文音色 key：lang||name（在线引擎用） */
   ttsVoiceZh: string
-  /** 注释音色 */
+  /** 注释音色（在线引擎用） */
   ttsVoiceNote: string
+  /** 合成引擎：local=本地 sherpa-onnx 免费离线（默认），online=MiniMax 按字计费 */
+  ttsEngine?: 'local' | 'online'
+  /** 本地模型 id（见 android assets tts-models/manifest.json） */
+  localModelId?: string
+  /** 本地模型发音人 id（多说话人模型用） */
+  localSpeakerId?: number
   /** 调试面板默认是否展开（默认 false，不展开） */
   ttsDebugPanel?: boolean
   /** 每日花费预算上限（元），0 表示不限制 */

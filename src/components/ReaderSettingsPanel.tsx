@@ -1,5 +1,6 @@
 import { READER_THEMES, type ReaderSettings } from '../types'
 import { voicesForLang, VOICE_CATALOG } from '../utils/tts'
+import { LocalTtsSettings } from './LocalTtsSettings'
 
 interface SettingsPanelProps {
   settings: ReaderSettings
@@ -94,6 +95,40 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
             </button>
           </div>
         </div>
+        <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+          <span>朗读引擎</span>
+          <div className="theme-pills" style={{ justifyContent: 'flex-start' }}>
+            {(
+              [
+                ['local', '本地免费'],
+                ['online', '在线 MiniMax'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={`day${(settings.ttsEngine ?? 'local') === k ? ' on' : ''}`}
+                style={{ width: 'auto', minWidth: 92, padding: '0 10px', height: 34 }}
+                onClick={() => onUpdateSettings({ ttsEngine: k })}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
+            本地：sherpa-onnx 神经网络在手机端推理，不联网、不扣费；在线：音质更细腻，按 ¥2/万计费字符扣费。
+          </span>
+        </div>
+
+        {(settings.ttsEngine ?? 'local') === 'local' && (
+          <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+            <span>本地模型</span>
+            <LocalTtsSettings settings={settings} onUpdateSettings={onUpdateSettings} />
+          </div>
+        )}
+
+        {(settings.ttsEngine ?? 'local') === 'online' && (
+          <>
         <div className="row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
           <span>在线语音 · MiniMax</span>
           <div className="voice-install-box">
@@ -151,6 +186,8 @@ export function ReaderSettingsPanel({ settings, engineStatus, onUpdateSettings, 
             </button>
           </div>
         </div>
+          </>
+        )}
 
         <div className="row">
           <span>调试面板</span>

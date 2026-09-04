@@ -1,0 +1,1981 @@
+{
+  "generatedAt": "2026-09-04T11:10:29.168Z",
+  "models": [
+    {
+      "id": "vits-melo-tts-zh_en",
+      "bundled": true,
+      "files": [
+        {
+          "rel": "lexicon.txt",
+          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/lexicon.txt",
+          "size": 6837671
+        },
+        {
+          "rel": "model.int8.onnx",
+          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/model.int8.onnx",
+          "size": 53517430
+        },
+        {
+          "rel": "tokens.txt",
+          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/tokens.txt",
+          "size": 655
+        }
+      ],
+      "totalBytes": 60355756
+    },
+    {
+      "id": "matcha-icefall-zh-baker",
+      "bundled": false,
+      "files": [
+        {
+          "rel": "date.fst",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/date.fst",
+          "size": 59154
+        },
+        {
+          "rel": "dict/hmm_model.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/hmm_model.utf8",
+          "size": 519739
+        },
+        {
+          "rel": "dict/idf.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/idf.utf8",
+          "size": 5998717
+        },
+        {
+          "rel": "dict/jieba.dict.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/jieba.dict.utf8",
+          "size": 5071204
+        },
+        {
+          "rel": "dict/pos_dict/char_state_tab.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/pos_dict/char_state_tab.utf8",
+          "size": 327139
+        },
+        {
+          "rel": "dict/pos_dict/prob_emit.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/pos_dict/prob_emit.utf8",
+          "size": 1687686
+        },
+        {
+          "rel": "dict/pos_dict/prob_start.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/pos_dict/prob_start.utf8",
+          "size": 4347
+        },
+        {
+          "rel": "dict/pos_dict/prob_trans.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/pos_dict/prob_trans.utf8",
+          "size": 124159
+        },
+        {
+          "rel": "dict/stop_words.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/stop_words.utf8",
+          "size": 8974
+        },
+        {
+          "rel": "dict/user.dict.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/dict/user.dict.utf8",
+          "size": 829194
+        },
+        {
+          "rel": "lexicon.txt",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/lexicon.txt",
+          "size": 1363705
+        },
+        {
+          "rel": "model-steps-3.onnx",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/model-steps-3.onnx",
+          "size": 75624611
+        },
+        {
+          "rel": "number.fst",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/number.fst",
+          "size": 64482
+        },
+        {
+          "rel": "phone.fst",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/phone.fst",
+          "size": 88630
+        },
+        {
+          "rel": "tokens.txt",
+          "url": "https://hf-mirror.com/csukuangfj/matcha-icefall-zh-baker/resolve/main/tokens.txt",
+          "size": 19591
+        },
+        {
+          "rel": "vocos-22khz-univ.onnx",
+          "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder-models/vocos-22khz-univ.onnx",
+          "size": 53884024
+        }
+      ],
+      "totalBytes": 145675356
+    },
+    {
+      "id": "kokoro-int8-multi-lang-v1_1",
+      "bundled": false,
+      "files": [
+        {
+          "rel": "date-zh.fst",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/date-zh.fst",
+          "size": 59154
+        },
+        {
+          "rel": "dict/hmm_model.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/hmm_model.utf8",
+          "size": 519739
+        },
+        {
+          "rel": "dict/idf.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/idf.utf8",
+          "size": 5998717
+        },
+        {
+          "rel": "dict/jieba.dict.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/jieba.dict.utf8",
+          "size": 5071204
+        },
+        {
+          "rel": "dict/pos_dict/char_state_tab.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/pos_dict/char_state_tab.utf8",
+          "size": 327139
+        },
+        {
+          "rel": "dict/pos_dict/prob_emit.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/pos_dict/prob_emit.utf8",
+          "size": 1687686
+        },
+        {
+          "rel": "dict/pos_dict/prob_start.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/pos_dict/prob_start.utf8",
+          "size": 4347
+        },
+        {
+          "rel": "dict/pos_dict/prob_trans.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/pos_dict/prob_trans.utf8",
+          "size": 124159
+        },
+        {
+          "rel": "dict/stop_words.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/stop_words.utf8",
+          "size": 8974
+        },
+        {
+          "rel": "dict/user.dict.utf8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/dict/user.dict.utf8",
+          "size": 829194
+        },
+        {
+          "rel": "espeak-ng-data/af_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/af_dict",
+          "size": 121473
+        },
+        {
+          "rel": "espeak-ng-data/am_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/am_dict",
+          "size": 63878
+        },
+        {
+          "rel": "espeak-ng-data/an_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/an_dict",
+          "size": 6691
+        },
+        {
+          "rel": "espeak-ng-data/ar_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ar_dict",
+          "size": 478165
+        },
+        {
+          "rel": "espeak-ng-data/as_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/as_dict",
+          "size": 5005
+        },
+        {
+          "rel": "espeak-ng-data/az_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/az_dict",
+          "size": 43773
+        },
+        {
+          "rel": "espeak-ng-data/ba_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ba_dict",
+          "size": 2098
+        },
+        {
+          "rel": "espeak-ng-data/be_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/be_dict",
+          "size": 2652
+        },
+        {
+          "rel": "espeak-ng-data/bg_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/bg_dict",
+          "size": 87051
+        },
+        {
+          "rel": "espeak-ng-data/bn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/bn_dict",
+          "size": 89979
+        },
+        {
+          "rel": "espeak-ng-data/bpy_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/bpy_dict",
+          "size": 5226
+        },
+        {
+          "rel": "espeak-ng-data/bs_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/bs_dict",
+          "size": 47068
+        },
+        {
+          "rel": "espeak-ng-data/ca_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ca_dict",
+          "size": 45566
+        },
+        {
+          "rel": "espeak-ng-data/chr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/chr_dict",
+          "size": 2859
+        },
+        {
+          "rel": "espeak-ng-data/cmn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/cmn_dict",
+          "size": 1566335
+        },
+        {
+          "rel": "espeak-ng-data/cs_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/cs_dict",
+          "size": 49645
+        },
+        {
+          "rel": "espeak-ng-data/cv_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/cv_dict",
+          "size": 1344
+        },
+        {
+          "rel": "espeak-ng-data/cy_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/cy_dict",
+          "size": 43130
+        },
+        {
+          "rel": "espeak-ng-data/da_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/da_dict",
+          "size": 245287
+        },
+        {
+          "rel": "espeak-ng-data/de_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/de_dict",
+          "size": 68276
+        },
+        {
+          "rel": "espeak-ng-data/el_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/el_dict",
+          "size": 72841
+        },
+        {
+          "rel": "espeak-ng-data/en_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/en_dict",
+          "size": 166944
+        },
+        {
+          "rel": "espeak-ng-data/eo_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/eo_dict",
+          "size": 4666
+        },
+        {
+          "rel": "espeak-ng-data/es_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/es_dict",
+          "size": 49252
+        },
+        {
+          "rel": "espeak-ng-data/et_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/et_dict",
+          "size": 44263
+        },
+        {
+          "rel": "espeak-ng-data/eu_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/eu_dict",
+          "size": 48841
+        },
+        {
+          "rel": "espeak-ng-data/fa_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/fa_dict",
+          "size": 292423
+        },
+        {
+          "rel": "espeak-ng-data/fi_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/fi_dict",
+          "size": 43928
+        },
+        {
+          "rel": "espeak-ng-data/fr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/fr_dict",
+          "size": 63727
+        },
+        {
+          "rel": "espeak-ng-data/ga_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ga_dict",
+          "size": 52673
+        },
+        {
+          "rel": "espeak-ng-data/gd_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/gd_dict",
+          "size": 49121
+        },
+        {
+          "rel": "espeak-ng-data/gn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/gn_dict",
+          "size": 3248
+        },
+        {
+          "rel": "espeak-ng-data/grc_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/grc_dict",
+          "size": 3433
+        },
+        {
+          "rel": "espeak-ng-data/gu_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/gu_dict",
+          "size": 82480
+        },
+        {
+          "rel": "espeak-ng-data/hak_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/hak_dict",
+          "size": 3335
+        },
+        {
+          "rel": "espeak-ng-data/haw_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/haw_dict",
+          "size": 2443
+        },
+        {
+          "rel": "espeak-ng-data/he_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/he_dict",
+          "size": 6963
+        },
+        {
+          "rel": "espeak-ng-data/hi_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/hi_dict",
+          "size": 92143
+        },
+        {
+          "rel": "espeak-ng-data/hr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/hr_dict",
+          "size": 49388
+        },
+        {
+          "rel": "espeak-ng-data/ht_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ht_dict",
+          "size": 1803
+        },
+        {
+          "rel": "espeak-ng-data/hu_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/hu_dict",
+          "size": 153785
+        },
+        {
+          "rel": "espeak-ng-data/hy_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/hy_dict",
+          "size": 62263
+        },
+        {
+          "rel": "espeak-ng-data/ia_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ia_dict",
+          "size": 331275
+        },
+        {
+          "rel": "espeak-ng-data/id_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/id_dict",
+          "size": 43458
+        },
+        {
+          "rel": "espeak-ng-data/intonations",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/intonations",
+          "size": 2040
+        },
+        {
+          "rel": "espeak-ng-data/io_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/io_dict",
+          "size": 2165
+        },
+        {
+          "rel": "espeak-ng-data/is_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/is_dict",
+          "size": 44354
+        },
+        {
+          "rel": "espeak-ng-data/it_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/it_dict",
+          "size": 152889
+        },
+        {
+          "rel": "espeak-ng-data/ja_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ja_dict",
+          "size": 47652
+        },
+        {
+          "rel": "espeak-ng-data/jbo_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/jbo_dict",
+          "size": 2243
+        },
+        {
+          "rel": "espeak-ng-data/ka_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ka_dict",
+          "size": 87775
+        },
+        {
+          "rel": "espeak-ng-data/kk_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/kk_dict",
+          "size": 1859
+        },
+        {
+          "rel": "espeak-ng-data/kl_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/kl_dict",
+          "size": 2838
+        },
+        {
+          "rel": "espeak-ng-data/kn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/kn_dict",
+          "size": 87828
+        },
+        {
+          "rel": "espeak-ng-data/ko_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ko_dict",
+          "size": 47523
+        },
+        {
+          "rel": "espeak-ng-data/kok_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/kok_dict",
+          "size": 6394
+        },
+        {
+          "rel": "espeak-ng-data/ku_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ku_dict",
+          "size": 2265
+        },
+        {
+          "rel": "espeak-ng-data/ky_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ky_dict",
+          "size": 64977
+        },
+        {
+          "rel": "espeak-ng-data/la_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/la_dict",
+          "size": 3806
+        },
+        {
+          "rel": "espeak-ng-data/lang/aav/vi",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/aav/vi",
+          "size": 111
+        },
+        {
+          "rel": "espeak-ng-data/lang/aav/vi-VN-x-central",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/aav/vi-VN-x-central",
+          "size": 143
+        },
+        {
+          "rel": "espeak-ng-data/lang/aav/vi-VN-x-south",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/aav/vi-VN-x-south",
+          "size": 142
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/eo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/eo",
+          "size": 41
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/ia",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/ia",
+          "size": 29
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/io",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/io",
+          "size": 50
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/jbo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/jbo",
+          "size": 69
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/lfn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/lfn",
+          "size": 135
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/piqd",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/piqd",
+          "size": 56
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/py",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/py",
+          "size": 140
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/qdb",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/qdb",
+          "size": 57
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/qya",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/qya",
+          "size": 173
+        },
+        {
+          "rel": "espeak-ng-data/lang/art/sjn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/art/sjn",
+          "size": 175
+        },
+        {
+          "rel": "espeak-ng-data/lang/azc/nci",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/azc/nci",
+          "size": 114
+        },
+        {
+          "rel": "espeak-ng-data/lang/bat/lt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/bat/lt",
+          "size": 28
+        },
+        {
+          "rel": "espeak-ng-data/lang/bat/ltg",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/bat/ltg",
+          "size": 312
+        },
+        {
+          "rel": "espeak-ng-data/lang/bat/lv",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/bat/lv",
+          "size": 229
+        },
+        {
+          "rel": "espeak-ng-data/lang/bnt/sw",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/bnt/sw",
+          "size": 41
+        },
+        {
+          "rel": "espeak-ng-data/lang/bnt/tn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/bnt/tn",
+          "size": 42
+        },
+        {
+          "rel": "espeak-ng-data/lang/ccs/ka",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ccs/ka",
+          "size": 124
+        },
+        {
+          "rel": "espeak-ng-data/lang/cel/cy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/cel/cy",
+          "size": 37
+        },
+        {
+          "rel": "espeak-ng-data/lang/cel/ga",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/cel/ga",
+          "size": 66
+        },
+        {
+          "rel": "espeak-ng-data/lang/cel/gd",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/cel/gd",
+          "size": 51
+        },
+        {
+          "rel": "espeak-ng-data/lang/cus/om",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/cus/om",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/lang/dra/kn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/dra/kn",
+          "size": 55
+        },
+        {
+          "rel": "espeak-ng-data/lang/dra/ml",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/dra/ml",
+          "size": 57
+        },
+        {
+          "rel": "espeak-ng-data/lang/dra/ta",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/dra/ta",
+          "size": 51
+        },
+        {
+          "rel": "espeak-ng-data/lang/dra/te",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/dra/te",
+          "size": 70
+        },
+        {
+          "rel": "espeak-ng-data/lang/esx/kl",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/esx/kl",
+          "size": 30
+        },
+        {
+          "rel": "espeak-ng-data/lang/eu",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/eu",
+          "size": 54
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmq/da",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmq/da",
+          "size": 43
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmq/is",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmq/is",
+          "size": 27
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmq/nb",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmq/nb",
+          "size": 87
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmq/sv",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmq/sv",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/af",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/af",
+          "size": 123
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/de",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/de",
+          "size": 42
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en",
+          "size": 140
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-029",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-029",
+          "size": 335
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-GB-scotland",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-GB-scotland",
+          "size": 295
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-GB-x-gbclan",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-GB-x-gbclan",
+          "size": 238
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-GB-x-gbcwmd",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-GB-x-gbcwmd",
+          "size": 188
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-GB-x-rp",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-GB-x-rp",
+          "size": 249
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-US",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-US",
+          "size": 257
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/en-US-nyc",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/en-US-nyc",
+          "size": 271
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/lb",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/lb",
+          "size": 31
+        },
+        {
+          "rel": "espeak-ng-data/lang/gmw/nl",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/gmw/nl",
+          "size": 23
+        },
+        {
+          "rel": "espeak-ng-data/lang/grk/el",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/grk/el",
+          "size": 23
+        },
+        {
+          "rel": "espeak-ng-data/lang/grk/grc",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/grk/grc",
+          "size": 99
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/as",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/as",
+          "size": 42
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/bn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/bn",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/bpy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/bpy",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/gu",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/gu",
+          "size": 42
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/hi",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/hi",
+          "size": 23
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/kok",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/kok",
+          "size": 26
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/mr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/mr",
+          "size": 41
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/ne",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/ne",
+          "size": 37
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/or",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/or",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/pa",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/pa",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/sd",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/sd",
+          "size": 66
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/si",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/si",
+          "size": 55
+        },
+        {
+          "rel": "espeak-ng-data/lang/inc/ur",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/inc/ur",
+          "size": 94
+        },
+        {
+          "rel": "espeak-ng-data/lang/ine/hy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ine/hy",
+          "size": 61
+        },
+        {
+          "rel": "espeak-ng-data/lang/ine/hyw",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ine/hyw",
+          "size": 365
+        },
+        {
+          "rel": "espeak-ng-data/lang/ine/sq",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ine/sq",
+          "size": 103
+        },
+        {
+          "rel": "espeak-ng-data/lang/ira/fa",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ira/fa",
+          "size": 90
+        },
+        {
+          "rel": "espeak-ng-data/lang/ira/fa-Latn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ira/fa-Latn",
+          "size": 269
+        },
+        {
+          "rel": "espeak-ng-data/lang/ira/ku",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ira/ku",
+          "size": 40
+        },
+        {
+          "rel": "espeak-ng-data/lang/iro/chr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/iro/chr",
+          "size": 569
+        },
+        {
+          "rel": "espeak-ng-data/lang/itc/la",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/itc/la",
+          "size": 297
+        },
+        {
+          "rel": "espeak-ng-data/lang/jpx/ja",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/jpx/ja",
+          "size": 52
+        },
+        {
+          "rel": "espeak-ng-data/lang/ko",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/ko",
+          "size": 51
+        },
+        {
+          "rel": "espeak-ng-data/lang/map/haw",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/map/haw",
+          "size": 42
+        },
+        {
+          "rel": "espeak-ng-data/lang/miz/mto",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/miz/mto",
+          "size": 183
+        },
+        {
+          "rel": "espeak-ng-data/lang/myn/quc",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/myn/quc",
+          "size": 210
+        },
+        {
+          "rel": "espeak-ng-data/lang/poz/id",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/poz/id",
+          "size": 134
+        },
+        {
+          "rel": "espeak-ng-data/lang/poz/mi",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/poz/mi",
+          "size": 367
+        },
+        {
+          "rel": "espeak-ng-data/lang/poz/ms",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/poz/ms",
+          "size": 430
+        },
+        {
+          "rel": "espeak-ng-data/lang/qu",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/qu",
+          "size": 88
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/an",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/an",
+          "size": 27
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/ca",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/ca",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/es",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/es",
+          "size": 63
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/es-419",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/es-419",
+          "size": 167
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/fr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/fr",
+          "size": 79
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/fr-BE",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/fr-BE",
+          "size": 84
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/fr-CH",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/fr-CH",
+          "size": 86
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/ht",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/ht",
+          "size": 140
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/it",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/it",
+          "size": 109
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/pap",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/pap",
+          "size": 62
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/pt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/pt",
+          "size": 95
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/pt-BR",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/pt-BR",
+          "size": 109
+        },
+        {
+          "rel": "espeak-ng-data/lang/roa/ro",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/roa/ro",
+          "size": 26
+        },
+        {
+          "rel": "espeak-ng-data/lang/sai/gn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sai/gn",
+          "size": 47
+        },
+        {
+          "rel": "espeak-ng-data/lang/sem/am",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sem/am",
+          "size": 41
+        },
+        {
+          "rel": "espeak-ng-data/lang/sem/ar",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sem/ar",
+          "size": 50
+        },
+        {
+          "rel": "espeak-ng-data/lang/sem/he",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sem/he",
+          "size": 40
+        },
+        {
+          "rel": "espeak-ng-data/lang/sem/mt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sem/mt",
+          "size": 41
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/cmn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/cmn",
+          "size": 686
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/cmn-Latn-pinyin",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/cmn-Latn-pinyin",
+          "size": 161
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/hak",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/hak",
+          "size": 128
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/my",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/my",
+          "size": 56
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/yue",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/yue",
+          "size": 194
+        },
+        {
+          "rel": "espeak-ng-data/lang/sit/yue-Latn-jyutping",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/sit/yue-Latn-jyutping",
+          "size": 213
+        },
+        {
+          "rel": "espeak-ng-data/lang/tai/shn",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/tai/shn",
+          "size": 92
+        },
+        {
+          "rel": "espeak-ng-data/lang/tai/th",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/tai/th",
+          "size": 37
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/az",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/az",
+          "size": 45
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/ba",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/ba",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/cv",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/cv",
+          "size": 40
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/kk",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/kk",
+          "size": 40
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/ky",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/ky",
+          "size": 43
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/nog",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/nog",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/tk",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/tk",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/tr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/tr",
+          "size": 25
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/tt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/tt",
+          "size": 23
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/ug",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/ug",
+          "size": 24
+        },
+        {
+          "rel": "espeak-ng-data/lang/trk/uz",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/trk/uz",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/lang/urj/et",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/urj/et",
+          "size": 237
+        },
+        {
+          "rel": "espeak-ng-data/lang/urj/fi",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/urj/fi",
+          "size": 237
+        },
+        {
+          "rel": "espeak-ng-data/lang/urj/hu",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/urj/hu",
+          "size": 73
+        },
+        {
+          "rel": "espeak-ng-data/lang/urj/smj",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/urj/smj",
+          "size": 45
+        },
+        {
+          "rel": "espeak-ng-data/lang/zle/be",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zle/be",
+          "size": 52
+        },
+        {
+          "rel": "espeak-ng-data/lang/zle/ru",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zle/ru",
+          "size": 57
+        },
+        {
+          "rel": "espeak-ng-data/lang/zle/ru-cl",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zle/ru-cl",
+          "size": 91
+        },
+        {
+          "rel": "espeak-ng-data/lang/zle/ru-LV",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zle/ru-LV",
+          "size": 280
+        },
+        {
+          "rel": "espeak-ng-data/lang/zle/uk",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zle/uk",
+          "size": 97
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/bg",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/bg",
+          "size": 111
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/bs",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/bs",
+          "size": 230
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/hr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/hr",
+          "size": 262
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/mk",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/mk",
+          "size": 28
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/sl",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/sl",
+          "size": 43
+        },
+        {
+          "rel": "espeak-ng-data/lang/zls/sr",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zls/sr",
+          "size": 250
+        },
+        {
+          "rel": "espeak-ng-data/lang/zlw/cs",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zlw/cs",
+          "size": 23
+        },
+        {
+          "rel": "espeak-ng-data/lang/zlw/pl",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zlw/pl",
+          "size": 38
+        },
+        {
+          "rel": "espeak-ng-data/lang/zlw/sk",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lang/zlw/sk",
+          "size": 24
+        },
+        {
+          "rel": "espeak-ng-data/lb_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lb_dict",
+          "size": 687931
+        },
+        {
+          "rel": "espeak-ng-data/lfn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lfn_dict",
+          "size": 2793
+        },
+        {
+          "rel": "espeak-ng-data/lt_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lt_dict",
+          "size": 49890
+        },
+        {
+          "rel": "espeak-ng-data/lv_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/lv_dict",
+          "size": 66337
+        },
+        {
+          "rel": "espeak-ng-data/mi_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/mi_dict",
+          "size": 1346
+        },
+        {
+          "rel": "espeak-ng-data/mk_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/mk_dict",
+          "size": 63859
+        },
+        {
+          "rel": "espeak-ng-data/ml_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ml_dict",
+          "size": 92345
+        },
+        {
+          "rel": "espeak-ng-data/mr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/mr_dict",
+          "size": 87391
+        },
+        {
+          "rel": "espeak-ng-data/ms_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ms_dict",
+          "size": 53541
+        },
+        {
+          "rel": "espeak-ng-data/mt_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/mt_dict",
+          "size": 4384
+        },
+        {
+          "rel": "espeak-ng-data/mto_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/mto_dict",
+          "size": 3960
+        },
+        {
+          "rel": "espeak-ng-data/my_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/my_dict",
+          "size": 95948
+        },
+        {
+          "rel": "espeak-ng-data/nci_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/nci_dict",
+          "size": 1534
+        },
+        {
+          "rel": "espeak-ng-data/ne_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ne_dict",
+          "size": 95377
+        },
+        {
+          "rel": "espeak-ng-data/nl_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/nl_dict",
+          "size": 65979
+        },
+        {
+          "rel": "espeak-ng-data/no_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/no_dict",
+          "size": 4178
+        },
+        {
+          "rel": "espeak-ng-data/nog_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/nog_dict",
+          "size": 3294
+        },
+        {
+          "rel": "espeak-ng-data/om_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/om_dict",
+          "size": 2302
+        },
+        {
+          "rel": "espeak-ng-data/or_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/or_dict",
+          "size": 89246
+        },
+        {
+          "rel": "espeak-ng-data/pa_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/pa_dict",
+          "size": 79953
+        },
+        {
+          "rel": "espeak-ng-data/pap_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/pap_dict",
+          "size": 2128
+        },
+        {
+          "rel": "espeak-ng-data/phondata",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/phondata",
+          "size": 550424
+        },
+        {
+          "rel": "espeak-ng-data/phondata-manifest",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/phondata-manifest",
+          "size": 21821
+        },
+        {
+          "rel": "espeak-ng-data/phonindex",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/phonindex",
+          "size": 39074
+        },
+        {
+          "rel": "espeak-ng-data/phontab",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/phontab",
+          "size": 55796
+        },
+        {
+          "rel": "espeak-ng-data/piqd_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/piqd_dict",
+          "size": 1710
+        },
+        {
+          "rel": "espeak-ng-data/pl_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/pl_dict",
+          "size": 76730
+        },
+        {
+          "rel": "espeak-ng-data/pt_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/pt_dict",
+          "size": 67817
+        },
+        {
+          "rel": "espeak-ng-data/py_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/py_dict",
+          "size": 2409
+        },
+        {
+          "rel": "espeak-ng-data/qdb_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/qdb_dict",
+          "size": 3028
+        },
+        {
+          "rel": "espeak-ng-data/qu_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/qu_dict",
+          "size": 1919
+        },
+        {
+          "rel": "espeak-ng-data/quc_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/quc_dict",
+          "size": 1450
+        },
+        {
+          "rel": "espeak-ng-data/qya_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/qya_dict",
+          "size": 1939
+        },
+        {
+          "rel": "espeak-ng-data/ro_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ro_dict",
+          "size": 68538
+        },
+        {
+          "rel": "espeak-ng-data/ru_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ru_dict",
+          "size": 8532392
+        },
+        {
+          "rel": "espeak-ng-data/sd_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sd_dict",
+          "size": 59928
+        },
+        {
+          "rel": "espeak-ng-data/shn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/shn_dict",
+          "size": 88172
+        },
+        {
+          "rel": "espeak-ng-data/si_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/si_dict",
+          "size": 85384
+        },
+        {
+          "rel": "espeak-ng-data/sjn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sjn_dict",
+          "size": 1783
+        },
+        {
+          "rel": "espeak-ng-data/sk_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sk_dict",
+          "size": 50002
+        },
+        {
+          "rel": "espeak-ng-data/sl_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sl_dict",
+          "size": 45047
+        },
+        {
+          "rel": "espeak-ng-data/smj_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/smj_dict",
+          "size": 35095
+        },
+        {
+          "rel": "espeak-ng-data/sq_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sq_dict",
+          "size": 45003
+        },
+        {
+          "rel": "espeak-ng-data/sr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sr_dict",
+          "size": 46832
+        },
+        {
+          "rel": "espeak-ng-data/sv_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sv_dict",
+          "size": 47836
+        },
+        {
+          "rel": "espeak-ng-data/sw_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/sw_dict",
+          "size": 47804
+        },
+        {
+          "rel": "espeak-ng-data/ta_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ta_dict",
+          "size": 209553
+        },
+        {
+          "rel": "espeak-ng-data/te_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/te_dict",
+          "size": 94837
+        },
+        {
+          "rel": "espeak-ng-data/th_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/th_dict",
+          "size": 2301
+        },
+        {
+          "rel": "espeak-ng-data/tk_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/tk_dict",
+          "size": 20868
+        },
+        {
+          "rel": "espeak-ng-data/tn_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/tn_dict",
+          "size": 3072
+        },
+        {
+          "rel": "espeak-ng-data/tr_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/tr_dict",
+          "size": 46793
+        },
+        {
+          "rel": "espeak-ng-data/tt_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/tt_dict",
+          "size": 2121
+        },
+        {
+          "rel": "espeak-ng-data/ug_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ug_dict",
+          "size": 2070
+        },
+        {
+          "rel": "espeak-ng-data/uk_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/uk_dict",
+          "size": 3492
+        },
+        {
+          "rel": "espeak-ng-data/ur_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/ur_dict",
+          "size": 133556
+        },
+        {
+          "rel": "espeak-ng-data/uz_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/uz_dict",
+          "size": 2540
+        },
+        {
+          "rel": "espeak-ng-data/vi_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/vi_dict",
+          "size": 52608
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/adam",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/adam",
+          "size": 75
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Alex",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Alex",
+          "size": 128
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Alicia",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Alicia",
+          "size": 474
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Andrea",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Andrea",
+          "size": 357
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Andy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Andy",
+          "size": 320
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/anika",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/anika",
+          "size": 493
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/anikaRobot",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/anikaRobot",
+          "size": 512
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Annie",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Annie",
+          "size": 315
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/announcer",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/announcer",
+          "size": 300
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/antonio",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/antonio",
+          "size": 381
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/AnxiousAndy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/AnxiousAndy",
+          "size": 361
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/aunty",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/aunty",
+          "size": 358
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/belinda",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/belinda",
+          "size": 340
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/benjamin",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/benjamin",
+          "size": 201
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/boris",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/boris",
+          "size": 224
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/caleb",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/caleb",
+          "size": 57
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/croak",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/croak",
+          "size": 93
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/david",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/david",
+          "size": 112
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Demonic",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Demonic",
+          "size": 3858
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Denis",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Denis",
+          "size": 305
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Diogo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Diogo",
+          "size": 379
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/ed",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/ed",
+          "size": 287
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/edward",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/edward",
+          "size": 151
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/edward2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/edward2",
+          "size": 152
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/f1",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/f1",
+          "size": 324
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/f2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/f2",
+          "size": 357
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/f3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/f3",
+          "size": 375
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/f4",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/f4",
+          "size": 350
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/f5",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/f5",
+          "size": 432
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/fast",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/fast",
+          "size": 149
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Gene",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Gene",
+          "size": 281
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Gene2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Gene2",
+          "size": 283
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/grandma",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/grandma",
+          "size": 263
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/grandpa",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/grandpa",
+          "size": 256
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/gustave",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/gustave",
+          "size": 253
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Henrique",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Henrique",
+          "size": 381
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Hugo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Hugo",
+          "size": 378
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/ian",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/ian",
+          "size": 3168
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/iven",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/iven",
+          "size": 261
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/iven2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/iven2",
+          "size": 279
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/iven3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/iven3",
+          "size": 262
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/iven4",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/iven4",
+          "size": 261
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Jacky",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Jacky",
+          "size": 267
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/john",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/john",
+          "size": 3186
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/kaukovalta",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/kaukovalta",
+          "size": 361
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt",
+          "size": 38
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt2",
+          "size": 38
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt3",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt4",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt4",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt5",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt5",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/klatt6",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/klatt6",
+          "size": 39
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Lee",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Lee",
+          "size": 338
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/linda",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/linda",
+          "size": 350
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m1",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m1",
+          "size": 335
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m2",
+          "size": 264
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m3",
+          "size": 300
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m4",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m4",
+          "size": 290
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m5",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m5",
+          "size": 262
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m6",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m6",
+          "size": 188
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m7",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m7",
+          "size": 254
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/m8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/m8",
+          "size": 284
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/marcelo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/marcelo",
+          "size": 251
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Marco",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Marco",
+          "size": 467
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Mario",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Mario",
+          "size": 270
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/max",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/max",
+          "size": 225
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Michael",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Michael",
+          "size": 270
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/michel",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/michel",
+          "size": 404
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/miguel",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/miguel",
+          "size": 382
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Mike",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Mike",
+          "size": 112
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/mike2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/mike2",
+          "size": 188
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Mr serious",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Mr serious",
+          "size": 3193
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Nguyen",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Nguyen",
+          "size": 280
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/norbert",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/norbert",
+          "size": 3189
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/pablo",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/pablo",
+          "size": 3142
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/paul",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/paul",
+          "size": 284
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/pedro",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/pedro",
+          "size": 352
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/quincy",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/quincy",
+          "size": 354
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Reed",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Reed",
+          "size": 202
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/RicishayMax",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/RicishayMax",
+          "size": 233
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/RicishayMax2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/RicishayMax2",
+          "size": 435
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/RicishayMax3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/RicishayMax3",
+          "size": 435
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/rob",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/rob",
+          "size": 265
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robert",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robert",
+          "size": 274
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft",
+          "size": 451
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft2",
+          "size": 454
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft3",
+          "size": 455
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft4",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft4",
+          "size": 447
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft5",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft5",
+          "size": 445
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft6",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft6",
+          "size": 287
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft7",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft7",
+          "size": 410
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/robosoft8",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/robosoft8",
+          "size": 243
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/sandro",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/sandro",
+          "size": 530
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/shelby",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/shelby",
+          "size": 280
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/steph",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/steph",
+          "size": 364
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/steph2",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/steph2",
+          "size": 367
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/steph3",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/steph3",
+          "size": 377
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Storm",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Storm",
+          "size": 420
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/travis",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/travis",
+          "size": 383
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/Tweaky",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/Tweaky",
+          "size": 3189
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/UniRobot",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/UniRobot",
+          "size": 417
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/victor",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/victor",
+          "size": 253
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/whisper",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/whisper",
+          "size": 186
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/whisperf",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/whisperf",
+          "size": 392
+        },
+        {
+          "rel": "espeak-ng-data/voices/!v/zac",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/voices/!v/zac",
+          "size": 275
+        },
+        {
+          "rel": "espeak-ng-data/yue_dict",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/espeak-ng-data/yue_dict",
+          "size": 563571
+        },
+        {
+          "rel": "lexicon-us-en.txt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/lexicon-us-en.txt",
+          "size": 5956885
+        },
+        {
+          "rel": "lexicon-zh.txt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/lexicon-zh.txt",
+          "size": 2119465
+        },
+        {
+          "rel": "model.int8.onnx",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/model.int8.onnx",
+          "size": 114299010
+        },
+        {
+          "rel": "number-zh.fst",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/number-zh.fst",
+          "size": 64482
+        },
+        {
+          "rel": "phone-zh.fst",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/phone-zh.fst",
+          "size": 88630
+        },
+        {
+          "rel": "tokens.txt",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/tokens.txt",
+          "size": 1111
+        },
+        {
+          "rel": "voices.bin",
+          "url": "https://hf-mirror.com/csukuangfj/kokoro-int8-multi-lang-v1_1/resolve/main/voices.bin",
+          "size": 53790720
+        }
+      ],
+      "totalBytes": 208942267
+    }
+  ]
+}

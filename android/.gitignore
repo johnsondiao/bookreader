@@ -100,3 +100,8 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# 本地 TTS：模型二进制与 sherpa-onnx AAR 都不进 git（共约 150MB），
+# 由 scripts/fetch-local-tts.mjs 在 CI/本地按 manifest.json 拉取；manifest 本身要提交
+app/src/main/assets/tts-models/*/
+app/libs/
