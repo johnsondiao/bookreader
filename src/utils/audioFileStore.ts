@@ -401,8 +401,10 @@ export async function saveAudioFile(params: {
   charStart: number
   charEnd: number
   mp3Bytes: Uint8Array
+  /** 每段在 mp3Bytes 里的字节区间，供 IDB 淘汰后把整章文件切回分段（免重复合成） */
+  chunkOffsets?: { charStart: number; charEnd: number; byteOffset: number; byteLength: number }[]
 }): Promise<AudioFileRecord> {
-  const { id, bookId, bookTitle, chapterId, chapterTitle, voiceKey, noteVoiceKey, voiceLabel, textHash, charStart, charEnd, mp3Bytes } = params
+  const { id, bookId, bookTitle, chapterId, chapterTitle, voiceKey, noteVoiceKey, voiceLabel, textHash, charStart, charEnd, mp3Bytes, chunkOffsets } = params
   if (!(await isAudioFsAvailable())) {
     const extra = lastError ? `：${lastError}` : ''
     throw new Error('文件系统存储不可用（非原生环境或权限不足）' + extra)
@@ -453,6 +455,7 @@ export async function saveAudioFile(params: {
     charEnd,
     fileName,
     sizeBytes: mp3Bytes.byteLength,
+    chunkOffsets,
     createdAt: existing?.createdAt ?? Date.now(),
   }
   const nextList = existing
@@ -464,7 +467,14 @@ export async function saveAudioFile(params: {
   return record
 }
 
-export async function loadAudioFile(id: string, expectedTextHash?: string): Promise<Uint8Array | null> {
+/**
+ * 读回整章 MP3 字节 + 对应索引记录（记录里的 chunkOffsets 用于把文件切回分段 blob）。
+ * expectedTextHash 不匹配时返回 null（正文已变，音频作废）。
+ */
+export async function loadAudioFile(
+  id: string,
+  expectedTextHash?: string,
+): Promise<{ bytes: Uint8Array; record: AudioFileRecord } | null> {
   if (!(await isAudioFsAvailable())) return null
   const list = await readIndex()
   const rec = list.find((x) => x.id === id)
@@ -476,7 +486,7 @@ export async function loadAudioFile(id: string, expectedTextHash?: string): Prom
       directory: STORAGE_DIR,
     })
     const b64 = typeof r.data === 'string' ? r.data : bytesToBase64(new Uint8Array(r.data as any))
-    return base64ToBytes(b64)
+    return { bytes: base64ToBytes(b64), record: rec }
   } catch (err) {
     lastError = (err as Error)?.message ?? String(err)
     return null
@@ -491,6 +501,8 @@ export async function listAudioFiles(): Promise<AudioFileRecord[]> {
 
 /**
  * 按 bookId + chapterId + 音色组合查找音频（不需要 index.json 也能找到）。
+ * 注意：写入时用的 id 是 tts.chapterCacheKey（带 __v2 后缀），调用方必须传完整的缓存键，
+ * 不能自己拼不带后缀的 id，否则永远匹配不上。
  */
 export async function findAudioFileByMeta(
   bookId: string,

@@ -3,8 +3,12 @@
  *
  * 性能优化：内存缓存 + 防抖写入（每 10 次或 5 秒批量写一次）。
  * 存储结构：CostRecord[]
- * 每条记录包含：日期、书名、字符数。
+ * 每条记录包含：日期、书名、显示字数、计费字符数。
  * 通过这些记录可按天/周/月/书名进行聚合统计。
+ *
+ * ⚠️ 金额一律由「计费字符」算：MiniMax 官方规则 1 个汉字 = 2 个计费字符，
+ * 单价 ¥2/万计费字符。早期记录只有 chars（JS 长度），缺 billable 时按 chars 算，
+ * 保证历史金额不被追溯修改。
  */
 import { TTS_COST_PER_MILLION } from './minimaxTts'
 import { openDb } from './audioCache'
@@ -21,10 +25,17 @@ export interface CostRecord {
   date: string
   /** 书名 */
   bookTitle: string
-  /** 本次合成字符数 */
+  /** 本次合成的显示字数（JS 字符数），仅用于展示 */
   chars: number
+  /** 本次合成的 MiniMax 计费字符数（汉字算 2）；旧记录无此字段，按 chars 计 */
+  billable?: number
   /** 时间戳 */
   ts: number
+}
+
+/** 记账用的计费字符：旧记录没有 billable 时退回 chars，历史金额保持不变 */
+function billableOf(r: CostRecord): number {
+  return typeof r.billable === 'number' ? r.billable : r.chars
 }
 
 /* ====== 内存缓存 + 防抖持久化 ====== */
@@ -144,13 +155,18 @@ function todayKey(): string {
 }
 
 /** 记录一次合成调用（异步确保 init 完成，避免初始化前新记录被覆盖） */
-export async function addSynthChars(chars: number, bookTitle: string): Promise<void> {
-  if (chars <= 0) return
+export async function addSynthChars(
+  chars: number,
+  billable: number,
+  bookTitle: string,
+): Promise<void> {
+  if (chars <= 0 && billable <= 0) return
   await init()
   records.push({
     date: todayKey(),
     bookTitle: bookTitle || '未知',
     chars,
+    billable,
     ts: Date.now(),
   })
   // 超过上限时丢弃最旧的记录
@@ -160,17 +176,23 @@ export async function addSynthChars(chars: number, bookTitle: string): Promise<v
   scheduleSave()
 }
 
-/** 获取今日已合成的字符数（读取前确保初始化完成） */
+/** 获取今日已合成的显示字数（读取前确保初始化完成） */
 export async function getTodayChars(): Promise<number> {
   await init()
   const today = todayKey()
   return records.filter((r) => r.date === today).reduce((s, r) => s + r.chars, 0)
 }
 
+/** 获取今日已合成的计费字符数（真正扣费的量） */
+export async function getTodayBillable(): Promise<number> {
+  await init()
+  const today = todayKey()
+  return records.filter((r) => r.date === today).reduce((s, r) => s + billableOf(r), 0)
+}
+
 /** 获取今日已花费的金额（元） */
 export async function getTodayCostYuan(): Promise<number> {
-  const c = await getTodayChars()
-  return (c / 1_000_000) * TTS_COST_PER_MILLION
+  return billableToYuan(await getTodayBillable())
 }
 
 /** 格式化金额：小于 1 分显示"不到1分"，否则显示 ¥x.xx */
@@ -179,8 +201,8 @@ export function formatCost(yuan: number): string {
   return `¥${yuan.toFixed(2)}`
 }
 
-function charsToYuan(chars: number): number {
-  return (chars / 1_000_000) * TTS_COST_PER_MILLION
+function billableToYuan(billable: number): number {
+  return (billable / 1_000_000) * TTS_COST_PER_MILLION
 }
 
 /* ====== 统计维度 ====== */
@@ -188,6 +210,7 @@ function charsToYuan(chars: number): number {
 export interface DayStat {
   date: string
   chars: number
+  billable: number
   yuan: number
   records: number
 }
@@ -195,10 +218,11 @@ export interface DayStat {
 /** 按天聚合，返回最近 N 天（含今天），按日期倒序 */
 export async function statsByDay(days = 30): Promise<DayStat[]> {
   await init()
-  const map = new Map<string, { chars: number; records: number }>()
+  const map = new Map<string, { chars: number; billable: number; records: number }>()
   for (const r of records) {
-    const cur = map.get(r.date) || { chars: 0, records: 0 }
+    const cur = map.get(r.date) || { chars: 0, billable: 0, records: 0 }
     cur.chars += r.chars
+    cur.billable += billableOf(r)
     cur.records += 1
     map.set(r.date, cur)
   }
@@ -213,7 +237,8 @@ export async function statsByDay(days = 30): Promise<DayStat[]> {
     out.push({
       date: key,
       chars: s?.chars || 0,
-      yuan: charsToYuan(s?.chars || 0),
+      billable: s?.billable || 0,
+      yuan: billableToYuan(s?.billable || 0),
       records: s?.records || 0,
     })
   }
@@ -223,6 +248,7 @@ export async function statsByDay(days = 30): Promise<DayStat[]> {
 export interface PeriodStat {
   label: string
   chars: number
+  billable: number
   yuan: number
 }
 
@@ -247,11 +273,15 @@ export async function statsByWeek(weeks = 8): Promise<PeriodStat[]> {
     const label = `${weekStart.getFullYear()}.${p(weekStart.getMonth() + 1)}.${p(weekStart.getDate())}`
 
     let chars = 0
+    let billable = 0
     for (const r of records) {
       const rd = new Date(r.date + 'T00:00:00')
-      if (rd >= weekStart && rd <= weekEnd) chars += r.chars
+      if (rd >= weekStart && rd <= weekEnd) {
+        chars += r.chars
+        billable += billableOf(r)
+      }
     }
-    out.push({ label, chars, yuan: charsToYuan(chars) })
+    out.push({ label, chars, billable, yuan: billableToYuan(billable) })
   }
   return out
 }
@@ -267,11 +297,15 @@ export async function statsByMonth(months = 6): Promise<PeriodStat[]> {
     const p = (n: number) => n.toString().padStart(2, '0')
     const label = `${d.getFullYear()}-${p(d.getMonth() + 1)}`
     let chars = 0
+    let billable = 0
     for (const r of records) {
       const rd = new Date(r.date + 'T00:00:00')
-      if (rd >= d && rd < next) chars += r.chars
+      if (rd >= d && rd < next) {
+        chars += r.chars
+        billable += billableOf(r)
+      }
     }
-    out.push({ label, chars, yuan: charsToYuan(chars) })
+    out.push({ label, chars, billable, yuan: billableToYuan(billable) })
   }
   return out
 }
@@ -279,18 +313,20 @@ export async function statsByMonth(months = 6): Promise<PeriodStat[]> {
 export interface BookStat {
   bookTitle: string
   chars: number
+  billable: number
   yuan: number
   records: number
   lastDate: string
 }
 
-/** 按书名聚合，按字符数倒序 */
+/** 按书名聚合，按计费字符倒序 */
 export async function statsByBook(): Promise<BookStat[]> {
   await init()
-  const map = new Map<string, { chars: number; records: number; lastDate: string }>()
+  const map = new Map<string, { chars: number; billable: number; records: number; lastDate: string }>()
   for (const r of records) {
-    const cur = map.get(r.bookTitle) || { chars: 0, records: 0, lastDate: '' }
+    const cur = map.get(r.bookTitle) || { chars: 0, billable: 0, records: 0, lastDate: '' }
     cur.chars += r.chars
+    cur.billable += billableOf(r)
     cur.records += 1
     if (r.date > cur.lastDate) cur.lastDate = r.date
     map.set(r.bookTitle, cur)
@@ -300,24 +336,31 @@ export async function statsByBook(): Promise<BookStat[]> {
     out.push({
       bookTitle,
       chars: s.chars,
-      yuan: charsToYuan(s.chars),
+      billable: s.billable,
+      yuan: billableToYuan(s.billable),
       records: s.records,
       lastDate: s.lastDate,
     })
   }
-  return out.sort((a, b) => b.chars - a.chars)
+  return out.sort((a, b) => b.billable - a.billable)
 }
 
 /** 总花费 */
 export async function getTotalYuan(): Promise<number> {
   await init()
-  return charsToYuan(records.reduce((s, r) => s + r.chars, 0))
+  return billableToYuan(records.reduce((s, r) => s + billableOf(r), 0))
 }
 
-/** 总字符数 */
+/** 总显示字数 */
 export async function getTotalChars(): Promise<number> {
   await init()
   return records.reduce((s, r) => s + r.chars, 0)
+}
+
+/** 总计费字符数 */
+export async function getTotalBillable(): Promise<number> {
+  await init()
+  return records.reduce((s, r) => s + billableOf(r), 0)
 }
 
 /** 确保数据已持久化（页面关闭前调用，await 等待写入完成） */

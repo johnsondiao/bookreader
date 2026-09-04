@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Book, TocEntry, TocReadStatus } from '../types'
 import { useAppStore } from '../store/useAppStore'
-import { costOfChars, formatCharCount, formatCostEstimate } from '../utils/charStats'
+import { CHAR_STATS_VERSION, costOfBillable, formatCharCount, formatCostEstimate } from '../utils/charStats'
 
 function statusOf(
   entry: TocEntry,
@@ -28,16 +28,18 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
   const currentRef = useRef<HTMLButtonElement>(null)
   const ensureBookCharStats = useAppStore((s) => s.ensureBookCharStats)
 
-  // 兜底：旧书还没统计过字数时补一下（书架挂载时已经会补全部）
+  // 兜底：旧书或统计口径升级后补算一下（书架挂载时已经会补全部）
   useEffect(() => {
-    if (typeof book.totalChars !== 'number') ensureBookCharStats(book.id)
-  }, [book.id, book.totalChars, ensureBookCharStats])
+    if (book.charStatsVersion !== CHAR_STATS_VERSION) ensureBookCharStats(book.id)
+  }, [book.id, book.charStatsVersion, ensureBookCharStats])
 
-  /** chapterId → 计费字数；没统计过的章不入表，宁可不显示也不在渲染里全文重扫 */
-  const charByChapterId = useMemo(() => {
-    const m = new Map<string, number>()
+  /** chapterId → 字数/计费字符；没统计过的章不入表，宁可不显示也不在渲染里全文重扫 */
+  const statsByChapterId = useMemo(() => {
+    const m = new Map<string, { chars: number; billable: number }>()
     for (const c of book.chapters) {
-      if (typeof c.charCount === 'number') m.set(c.id, c.charCount)
+      if (typeof c.charCount === 'number' && typeof c.billableChars === 'number') {
+        m.set(c.id, { chars: c.charCount, billable: c.billableChars })
+      }
     }
     return m
   }, [book.chapters])
@@ -150,10 +152,10 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
         </span>
       </div>
 
-      {typeof book.totalChars === 'number' && (
+      {typeof book.totalChars === 'number' && typeof book.totalBillable === 'number' && (
         <div className="toc-total">
           全书 {formatCharCount(book.totalChars)} · 全部朗读约需{' '}
-          <strong>{formatCostEstimate(costOfChars(book.totalChars))}</strong>
+          <strong>{formatCostEstimate(costOfBillable(book.totalBillable))}</strong>
         </div>
       )}
 
@@ -166,7 +168,7 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
             const kids = !query.trim() && hasChildren(entry.id, entry.level)
             const isCurrent = entry.chapterId === currentChapterId
             const disabled = !entry.chapterId
-            const chars = entry.chapterId ? charByChapterId.get(entry.chapterId) : undefined
+            const cost = entry.chapterId ? statsByChapterId.get(entry.chapterId) : undefined
             return (
               <button
                 key={entry.id}
@@ -197,9 +199,9 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
                 </span>
                 <span className={`toc-dot ${st}`} />
                 <span className="toc-title">{entry.title}</span>
-                {typeof chars === 'number' && (
+                {cost && (
                   <span className="toc-chars">
-                    {formatCharCount(chars)} · {formatCostEstimate(costOfChars(chars))}
+                    {formatCharCount(cost.chars)} · {formatCostEstimate(costOfBillable(cost.billable))}
                   </span>
                 )}
                 {st === 'read' && <span className="toc-badge">已读</span>}

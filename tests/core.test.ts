@@ -14,8 +14,11 @@ import { describe, expect, it } from 'vitest'
 import { isSentenceEnd, splitSentences, parseChapters, splitParagraphTexts } from '../src/utils/chapterParser'
 import { estimateTtsCost } from '../src/utils/minimaxTts'
 import {
+  CHAR_STATS_VERSION,
+  countBillableChars,
   countSpeakableChars,
-  costOfChars,
+  costOfBillable,
+  estimateBillableChars,
   formatCharCount,
   formatCostEstimate,
   withCharStats,
@@ -23,6 +26,8 @@ import {
 import { safeName } from '../src/utils/audioFileStore'
 import { classifyTtsError } from '../src/utils/tts'
 import { autoChapterizeIfNeeded, useAppStore } from '../src/store/useAppStore'
+import { addSynthChars, getTodayBillable, getTodayChars, getTodayCostYuan } from '../src/utils/costTracker'
+import { getClip, putClip, type ChapterAudio } from '../src/utils/audioCache'
 import type { Book } from '../src/types'
 
 describe('isSentenceEnd', () => {
@@ -151,8 +156,8 @@ describe('estimateTtsCost', () => {
   })
 })
 
-describe('charStats 字数统计', () => {
-  it('口径与 TTS 实际计费一致：段落 trim 后按 \n 拼接的长度', () => {
+describe('charStats 显示字数', () => {
+  it('口径与 TTS 发送的文本一致：段落 trim 后按 \n 拼接的长度', () => {
     const text = '  第一段。  \n\n\n  第二段！ \n'
     // tts.ts buildTextAndRanges 就是这么拼 fullText 的
     expect(countSpeakableChars(text)).toBe(splitParagraphTexts(text).join('\n').length)
@@ -166,26 +171,54 @@ describe('charStats 字数统计', () => {
     expect(countSpeakableChars('')).toBe(0)
     expect(countSpeakableChars('  \n \n\t\n ')).toBe(0)
   })
-  it('withCharStats 补齐各章字数并汇总，已统计过的章沿用旧值', () => {
+})
+
+describe('charStats 计费字符（MiniMax：1 汉字 = 2 字符）', () => {
+  it('汉字算 2，标点/英文/空格算 1', () => {
+    expect(countBillableChars('你好')).toBe(4)
+    expect(countBillableChars('你好，世界！')).toBe(10) // 4 汉字×2 + 2 标点
+    expect(countBillableChars('Hello 世界')).toBe(10) // 5 字母 + 1 空格 + 2 汉字×2
+    expect(countBillableChars('')).toBe(0)
+  })
+  it('代理对汉字（扩展 B 区）也是 2：JS 长度本就 2、不落在 BMP 范围里', () => {
+    expect(countBillableChars('\u{20000}')).toBe(2)
+  })
+  it('整章预估：显示字数与计费字符分开，金额由计费字符算', () => {
+    const text = '你好，世界。\nHello world'
+    expect(countSpeakableChars(text)).toBe(18)
+    expect(estimateBillableChars(text)).toBe(22) // 18 + 4 个汉字
+    expect(costOfBillable(estimateBillableChars(text))).toBeCloseTo(0.0044, 10)
+  })
+  it('纯中文正文计费字符约为字数的 1.9 倍（旧口径按字数算会少一半）', () => {
+    const text = '这是一个纯中文的句子，用来验证计费口径。'.repeat(10)
+    const ratio = estimateBillableChars(text) / countSpeakableChars(text)
+    expect(ratio).toBeGreaterThan(1.8)
+    expect(ratio).toBeLessThan(2.01)
+  })
+  it('withCharStats 同时给出两套口径并汇总，旧值一律重算', () => {
     const r = withCharStats([
       { id: 'a', content: '一千个字'.repeat(3) },
-      { id: 'b', content: '  两段\n\n文字  ', charCount: 999 },
+      // 旧口径留下的错值必须被重算覆盖，否则金额继续算错
+      { id: 'b', content: '  两段\n\n文字  ', charCount: 999, billableChars: 999 },
     ])
     expect(r.chapters[0].charCount).toBe(12)
-    // 已有 charCount 不被重算覆盖
-    expect(r.chapters[1].charCount).toBe(999)
-    expect(r.totalChars).toBe(12 + 999)
+    expect(r.chapters[0].billableChars).toBe(24) // 全汉字
+    expect(r.chapters[1].charCount).toBe(5) // 两段(2) + \n(1) + 文字(2)
+    expect(r.chapters[1].billableChars).toBe(9) // 5 + 4 个汉字
+    expect(r.totalChars).toBe(17)
+    expect(r.totalBillable).toBe(33)
   })
 })
 
 describe('charStats 费用与展示格式', () => {
-  it('1 万字 => ¥2（Turbo 单价）', () => expect(costOfChars(10_000)).toBe(2))
-  it('负字数按 0 计，不出现负金额', () => expect(costOfChars(-5)).toBe(0))
-  it('formatCharCount 万/亿进位', () => {
+  it('1 万计费字符 => ¥2（Turbo 单价）', () => expect(costOfBillable(10_000)).toBe(2))
+  it('负数按 0 计，不出现负金额', () => expect(costOfBillable(-5)).toBe(0))
+  it('formatCharCount 万/亿进位，可换单位', () => {
     expect(formatCharCount(999)).toBe('999字')
     expect(formatCharCount(15_000)).toBe('1.5万字')
     expect(formatCharCount(1_234_567)).toBe('123万字')
     expect(formatCharCount(120_000_000)).toBe('1.20亿字')
+    expect(formatCharCount(15_000, '字符')).toBe('1.5万字符')
   })
   it('formatCostEstimate 小额保留三位，大额千分位', () => {
     expect(formatCostEstimate(0)).toBe('¥0')
@@ -262,7 +295,11 @@ describe('autoChapterizeIfNeeded', () => {
     expect(r!.chapterizeTryVersion).toBe(4)
     // 重分章后字数统计跟着重算（否则 totalChars 仍是旧值）
     expect(r!.totalChars).toBe(r!.chapters.reduce((s, c) => s + (c.charCount ?? -1), 0))
+    expect(r!.totalBillable).toBe(r!.chapters.reduce((s, c) => s + (c.billableChars ?? -1), 0))
     expect(r!.chapters.every((c) => typeof c.charCount === 'number' && c.charCount > 0)).toBe(true)
+    expect(r!.charStatsVersion).toBe(CHAR_STATS_VERSION)
+    // 中文正文：计费字符必然多于显示字数
+    expect(r!.totalBillable!).toBeGreaterThan(r!.totalChars!)
     // v4 结果不会再被重切
     expect(autoChapterizeIfNeeded(r!)).toBeNull()
   })
@@ -284,15 +321,62 @@ describe('importTextBook（TXT 导入）', () => {
       // 以前靠下次启动的 normalizeBook 才修好，现在必须当场就是好的
       expect(book!.toc.length).toBe(book!.chapters.length)
       expect(book!.toc.every((t) => !!t.chapterId)).toBe(true)
-      // 导入即统计：每章有 charCount，全书 totalChars = 各章之和
+      // 导入即统计：每章有两套口径，全书汇总 = 各章之和
       expect(book!.chapters.every((c) => (c.charCount ?? 0) > 0)).toBe(true)
+      expect(book!.chapters.every((c) => (c.billableChars ?? 0) > 0)).toBe(true)
       expect(book!.totalChars).toBe(book!.chapters.reduce((s, c) => s + (c.charCount ?? 0), 0))
-      expect(estimateTtsCost(book!.totalChars!)).toBeGreaterThan(0)
+      expect(book!.totalBillable).toBe(book!.chapters.reduce((s, c) => s + (c.billableChars ?? 0), 0))
+      expect(book!.charStatsVersion).toBe(CHAR_STATS_VERSION)
+      // 金额必须由计费字符算：中文书比「按字数算」高出近一倍
+      expect(estimateTtsCost(book!.totalBillable!)).toBeGreaterThan(estimateTtsCost(book!.totalChars!) * 1.5)
       // 已是最新切章规则：下次启动不再全文重切（避免字数漂移与白耗水合时间）
       expect(autoChapterizeIfNeeded(book!)).toBeNull()
     } finally {
       useAppStore.getState().removeBook(id)
     }
+  })
+})
+
+describe('costTracker 双口径记账', () => {
+  it('金额由计费字符算，显示字数单独记（只记字数会让花费/预算少一半）', async () => {
+    await addSynthChars(1000, 1900, '测试书')
+    expect(await getTodayChars()).toBe(1000)
+    expect(await getTodayBillable()).toBe(1900)
+    expect(await getTodayCostYuan()).toBeCloseTo((1900 / 1_000_000) * 200, 10)
+  })
+})
+
+describe('audioCache 内存快照（消除“刚合成完就重开本章”的重复合成）', () => {
+  const makeClip = (n: number, textHash = 'abc'): ChapterAudio => ({
+    chunks: Array.from({ length: n }, (_, i) => ({
+      charStart: i,
+      charEnd: i + 1,
+      blob: new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/mpeg' }),
+    })),
+    textHash,
+    voiceKey: 'zh|note',
+    createdAt: Date.now(),
+  })
+
+  it('putClip 后不提交事务也能立即 getClip 拿到（否则已付费的段会被重新合成）', async () => {
+    await putClip('snap-a', makeClip(3), undefined, { skipFile: true })
+    const got = await getClip('snap-a')
+    expect(got?.chunks.length).toBe(3)
+    expect(got?.textHash).toBe('abc')
+  })
+
+  it('同一 key 后写的快照更新：分段变多后读到的是更全的那份', async () => {
+    await putClip('snap-b', makeClip(2), undefined, { skipFile: true })
+    await putClip('snap-b', makeClip(5), undefined, { skipFile: true })
+    expect((await getClip('snap-b'))?.chunks.length).toBe(5)
+  })
+
+  it('内存快照只留最近 3 条（测试环境 IDB 不可用，最老那条就读不到了）', async () => {
+    for (const k of ['lru-1', 'lru-2', 'lru-3', 'lru-4']) {
+      await putClip(k, makeClip(1), undefined, { skipFile: true })
+    }
+    expect(await getClip('lru-4')).not.toBeNull()
+    expect(await getClip('lru-1')).toBeNull()
   })
 })
 

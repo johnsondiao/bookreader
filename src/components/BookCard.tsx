@@ -80,8 +80,8 @@ export function BookCard({ book, onOpen, onRemove }: Props) {
         <div className="info">
           {formatProgress(book.progressPercent)} · {formatTime(book.lastReadAt)}
         </div>
-        {typeof book.totalChars === 'number' && (
-          <div className="info cost">{formatCharsCost(book.totalChars)}</div>
+        {typeof book.totalChars === 'number' && typeof book.totalBillable === 'number' && (
+          <div className="info cost">{formatCharsCost(book.totalChars, book.totalBillable)}</div>
         )}
       </div>
     </div>

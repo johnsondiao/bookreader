@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Book } from '../types'
-import { charsOfChapter, costOfChars, formatCharCount, formatCostEstimate } from '../utils/charStats'
+import { billableOfChapter, charsOfChapter, costOfBillable, formatCharCount, formatCostEstimate } from '../utils/charStats'
 
 interface Props {
   book: Book
@@ -25,12 +25,14 @@ export function ImportStatsModal({ book, onRead, onClose }: Props) {
     () =>
       (book.chapters || []).map((c, i) => {
         const chars = charsOfChapter(c)
-        return { index: i, id: c.id, title: c.title, chars, yuan: costOfChars(chars) }
+        const billable = billableOfChapter(c)
+        return { index: i, id: c.id, title: c.title, chars, yuan: costOfBillable(billable), billable }
       }),
     // 依赖用 book.chapters 本体：写成 `book.chapters || []` 会每次渲染产生新空数组，memo 直接失效
     [book.chapters],
   )
   const totalChars = useMemo(() => stats.reduce((s, r) => s + r.chars, 0), [stats])
+  const totalBillable = useMemo(() => stats.reduce((s, r) => s + r.billable, 0), [stats])
   const rows = limit >= stats.length ? stats : stats.slice(0, limit)
   const rest = stats.length - rows.length
 
@@ -58,13 +60,14 @@ export function ImportStatsModal({ book, onRead, onClose }: Props) {
             <span className="l">全书字数</span>
           </div>
           <div className="stats-cell">
-            <span className="v accent">{formatCostEstimate(costOfChars(totalChars))}</span>
+            <span className="v accent">{formatCostEstimate(costOfBillable(totalBillable))}</span>
             <span className="l">全部朗读约需</span>
           </div>
         </div>
 
         <p className="stats-note">
-          按 MiniMax Turbo ¥2/万字估算，实际以合成的字符数计费；已合成过的章节走本地缓存，不会重复扣费。
+          按 MiniMax Turbo ¥2/万计费字符估算（1 个汉字算 2 个字符，标点/英文算 1 个），
+          实际以合成的字符数计费；已合成过的章节走本地缓存，不会重复扣费。
         </p>
 
         <div className="stats-list-head">

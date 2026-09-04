@@ -24,7 +24,7 @@ import {
   type DebugPayload,
 } from '../utils/agentLog'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
-import { costOfChars, formatCharCount, formatCostEstimate } from '../utils/charStats'
+import { costOfBillable, formatCharCount, formatCostEstimate } from '../utils/charStats'
 import { isAllFilesAccessGranted } from '../utils/audioFileStore'
 
 type Panel = null | 'toc' | 'settings'
@@ -184,12 +184,13 @@ export function ReaderPage() {
     [chapter],
   )
 
-  /** 本章计费字数与预估合成费用（导入时已统计；旧数据未统计时为 null，不显示） */
+  /** 本章字数与预估合成费用（金额按计费字符算：汉字×2）；旧数据未统计时为 null，不显示 */
   const chapterCostLabel = useMemo(() => {
-    const n = chapter?.charCount
-    if (typeof n !== 'number') return null
-    return `${formatCharCount(n)} · 约 ${formatCostEstimate(costOfChars(n))}`
-  }, [chapter?.charCount])
+    const chars = chapter?.charCount
+    const billable = chapter?.billableChars
+    if (typeof chars !== 'number' || typeof billable !== 'number') return null
+    return `${formatCharCount(chars)} · 约 ${formatCostEstimate(costOfBillable(billable))}`
+  }, [chapter?.charCount, chapter?.billableChars])
 
   const visibleParagraphs = useMemo(
     () => paragraphs.slice(0, Math.min(visibleCount, paragraphs.length)),

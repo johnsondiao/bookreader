@@ -13,7 +13,8 @@ import { Capacitor } from '@capacitor/core'
 import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { addSynthChars, checkBudget } from './costTracker'
-import { getClip, hashText, putClip, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
+import { countBillableChars } from './charStats'
+import { getClip, hashText, putClip, restoreClipFromFile, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
   DEFAULT_VOICE_NOTE,
@@ -363,6 +364,18 @@ interface PreparedChapter {
   startSegIdx: number
 }
 
+/** 用缓存里的分段音频回填 segments.blob（按字符区间精确匹配，支持部分命中） */
+function restoreBlobs(segments: PlaySegment[], clip: ChapterAudio | null, textHash: string): void {
+  if (!clip || clip.textHash !== textHash || !clip.chunks?.length) return
+  for (const seg of segments) {
+    if (seg.blob) continue
+    const idx = clip.chunks.findIndex(
+      (c) => c.charStart === seg.charStart && c.charEnd === seg.charEnd && c.blob.size > 0,
+    )
+    if (idx >= 0) seg.blob = clip.chunks[idx].blob
+  }
+}
+
 /**
  * 段落规范化 → 构建全文与区间 → 缓存还原 blob → 计算起始段。
  * 无可读内容时返回 null。
@@ -399,13 +412,13 @@ async function prepareChapter(
   const segments = planSegments(paras, paraRanges, textVoice, noteVoice)
 
   // 尝试用缓存还原 segments.blob（支持部分命中，不 break）
-  if (clip && clip.textHash === textHash && clip.chunks?.length) {
-    for (const seg of segments) {
-      const idx = clip.chunks.findIndex(
-        (c) => c.charStart === seg.charStart && c.charEnd === seg.charEnd && c.blob.size > 0,
-      )
-      if (idx >= 0) seg.blob = clip.chunks[idx].blob
-    }
+  restoreBlobs(segments, clip, textHash)
+
+  // IDB 缓存被 LRU 淘汰（上限 200MB，大书必然发生）时，试着从外部整章 MP3 切回分段。
+  // 不做这一步，淘汰过的章节重听就得重新合成重新扣费——钱花了，音频却还在磁盘上躺着。
+  if (segments.some((s) => !s.blob)) {
+    const fromFile = await restoreClipFromFile(cacheKey, textHash)
+    restoreBlobs(segments, fromFile, textHash)
   }
 
   // 计算起始 segment（生产者和消费者共用）
@@ -422,7 +435,7 @@ async function prepareChapter(
   return { fullText, paraRanges, textHash, cacheKey, segments, startSegIdx }
 }
 
-/** 保存已有 blob 的段：IDB 缓存 + 物理文件（fire-and-forget，结果回调 onFileSaved） */
+/** 保存已有 blob 的段：IDB 缓存 + 物理文件。返回落盘 Promise，供串行排队 */
 function persistSegments(
   segments: PlaySegment[],
   prep: Pick<PreparedChapter, 'textHash' | 'cacheKey'>,
@@ -430,9 +443,10 @@ function persistSegments(
   noteVoice: VoiceDef,
   meta: { bookId: string; bookTitle: string; chapterId: string; chapterTitle: string },
   onFileSaved?: (r: { fileOk: boolean; idbOk: boolean; error?: string }) => void,
-): void {
+  opts?: { skipFile?: boolean },
+): Promise<void> {
   const completedSegs = segments.filter((s) => s.blob)
-  if (completedSegs.length === 0) return
+  if (completedSegs.length === 0) return Promise.resolve()
   const chunks: AudioChunk[] = completedSegs.map((s) => ({
     charStart: s.charStart,
     charEnd: s.charEnd,
@@ -454,17 +468,81 @@ function persistSegments(
     noteVoiceKey: noteVoice.key,
     voiceLabel,
   }
-  void putClip(prep.cacheKey, newClip, fileMeta)
+  return putClip(prep.cacheKey, newClip, opts?.skipFile ? undefined : fileMeta, opts)
     .then((res) => {
+      // 增量落盘（skipFile）根本没写文件，不能拿它的结果去回调 UI（会误报保存成功/失败）
+      if (opts?.skipFile) return
       onFileSaved?.({ fileOk: res.fileOk, idbOk: res.idbOk, error: res.fileError })
     })
     .catch((e) => {
+      if (opts?.skipFile) return
       onFileSaved?.({
         fileOk: false,
         idbOk: false,
         error: e instanceof Error ? e.message : String(e),
       })
     })
+}
+
+/** 合成过程中增量落盘的节流阈值：每攒够 N 段或超过 T ms 写一次 IDB */
+const INCREMENTAL_PERSIST_SEGMENTS = 8
+const INCREMENTAL_PERSIST_MS = 5000
+
+/**
+ * 落盘串行链：并发写同一个 cacheKey 时，后发的写可能先提交，
+ * 缓存就会退回分段更少的旧快照（下次又得重合成）。串行排队保证最后落盘的是最全的。
+ */
+let persistChain: Promise<unknown> = Promise.resolve()
+
+function schedulePersist(task: () => Promise<unknown>): void {
+  persistChain = persistChain.then(task, task).catch(() => {})
+}
+
+interface PersistCtx {
+  segments: PlaySegment[]
+  prep: Pick<PreparedChapter, 'textHash' | 'cacheKey'>
+  textVoice: VoiceDef
+  noteVoice: VoiceDef
+  meta: { bookId: string; bookTitle: string; chapterId: string; chapterTitle: string }
+}
+
+/**
+ * 增量落盘器：钱是一段一段花出去的，落盘不能等整章结束。
+ * 以前只在 playChapter/synthChapter 的 finally 里存一次，用户中途停止、点上句/下句、
+ * 切章、失败重试，或在 Android 上直接划掉 App，已合成的段就全丢了，
+ * 下次重开本章从头再合成一遍——同一章反复扣费。
+ */
+function makePersister(ctx: PersistCtx) {
+  let sinceWrite = 0
+  let lastWriteAt = Date.now()
+  let lastWrittenCount = 0
+
+  const doneCount = () => ctx.segments.reduce((n, s) => n + (s.blob ? 1 : 0), 0)
+
+  const write = () => {
+    sinceWrite = 0
+    lastWriteAt = Date.now()
+    lastWrittenCount = doneCount()
+    schedulePersist(() =>
+      persistSegments(ctx.segments, ctx.prep, ctx.textVoice, ctx.noteVoice, ctx.meta, undefined, {
+        skipFile: true,
+      }),
+    )
+  }
+
+  return {
+    /** 每合成完一段调用：攒够阈值才真写，避免频繁重写整条缓存 */
+    onSegmentDone: () => {
+      sinceWrite++
+      if (sinceWrite < INCREMENTAL_PERSIST_SEGMENTS && Date.now() - lastWriteAt < INCREMENTAL_PERSIST_MS) return
+      write()
+    },
+    /** 立即落盘（stop/中断时调）：没有新段就不写 */
+    flush: () => {
+      if (doneCount() === lastWrittenCount) return
+      write()
+    },
+  }
 }
 
 export function createTtsController(): TtsController {
@@ -478,6 +556,8 @@ export function createTtsController(): TtsController {
   let currentPlayPromise: Promise<void> | null = null
   /** 当前 waitForMetadata 的结算函数（stop 时立即释放，防止旧 Promise 永不 resolve 卡死下一次播放） */
   let metaWaiter: (() => void) | null = null
+  /** 当前运行的「立即落盘」函数：stop 时同步触发，保证已付费的段不丢 */
+  let activeFlush: (() => void) | null = null
 
   const assertAlive = (epoch: number) => {
     if (epoch !== speakEpoch) throw new SpeakAborted()
@@ -529,6 +609,7 @@ export function createTtsController(): TtsController {
     bookTitle: string,
     startSegIdx: number,
     budgetYuan?: number,
+    onSegmentDone?: () => void,
   ): Promise<void> => {
     // 合成顺序：从播放起点开始，确保首句最快就绪
     const order: number[] = []
@@ -578,7 +659,11 @@ export function createTtsController(): TtsController {
         )
         synthAbortFn = null
         seg.blob = blob
-        await addSynthChars(text.length, bookTitle)
+        // 记账双口径：text.length 是给人看的字数，countBillableChars 才是 MiniMax 扣费的量
+        // （官方规则：1 个汉字 = 2 个计费字符）。只记 text.length 会让花费/预算少一半。
+        await addSynthChars(text.length, countBillableChars(text), bookTitle)
+        // 钱已花：立即排队增量落盘，中断也不会丢这一段
+        onSegmentDone?.()
         seg._resolveReady?.()
         done++
         // 节流：合成完一段等 1 秒再发下一个请求，控制请求频率，
@@ -755,6 +840,13 @@ export function createTtsController(): TtsController {
   }
 
   const stopInternal = () => {
+    // 0. 立即把已合成（已扣费）的段写盘：不落盘的话下一次 getClip 读不到，会重新合成再扣一次
+    try {
+      activeFlush?.()
+    } catch {
+      /* 落盘失败不能阻止停止 */
+    }
+    activeFlush = null
     speakEpoch += 1
     status = 'idle'
     // 1. 中断正在进行的 HTTP 合成请求（如果有）
@@ -844,8 +936,12 @@ export function createTtsController(): TtsController {
         )
 
         // 启动生产者（不 await，后台合成，首句就绪后消费者即可播放）
+        // 增量落盘器：每合成完若干段就写一次 IDB，stop 时立即 flush
+        const persister = makePersister({ segments, prep, textVoice, noteVoice, meta: opts })
+        activeFlush = persister.flush
         producerPromise = synthesizeSegments(
           fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', startSegIdx, opts.budgetYuan,
+          persister.onSegmentDone,
         )
       } else {
         agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, segments: segments.length }, 'A')
@@ -869,10 +965,11 @@ export function createTtsController(): TtsController {
           void producerPromise
             .catch(() => { /* abort 或合成错误 */ })
             .then(() => {
-              // 生产者跑完（或已被 abort）后，保存已完成的段
-              persistSegments(segments, prep, textVoice, noteVoice, opts, opts.onFileSaved)
+              // 生产者跑完（或已被 abort）后，保存已完成的段（这次连外部文件一起写）
+              schedulePersist(() => persistSegments(segments, prep, textVoice, noteVoice, opts, opts.onFileSaved))
             })
         }
+        activeFlush = null
         // 清 segments 引用（避免 stop 再操作旧 segments）
         if (currentSegments === segments) currentSegments = null
         // 立即设置 status idle（不需要等生产者）
@@ -933,13 +1030,17 @@ export function createTtsController(): TtsController {
         try {
           // 纯合成模式无播放消费者，不需要创建 blobReady deferred；
           // stop() 通过 epoch + synthAbortFn 中断，抛出 SpeakAborted 由调用方处理
+          const persister = makePersister({ segments: prep.segments, prep, textVoice, noteVoice, meta: opts })
+          activeFlush = persister.flush
           await synthesizeSegments(
             prep.fullText, prep.segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', prep.startSegIdx, opts.budgetYuan,
+            persister.onSegmentDone,
           )
           opts.onStatus?.('idle', '合成完成')
         } finally {
           // 无论正常完成还是被中断，已完成的段都保存（钱已花，不保存就白扣了）
-          persistSegments(prep.segments, prep, textVoice, noteVoice, opts, opts.onFileSaved)
+          schedulePersist(() => persistSegments(prep.segments, prep, textVoice, noteVoice, opts, opts.onFileSaved))
+          activeFlush = null
           if (currentSegments === prep.segments) currentSegments = null
           if (epoch === speakEpoch && (status as TtsStatus) !== 'paused') status = 'idle'
         }

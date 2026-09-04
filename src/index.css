@@ -1414,6 +1414,16 @@ button {
   font-size: 13px;
 }
 
+.cost-rule {
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
 .cost-tabs {
   display: flex;
   gap: 0;

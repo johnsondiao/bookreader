@@ -5,7 +5,7 @@ import type { Book, Chapter, ProgressSnapshot, ReaderSettings, Screen, TabId, To
 import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
-import { withCharStats } from '../utils/charStats'
+import { withCharStats, CHAR_STATS_VERSION } from '../utils/charStats'
 import { createIdbStorage } from '../utils/idbStorage'
 import { DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 import { agentLog } from '../utils/agentLog'
@@ -205,6 +205,8 @@ export function autoChapterizeIfNeeded(book: Book): Book | null {
     paragraphIndex: pIdx,
     chapterizeTryVersion: CHAPTERIZE_TRY_VERSION,
     totalChars: stats.totalChars,
+    totalBillable: stats.totalBillable,
+    charStatsVersion: CHAR_STATS_VERSION,
     readChapterIds:
       (book.readChapterIds?.length ?? 0) > 0
         ? chapters.slice(0, targetIdx + 1).map((c) => c.id)
@@ -261,6 +263,8 @@ function buildBook(parsed: {
     furthestChapterIndex: 0,
     readChapterIds: chapters[0] ? [chapters[0].id] : [],
     totalChars: charStats.totalChars,
+    totalBillable: charStats.totalBillable,
+    charStatsVersion: CHAR_STATS_VERSION,
     // 章节已经是当前 parseChapters 规则切出来的，打上版本标记：
     // 否则下次启动 autoChapterizeIfNeeded 会把新书全文重切一遍（白耗水合时间，
     // 且「标题行+正文」还原重建会给序章多算进标题的字符，字数会漂移）
@@ -341,18 +345,29 @@ export const useAppStore = create<AppState>()(
 
       ensureBookCharStats: (bookId) => {
         let filled = 0
-        let totalChars = 0
+        let totalBillable = 0
         const next = get().books.map((b) => {
           if (bookId && b.id !== bookId) return b
-          // 已统计过的书跳过：全书重扫是 O(总字数)，不能每次进书架都跑
-          if (typeof b.totalChars === 'number') return b
+          // 口径版本对得上的书跳过：全书重扫是 O(总字数)，不能每次进书架都跑
+          if (b.charStatsVersion === CHAR_STATS_VERSION) return b
           const r = withCharStats(b.chapters || [])
           filled++
-          totalChars += r.totalChars
-          return { ...b, chapters: r.chapters, totalChars: r.totalChars }
+          totalBillable += r.totalBillable
+          return {
+            ...b,
+            chapters: r.chapters,
+            totalChars: r.totalChars,
+            totalBillable: r.totalBillable,
+            charStatsVersion: CHAR_STATS_VERSION,
+          }
         })
         if (filled === 0) return
-        agentLog('useAppStore:ensureBookCharStats', 'backfill', { bookId, filled, totalChars }, 'A')
+        agentLog(
+          'useAppStore:ensureBookCharStats',
+          'backfill',
+          { bookId, filled, totalBillable, version: CHAR_STATS_VERSION },
+          'A',
+        )
         set({ books: next })
       },
 

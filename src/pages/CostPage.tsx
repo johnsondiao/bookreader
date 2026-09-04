@@ -93,7 +93,7 @@ export function CostPage() {
     <div>
       <header className="page-header">
         <h1>花费</h1>
-        <p className="sub">语音合成费用统计 · ¥2/万字</p>
+        <p className="sub">语音合成费用统计 · ¥2/万计费字符</p>
       </header>
 
       {/* 总览卡片 */}
@@ -114,6 +114,11 @@ export function CostPage() {
           刷新
         </button>
       </div>
+
+      <p className="cost-rule">
+        MiniMax 计费规则：1 个汉字 = 2 个计费字符，标点/英文/空格 = 1 个，Turbo ¥2/万计费字符。
+        早期版本记账只按字数算，那部分历史金额偏低约一半（不追溯修改）。
+      </p>
 
       {/* 维度切换 */}
       <div className="cost-tabs">
@@ -144,7 +149,7 @@ export function CostPage() {
                 <div className="cost-row-left">
                   <div className="cost-row-label">{formatDate(s.date)}</div>
                   <div className="cost-row-sub">
-                    {formatChars(s.chars)} · {s.records} 次
+                    {formatChars(s.chars)} · 计费{formatCharCount(s.billable, '字符')} · {s.records} 次
                   </div>
                 </div>
                 <div className="cost-row-right">{formatCost(s.yuan)}</div>
@@ -157,7 +162,9 @@ export function CostPage() {
               <div key={s.label} className="cost-row">
                 <div className="cost-row-left">
                   <div className="cost-row-label">{s.label} 起</div>
-                  <div className="cost-row-sub">{formatChars(s.chars)}</div>
+                  <div className="cost-row-sub">
+                    {formatChars(s.chars)} · 计费{formatCharCount(s.billable, '字符')}
+                  </div>
                 </div>
                 <div className="cost-row-right">{formatCost(s.yuan)}</div>
               </div>
@@ -169,7 +176,9 @@ export function CostPage() {
               <div key={s.label} className="cost-row">
                 <div className="cost-row-left">
                   <div className="cost-row-label">{s.label}</div>
-                  <div className="cost-row-sub">{formatChars(s.chars)}</div>
+                  <div className="cost-row-sub">
+                    {formatChars(s.chars)} · 计费{formatCharCount(s.billable, '字符')}
+                  </div>
                 </div>
                 <div className="cost-row-right">{formatCost(s.yuan)}</div>
               </div>
@@ -182,7 +191,7 @@ export function CostPage() {
                 <div className="cost-row-left">
                   <div className="cost-row-label">{s.bookTitle}</div>
                   <div className="cost-row-sub">
-                    {formatChars(s.chars)} · {s.records} 次 · 最后 {formatDate(s.lastDate)}
+                    {formatChars(s.chars)} · 计费{formatCharCount(s.billable, '字符')} · {s.records} 次 · 最后 {formatDate(s.lastDate)}
                   </div>
                 </div>
                 <div className="cost-row-right">{formatCost(s.yuan)}</div>
