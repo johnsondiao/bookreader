@@ -11,6 +11,7 @@ import {
   type PeriodStat,
   type BookStat,
 } from '../utils/costTracker'
+import { formatCharCount } from '../utils/charStats'
 
 type TabMode = 'day' | 'week' | 'month' | 'book'
 
@@ -21,10 +22,8 @@ const TABS: { id: TabMode; label: string }[] = [
   { id: 'book', label: '按书' },
 ]
 
-function formatChars(chars: number): string {
-  if (chars >= 10_000) return `${(chars / 10_000).toFixed(1)}万字`
-  return `${chars}字`
-}
+// 字数展示统一走 charStats，和导入统计/目录里的口径保持一致
+const formatChars = formatCharCount
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr + 'T00:00:00')

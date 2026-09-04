@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Book, TocEntry, TocReadStatus } from '../types'
+import { useAppStore } from '../store/useAppStore'
+import { costOfChars, formatCharCount, formatCostEstimate } from '../utils/charStats'
 
 function statusOf(
   entry: TocEntry,
@@ -24,6 +26,21 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const currentRef = useRef<HTMLButtonElement>(null)
+  const ensureBookCharStats = useAppStore((s) => s.ensureBookCharStats)
+
+  // 兜底：旧书还没统计过字数时补一下（书架挂载时已经会补全部）
+  useEffect(() => {
+    if (typeof book.totalChars !== 'number') ensureBookCharStats(book.id)
+  }, [book.id, book.totalChars, ensureBookCharStats])
+
+  /** chapterId → 计费字数；没统计过的章不入表，宁可不显示也不在渲染里全文重扫 */
+  const charByChapterId = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of book.chapters) {
+      if (typeof c.charCount === 'number') m.set(c.id, c.charCount)
+    }
+    return m
+  }, [book.chapters])
 
   const toc = useMemo(() => {
     if (book.toc?.length) return book.toc
@@ -133,6 +150,13 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
         </span>
       </div>
 
+      {typeof book.totalChars === 'number' && (
+        <div className="toc-total">
+          全书 {formatCharCount(book.totalChars)} · 全部朗读约需{' '}
+          <strong>{formatCostEstimate(costOfChars(book.totalChars))}</strong>
+        </div>
+      )}
+
       <div className="panel-body toc-body">
         {visible.length === 0 ? (
           <div className="toc-empty">没有匹配的章节</div>
@@ -142,6 +166,7 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
             const kids = !query.trim() && hasChildren(entry.id, entry.level)
             const isCurrent = entry.chapterId === currentChapterId
             const disabled = !entry.chapterId
+            const chars = entry.chapterId ? charByChapterId.get(entry.chapterId) : undefined
             return (
               <button
                 key={entry.id}
@@ -172,6 +197,11 @@ export function TocPanel({ book, currentChapterId, onJump, onClose }: TocPanelPr
                 </span>
                 <span className={`toc-dot ${st}`} />
                 <span className="toc-title">{entry.title}</span>
+                {typeof chars === 'number' && (
+                  <span className="toc-chars">
+                    {formatCharCount(chars)} · {formatCostEstimate(costOfChars(chars))}
+                  </span>
+                )}
                 {st === 'read' && <span className="toc-badge">已读</span>}
                 {st === 'reading' && <span className="toc-badge reading">在读</span>}
                 {disabled && <span className="toc-badge muted">无正文</span>}

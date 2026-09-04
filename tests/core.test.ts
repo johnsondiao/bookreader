@@ -4,17 +4,25 @@
  * 覆盖：
  *  - chapterParser: isSentenceEnd, splitSentences（句子切分——阅读器高亮与 TTS 分段对齐的基石）
  *  - minimaxTts: estimateTtsCost（费用计算，直接影响"今日花费"数字）
+ *  - charStats: countSpeakableChars / withCharStats（导入时的字数统计与整本、单章费用预估）
  *  - audioFileStore: safeName（文件名消毒——决定索引重建是否能找回音频）
  *  - tts: classifyTtsError（错误分类——决定是否自动重试）
  *
  * 运行：npm test / npx vitest run tests/core.test.ts
  */
 import { describe, expect, it } from 'vitest'
-import { isSentenceEnd, splitSentences, parseChapters } from '../src/utils/chapterParser'
+import { isSentenceEnd, splitSentences, parseChapters, splitParagraphTexts } from '../src/utils/chapterParser'
 import { estimateTtsCost } from '../src/utils/minimaxTts'
+import {
+  countSpeakableChars,
+  costOfChars,
+  formatCharCount,
+  formatCostEstimate,
+  withCharStats,
+} from '../src/utils/charStats'
 import { safeName } from '../src/utils/audioFileStore'
 import { classifyTtsError } from '../src/utils/tts'
-import { autoChapterizeIfNeeded } from '../src/store/useAppStore'
+import { autoChapterizeIfNeeded, useAppStore } from '../src/store/useAppStore'
 import type { Book } from '../src/types'
 
 describe('isSentenceEnd', () => {
@@ -143,6 +151,51 @@ describe('estimateTtsCost', () => {
   })
 })
 
+describe('charStats 字数统计', () => {
+  it('口径与 TTS 实际计费一致：段落 trim 后按 \n 拼接的长度', () => {
+    const text = '  第一段。  \n\n\n  第二段！ \n'
+    // tts.ts buildTextAndRanges 就是这么拼 fullText 的
+    expect(countSpeakableChars(text)).toBe(splitParagraphTexts(text).join('\n').length)
+  })
+  it('缩进、空行、首尾空白不计入（直接用 content.length 会虚高）', () => {
+    const text = '\n\n    正文六个字啊    \n\n\n    又六个字啊  \n'
+    expect(countSpeakableChars(text)).toBe(6 + 1 + 5)
+    expect(text.length).toBeGreaterThan(countSpeakableChars(text))
+  })
+  it('空文本 / 纯空白 => 0', () => {
+    expect(countSpeakableChars('')).toBe(0)
+    expect(countSpeakableChars('  \n \n\t\n ')).toBe(0)
+  })
+  it('withCharStats 补齐各章字数并汇总，已统计过的章沿用旧值', () => {
+    const r = withCharStats([
+      { id: 'a', content: '一千个字'.repeat(3) },
+      { id: 'b', content: '  两段\n\n文字  ', charCount: 999 },
+    ])
+    expect(r.chapters[0].charCount).toBe(12)
+    // 已有 charCount 不被重算覆盖
+    expect(r.chapters[1].charCount).toBe(999)
+    expect(r.totalChars).toBe(12 + 999)
+  })
+})
+
+describe('charStats 费用与展示格式', () => {
+  it('1 万字 => ¥2（Turbo 单价）', () => expect(costOfChars(10_000)).toBe(2))
+  it('负字数按 0 计，不出现负金额', () => expect(costOfChars(-5)).toBe(0))
+  it('formatCharCount 万/亿进位', () => {
+    expect(formatCharCount(999)).toBe('999字')
+    expect(formatCharCount(15_000)).toBe('1.5万字')
+    expect(formatCharCount(1_234_567)).toBe('123万字')
+    expect(formatCharCount(120_000_000)).toBe('1.20亿字')
+  })
+  it('formatCostEstimate 小额保留三位，大额千分位', () => {
+    expect(formatCostEstimate(0)).toBe('¥0')
+    expect(formatCostEstimate(0.0005)).toBe('<¥0.001')
+    expect(formatCostEstimate(0.6)).toBe('¥0.600')
+    expect(formatCostEstimate(12.3456)).toBe('¥12.35')
+    expect(formatCostEstimate(2469.4)).toBe('¥2,469')
+  })
+})
+
 describe('safeName', () => {
   it('保留小数点（P0 回归测试：毛选 2.0）', () => {
     expect(safeName('毛选 2.0')).toBe('毛选 2.0')
@@ -207,8 +260,39 @@ describe('autoChapterizeIfNeeded', () => {
     const cur = r!.chapters.find((c) => c.id === r!.chapterId)
     expect(cur?.title.includes('风波起')).toBe(true)
     expect(r!.chapterizeTryVersion).toBe(4)
+    // 重分章后字数统计跟着重算（否则 totalChars 仍是旧值）
+    expect(r!.totalChars).toBe(r!.chapters.reduce((s, c) => s + (c.charCount ?? -1), 0))
+    expect(r!.chapters.every((c) => typeof c.charCount === 'number' && c.charCount > 0)).toBe(true)
     // v4 结果不会再被重切
     expect(autoChapterizeIfNeeded(r!)).toBeNull()
+  })
+})
+
+describe('importTextBook（TXT 导入）', () => {
+  it('导入当场目录就绑好 chapterId、字数已统计，且不会被重切', () => {
+    const txt =
+      '引子内容，崇祯元年夏。\n\n' +
+      '第一章 甲\n正文一。\n\n' +
+      '第二章 乙\n正文二。\n\n' +
+      '第三章 丙\n正文三。'
+    const id = useAppStore.getState().importTextBook(txt, '测试书.txt')
+    const book = useAppStore.getState().getBook(id)
+    try {
+      expect(book).toBeTruthy()
+      expect(book!.chapters.length).toBeGreaterThanOrEqual(4)
+      // 坏目录（chapterId=null）会让刚导入的书目录整排「无正文」且无法跳转，
+      // 以前靠下次启动的 normalizeBook 才修好，现在必须当场就是好的
+      expect(book!.toc.length).toBe(book!.chapters.length)
+      expect(book!.toc.every((t) => !!t.chapterId)).toBe(true)
+      // 导入即统计：每章有 charCount，全书 totalChars = 各章之和
+      expect(book!.chapters.every((c) => (c.charCount ?? 0) > 0)).toBe(true)
+      expect(book!.totalChars).toBe(book!.chapters.reduce((s, c) => s + (c.charCount ?? 0), 0))
+      expect(estimateTtsCost(book!.totalChars!)).toBeGreaterThan(0)
+      // 已是最新切章规则：下次启动不再全文重切（避免字数漂移与白耗水合时间）
+      expect(autoChapterizeIfNeeded(book!)).toBeNull()
+    } finally {
+      useAppStore.getState().removeBook(id)
+    }
   })
 })
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { BookCard } from '../components/BookCard'
 import { useAppStore } from '../store/useAppStore'
 import { parseEpub } from '../utils/epubParser'
@@ -16,10 +16,22 @@ export function ShelfPage() {
   const removeBook = useAppStore((s) => s.removeBook)
   const importTextBook = useAppStore((s) => s.importTextBook)
   const importParsedBook = useAppStore((s) => s.importParsedBook)
+  const ensureBookCharStats = useAppStore((s) => s.ensureBookCharStats)
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
+
+  // 本功能上线前导入的旧书没有字数统计：等书架画完再补齐，结果会落盘，只跑一次
+  useEffect(() => {
+    let cancelled = false
+    void yieldToMain().then(() => {
+      if (!cancelled) ensureBookCharStats()
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [ensureBookCharStats])
 
   const onPickFile = async (file: File) => {
     setError('')
@@ -38,21 +50,17 @@ export function ShelfPage() {
             setProgress(`解析章节 ${Math.min(p.current + 1, p.total)}/${p.total}`)
           }
         })
-        setProgress('保存到书架…')
+        setProgress('统计字数…')
         await yieldToMain()
-        const id = importParsedBook(parsed)
-        // 等一帧再打开阅读器，避免解析刚结束立刻渲染大章节
-        await yieldToMain()
-        openBook(id)
+        // 导入成功后 store 会记下 importStatsBookId，由 Home 层弹字数/费用统计
+        importParsedBook(parsed)
         return
       }
       if (name.endsWith('.txt') || file.type.startsWith('text/')) {
         await yieldToMain()
         setProgress('解析 TXT…')
         const text = await file.text()
-        const id = importTextBook(text, file.name)
-        await yieldToMain()
-        openBook(id)
+        importTextBook(text, file.name)
         return
       }
       setError('暂仅支持 TXT、EPUB 格式')

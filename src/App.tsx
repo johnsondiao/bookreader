@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { App as CapacitorApp } from '@capacitor/app'
 import type { PluginListenerHandle } from '@capacitor/core'
 import { BottomNav } from './components/BottomNav'
+import { ImportStatsModal } from './components/ImportStatsModal'
 import { CostPage } from './pages/CostPage'
 import { HistoryPage } from './pages/HistoryPage'
 import { MePage } from './pages/MePage'
@@ -12,6 +13,12 @@ import './index.css'
 
 function Home() {
   const tab = useAppStore((s) => s.tab)
+  const openBook = useAppStore((s) => s.openBook)
+  const setImportStatsBook = useAppStore((s) => s.setImportStatsBook)
+  // 只在有值时取出对应书对象（引用稳定），避免阅读进度写入时整个 Home 跟着重渲染
+  const statsBook = useAppStore((s) =>
+    s.importStatsBookId ? (s.books.find((b) => b.id === s.importStatsBookId) ?? null) : null,
+  )
 
   return (
     <div className="home">
@@ -22,6 +29,17 @@ function Home() {
         {tab === 'me' && <MePage />}
       </div>
       <BottomNav />
+      {/* 导入结果统计放在 .home 层（非滚动容器），否则遮罩会被 .home-body 裁剪并跟着滚动 */}
+      {statsBook && (
+        <ImportStatsModal
+          book={statsBook}
+          onRead={() => {
+            setImportStatsBook(null)
+            openBook(statsBook.id)
+          }}
+          onClose={() => setImportStatsBook(null)}
+        />
+      )}
     </div>
   )
 }

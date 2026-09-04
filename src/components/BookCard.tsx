@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Book } from '../types'
+import { formatCharsCost } from '../utils/charStats'
 
 function formatProgress(p: number) {
   if (p <= 0) return '未读'
@@ -79,6 +80,9 @@ export function BookCard({ book, onOpen, onRemove }: Props) {
         <div className="info">
           {formatProgress(book.progressPercent)} · {formatTime(book.lastReadAt)}
         </div>
+        {typeof book.totalChars === 'number' && (
+          <div className="info cost">{formatCharsCost(book.totalChars)}</div>
+        )}
       </div>
     </div>
   )

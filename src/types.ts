@@ -17,6 +17,8 @@ export interface Chapter {
   content: string
   /** EPUB spine 文件路径，用于目录跳转匹配 */
   href?: string
+  /** 计费字数（口径见 utils/charStats），导入时统计，缺省表示旧数据尚未统计 */
+  charCount?: number
 }
 
 /** 扁平化目录项（带层级），来自 EPUB nav/NCX 或由章节生成 */
@@ -67,6 +69,8 @@ export interface Book {
   readChapterIds: string[]
   /** 自动重分章已尝试过的算法版本号（避免无法切分的书每次启动重复全文解析；算法升级时 bump 版本可重试） */
   chapterizeTryVersion?: number
+  /** 全书计费字数（各章 charCount 之和），用于估算整本朗读费用；缺省表示旧数据尚未统计 */
+  totalChars?: number
 }
 
 export interface ReaderSettings {

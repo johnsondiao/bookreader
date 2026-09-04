@@ -5,6 +5,7 @@ import type { Book, Chapter, ProgressSnapshot, ReaderSettings, Screen, TabId, To
 import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
+import { withCharStats } from '../utils/charStats'
 import { createIdbStorage } from '../utils/idbStorage'
 import { DEFAULT_VOICE_NOTE, DEFAULT_VOICE_ZH } from '../utils/ttsVoices'
 import { agentLog } from '../utils/agentLog'
@@ -17,13 +18,18 @@ interface AppState {
   screen: Screen
   activeBookId: string | null
   showImportHint: boolean
+  /** 刚导入、待展示字数/费用统计的书；null=不展示（不持久化） */
+  importStatsBookId: string | null
 
   setTab: (tab: TabId) => void
+  setImportStatsBook: (bookId: string | null) => void
   openBook: (bookId: string) => void
   closeReader: () => void
   importTextBook: (content: string, filename?: string) => string
   importParsedBook: (parsed: ParsedEbook) => string
   removeBook: (bookId: string) => void
+  /** 补齐字数统计（本功能上线前导入的旧书）：传 bookId 只补一本，不传则补全部；一次 set 只触发一次持久化 */
+  ensureBookCharStats: (bookId?: string) => void
   updateReadingProgress: (payload: {
     bookId: string
     chapterId: string
@@ -158,6 +164,9 @@ export function autoChapterizeIfNeeded(book: Book): Book | null {
     'A',
   )
   chapters = chapters.map((c, i) => ({ ...c, id: `ch-${i}` }))
+  // 重分章后章节全变了，字数统计必须跟着重算，否则 totalChars 是旧值
+  const stats = withCharStats(chapters)
+  chapters = stats.chapters
 
   // 进度重映射：旧位置的全局字符偏移 → 所在新章节 → 章内段落号
   let target = chapters[0]
@@ -195,6 +204,7 @@ export function autoChapterizeIfNeeded(book: Book): Book | null {
     chapterId: target.id,
     paragraphIndex: pIdx,
     chapterizeTryVersion: CHAPTERIZE_TRY_VERSION,
+    totalChars: stats.totalChars,
     readChapterIds:
       (book.readChapterIds?.length ?? 0) > 0
         ? chapters.slice(0, targetIdx + 1).map((c) => c.id)
@@ -218,11 +228,20 @@ function buildBook(parsed: {
     content: c.content,
     href: c.href,
   }))
+  // 导入时就统计各章计费字数与全书总字数，书架/目录/导入弹窗直接展示预估费用
+  const charStats = withCharStats(chapters)
 
-  const tocRaw = parsed.toc?.length
-    ? parsed.toc
-    : chapters.map((c) => ({ title: c.title, level: 0, href: c.href || '' }))
-  const toc: TocEntry[] = bindTocToChapters(tocRaw, chapters)
+  const tocRaw = parsed.toc?.length ? parsed.toc : null
+  // 目录生成跟 normalizeBook 用同一套规则：TXT 章节没 href，bindTocToChapters 永远匹配不上，
+  // 会产出一整排 chapterId=null 的坏目录（刚导入时目录全部「无正文」且无法跳转，要等下次启动才被修好）
+  let toc: TocEntry[]
+  if (!tocRaw || chapters.every((c) => !c.href)) {
+    toc = tocFromChapters(chapters)
+  } else {
+    const bound = bindTocToChapters(tocRaw, chapters)
+    // 仍全部无法匹配则退回章节目录
+    toc = bound.every((t) => !t.chapterId) ? tocFromChapters(chapters) : bound
+  }
 
   return {
     id: uuid(),
@@ -231,7 +250,7 @@ function buildBook(parsed: {
     coverColor: parsed.coverColor,
     coverEmoji: parsed.title.slice(0, 1) || '书',
     content: '',
-    chapters,
+    chapters: charStats.chapters,
     toc,
     addedAt: Date.now(),
     lastReadAt: Date.now(),
@@ -241,6 +260,11 @@ function buildBook(parsed: {
     progressPercent: 0,
     furthestChapterIndex: 0,
     readChapterIds: chapters[0] ? [chapters[0].id] : [],
+    totalChars: charStats.totalChars,
+    // 章节已经是当前 parseChapters 规则切出来的，打上版本标记：
+    // 否则下次启动 autoChapterizeIfNeeded 会把新书全文重切一遍（白耗水合时间，
+    // 且「标题行+正文」还原重建会给序章多算进标题的字符，字数会漂移）
+    chapterizeTryVersion: CHAPTERIZE_TRY_VERSION,
   }
 }
 
@@ -254,8 +278,11 @@ export const useAppStore = create<AppState>()(
       screen: 'home',
       activeBookId: null,
       showImportHint: true,
+      importStatsBookId: null,
 
       setTab: (tab) => set({ tab }),
+
+      setImportStatsBook: (bookId) => set({ importStatsBookId: bookId }),
 
       openBook: (bookId) => {
         set({
@@ -280,7 +307,7 @@ export const useAppStore = create<AppState>()(
           chapters,
           coverColor: COVER_COLORS[get().books.length % COVER_COLORS.length],
         })
-        set({ books: [book, ...get().books], showImportHint: false })
+        set({ books: [book, ...get().books], showImportHint: false, importStatsBookId: book.id })
         return book.id
       },
 
@@ -298,7 +325,7 @@ export const useAppStore = create<AppState>()(
           toc: parsed.toc,
           coverColor: COVER_COLORS[get().books.length % COVER_COLORS.length],
         })
-        set({ books: [book, ...get().books], showImportHint: false })
+        set({ books: [book, ...get().books], showImportHint: false, importStatsBookId: book.id })
         return book.id
       },
 
@@ -308,7 +335,25 @@ export const useAppStore = create<AppState>()(
           snapshots: get().snapshots.filter((s) => s.bookId !== bookId),
           activeBookId: get().activeBookId === bookId ? null : get().activeBookId,
           screen: get().activeBookId === bookId ? 'home' : get().screen,
+          importStatsBookId: get().importStatsBookId === bookId ? null : get().importStatsBookId,
         })
+      },
+
+      ensureBookCharStats: (bookId) => {
+        let filled = 0
+        let totalChars = 0
+        const next = get().books.map((b) => {
+          if (bookId && b.id !== bookId) return b
+          // 已统计过的书跳过：全书重扫是 O(总字数)，不能每次进书架都跑
+          if (typeof b.totalChars === 'number') return b
+          const r = withCharStats(b.chapters || [])
+          filled++
+          totalChars += r.totalChars
+          return { ...b, chapters: r.chapters, totalChars: r.totalChars }
+        })
+        if (filled === 0) return
+        agentLog('useAppStore:ensureBookCharStats', 'backfill', { bookId, filled, totalChars }, 'A')
+        set({ books: next })
       },
 
       updateReadingProgress: ({ bookId, chapterId, paragraphIndex, charOffset = 0, source, note, recordSnapshot = true }) => {
