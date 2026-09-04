@@ -418,13 +418,23 @@ async function prepareChapter(
     opts.engine === 'local'
       ? `local:${opts.localModelId ?? ''}:${opts.localSpeakerId ?? 0}`
       : 'online'
-  const cacheKey = `${chapterCacheKey(opts.bookId, opts.chapterId, textVoice.key, noteVoice.key)}__${engineTag}`
+  const baseKey = chapterCacheKey(opts.bookId, opts.chapterId, textVoice.key, noteVoice.key)
+  const cacheKey = `${baseKey}__${engineTag}`
 
   let clip: ChapterAudio | null = null
   try {
     clip = await getClip(cacheKey)
   } catch {
     clip = null
+  }
+  // 缓存键本次才加上引擎后缀：老缓存（无后缀）内容仍然有效就直接复用，
+  // 否则升级后第一次朗读会把已花钱合成的章节全部重合成、再扣一次钱
+  if (!clip && opts.engine !== 'local') {
+    try {
+      clip = await getClip(baseKey)
+    } catch {
+      clip = null
+    }
   }
 
   const segments = planSegments(paras, paraRanges, textVoice, noteVoice)
@@ -436,7 +446,9 @@ async function prepareChapter(
   // 不做这一步，淘汰过的章节重听就得重新合成重新扣费——钱花了，音频却还在磁盘上躺着。
   // 本地引擎不花钱，重合成只是费时间，不走这条回灌路径。
   if (opts.engine !== 'local' && segments.some((s) => !s.blob)) {
-    const fromFile = await restoreClipFromFile(cacheKey, textHash)
+    let fromFile = await restoreClipFromFile(cacheKey, textHash)
+    // 同上：外部文件也是用老键存的
+    if (!fromFile) fromFile = await restoreClipFromFile(baseKey, textHash)
     restoreBlobs(segments, fromFile, textHash)
   }
 
