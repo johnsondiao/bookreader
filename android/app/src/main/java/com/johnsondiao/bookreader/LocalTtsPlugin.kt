@@ -18,8 +18,6 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 /**
  * 本地神经网络 TTS（sherpa-onnx，ONNX Runtime 原生推理）。
@@ -374,11 +372,22 @@ class LocalTtsPlugin : Plugin() {
         val engine = synchronized(lock) { tts }
         if (engine == null) return call.reject("本地引擎未初始化，请先 init")
         try {
-            val audio = synchronized(lock) { engine.generate(text, sid, speed) }
-            val wav = encodeWav(audio.samples, audio.sampleRate)
+            // 流式回传：模型看整块上下文（语调连贯），音频按回调小块过桥。
+            // 一次性返回整块 WAV 的 base64 会有十几 MB 字符串，手机上几个块在飞就 OOM。
+            var delivered = 0
+            val audio = synchronized(lock) {
+                engine.generateWithCallback(text, sid, speed) { chunk ->
+                    delivered += chunk.size
+                    emitPcm(chunk)
+                    1 // 返回 1 继续生成
+                }
+            }
+            // 回调可能没覆盖尾部样本，补齐
+            if (delivered < audio.samples.size) {
+                emitPcm(audio.samples.copyOfRange(delivered, audio.samples.size))
+            }
             call.resolve(
                 JSObject().apply {
-                    put("wavBase64", Base64.encodeToString(wav, Base64.NO_WRAP))
                     put("sampleRate", audio.sampleRate)
                     put("samples", audio.samples.size)
                 },
@@ -399,27 +408,18 @@ class LocalTtsPlugin : Plugin() {
         call.resolve(JSObject().apply { put("ok", true) })
     }
 
-    /** Float32 [-1,1] → 16-bit PCM WAV（小端），播放端 <audio> 直接能吃 */
-    private fun encodeWav(samples: FloatArray, sampleRate: Int): ByteArray {
-        val pcm = ShortArray(samples.size)
-        for (i in samples.indices) {
-            pcm[i] = (samples[i] * 32767f).coerceIn(-32768f, 32767f).toInt().toShort()
+    /** Float32 块 → PCM16 小端 → base64 事件；JS 侧攒齐后自己套 WAV 头 */
+    private fun emitPcm(chunk: FloatArray) {
+        if (chunk.isEmpty()) return
+        val bytes = ByteArray(chunk.size * 2)
+        for (i in chunk.indices) {
+            val v = (chunk[i] * 32767f).coerceIn(-32768f, 32767f).toInt()
+            bytes[i * 2] = (v and 0xff).toByte()
+            bytes[i * 2 + 1] = ((v shr 8) and 0xff).toByte()
         }
-        val buf = ByteBuffer.allocate(44 + pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN)
-        buf.put("RIFF".toByteArray(Charsets.US_ASCII))
-        buf.putInt(36 + pcm.size * 2)
-        buf.put("WAVE".toByteArray(Charsets.US_ASCII))
-        buf.put("fmt ".toByteArray(Charsets.US_ASCII))
-        buf.putInt(16)
-        buf.putShort(1) // PCM
-        buf.putShort(1) // mono
-        buf.putInt(sampleRate)
-        buf.putInt(sampleRate * 2)
-        buf.putShort(2)
-        buf.putShort(16)
-        buf.put("data".toByteArray(Charsets.US_ASCII))
-        buf.putInt(pcm.size * 2)
-        for (s in pcm) buf.putShort(s)
-        return buf.array()
+        notifyListeners(
+            "ttsPcm",
+            JSObject().apply { put("pcm", Base64.encodeToString(bytes, Base64.NO_WRAP)) },
+        )
     }
 }

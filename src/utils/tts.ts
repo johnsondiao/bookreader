@@ -3,11 +3,11 @@
  *
  * 工作模式：
  *   - 段落带类型（text/note），正文用 voiceKey，注释段用 noteVoiceKey
- *   - 相同音色的连续段落合并成一个合成块，整块 T2A v2 同步合成 mp3，
- *     减少接口调用次数、省成本、音色切换自然
- *   - 每段合成结果（PlaySegment blob 序列）按 bookId:chapterId:voiceKey_noteVoiceKey
+ *   - 同段内连续句子合并成一个合成块（块是合成单位，句子是高亮/导航单位）：
+ *     模型看到整块上下文才能产生连贯语调，一句一调会听感机械
+ *   - 每块合成结果（PlaySegment blob 序列）按 bookId:chapterId:voiceKey_noteVoiceKey
  *     为维度缓存，textHash 校验；已缓存直接播放，绝不重复合成
- *   - 播放统一按「段落全局字符比例」估算当前段，回调高亮
+ *   - 播放统一按「块内字符比例」估算当前句，回调高亮
  */
 import { Capacitor } from '@capacitor/core'
 import { agentLog } from './agentLog'
@@ -256,10 +256,18 @@ interface CharRange {
 }
 
 /**
- * 一个播放段 = 一个句子，对应一次语音合成 API 调用。
- * - voiceKey：该段使用的音色
+ * 一个播放块 = 同一段内连续若干句子，对应一次语音合成调用。
+ *
+ * 为什么按块而不是按句：模型只看到孤立一句话时只能给默认平调，句与句之间
+ * 没有语气承接，听感就是"一句一句蹦"。把整段（或段内一大块）交给模型，
+ * 它才能产生连贯的语调起伏。句子仍然是播放/高亮/导航的单位，
+ * 靠块内字符位置反推（见 playSegments 的 reportAt）。
+ *
+ * - voiceKey：该块使用的音色
  * - firstPara/lastPara：在 paragraphs 中的索引（闭区间）
- * - charStart/charEnd：该段在全局拼接文本中的字符区间
+ * - charStart/charEnd：该块在全局拼接文本中的字符区间
+ * - sentStart：块内第一句的全局句子索引
+ * - sentCharStarts：块内每句起始的绝对字符偏移（与 sentStart 平行）
  * - blob：合成好的音频（缓存里就有，否则在合成阶段赋值）
  */
 interface PlaySegment {
@@ -271,6 +279,8 @@ interface PlaySegment {
   lastPara: number
   charStart: number
   charEnd: number
+  sentStart: number
+  sentCharStarts: number[]
   blob?: Blob
   /** 消费者等待此 promise（生产者合成完该段后 resolve） */
   blobReady?: Promise<void>
@@ -292,12 +302,20 @@ function buildTextAndRanges(paras: Paragraph[]): { fullText: string; paraRanges:
 }
 
 /**
- * 按句子切分，生成 PlaySegment 列表：每个句子 = 一个 segment = 一次 API 调用。
- *   - 句子结束标点：。！？；…\n . ! ? ;
- *   - 每个句子用所属段落的音色（正文/注释）
- *   - 段尾没有结束标点的剩余部分也作为一个 segment
+ * 单个合成块的字符上限。
+ * 太小→退回"一句一念"失去上下文；太大→首句等待久、单次请求体积大。
+ * 260 字约等于有声书一句呼吸单元的两到三句，听感与延迟的折中。
  */
-function planSegments(
+const MAX_BLOCK_CHARS = 260
+
+/**
+ * 规划合成块：先按句切（保留句子边界供高亮/导航），再把同段内连续句子合并成块。
+ *   - 块不跨段落：段落是天然的韵律单元，跨段合并会把两段语气糊在一起
+ *   - 块不跨音色：正文/注释切换必须另起一次合成
+ *   - 句子结束标点：。！？；…\n . ! ? ;
+ *   - 段尾没有结束标点的剩余部分也算一句
+ */
+export function planSegments(
   paras: Paragraph[],
   paraRanges: CharRange[],
   textVoice: VoiceDef,
@@ -306,6 +324,7 @@ function planSegments(
   const pickVoice = (k: ParagraphKind) => (k === 'note' ? noteVoice : textVoice)
   const boostOf = (v: VoiceDef) => (v.lang === 'en' ? 'English' : 'Chinese')
   const out: PlaySegment[] = []
+  let globalSent = 0
 
   for (let pi = 0; pi < paras.length; pi++) {
     const para = paras[pi]
@@ -314,37 +333,50 @@ function planSegments(
     const text = para.text
     if (!text) continue
 
-    let sentStart = 0 // 当前句子在段落内的起始偏移
+    // 段内句子起始偏移（绝对坐标）；切分规则与 splitSentences 一致，
+    // 保证这里的全局句子索引和 ReaderPage 的 paraSentences 对得上
+    const sentStarts: number[] = []
+    let sentStart = 0
     for (let ci = 0; ci < text.length; ci++) {
       if (isSentenceEnd(text[ci])) {
-        const absStart = range.start + sentStart
-        const absEnd = range.start + ci + 1 // 包含标点本身
-        if (absEnd > absStart) {
-          out.push({
-            voiceKey: voice.key,
-            voiceId: voice.voiceId,
-            languageBoost: boostOf(voice),
-            firstPara: pi,
-            lastPara: pi,
-            charStart: absStart,
-            charEnd: absEnd,
-          })
-        }
+        if (ci + 1 > sentStart) sentStarts.push(range.start + sentStart)
         sentStart = ci + 1
       }
     }
-    // 段尾没有结束标点的剩余部分
-    if (sentStart < text.length) {
+    if (sentStart < text.length) sentStarts.push(range.start + sentStart)
+    if (sentStarts.length === 0) continue
+
+    // 合并成块：累加句子字符，超上限就在上一句后面断开
+    let from = 0
+    while (from < sentStarts.length) {
+      let last = sentStarts.length - 1
+      let endChar = range.end
+      let acc = 0
+      for (let k = from; k < sentStarts.length; k++) {
+        const sEnd = k + 1 < sentStarts.length ? sentStarts[k + 1] : range.end
+        acc += sEnd - sentStarts[k]
+        if (acc > MAX_BLOCK_CHARS && k > from) {
+          last = k - 1
+          endChar = sentStarts[k]
+          break
+        }
+        last = k
+        endChar = sEnd
+      }
       out.push({
         voiceKey: voice.key,
         voiceId: voice.voiceId,
         languageBoost: boostOf(voice),
         firstPara: pi,
         lastPara: pi,
-        charStart: range.start + sentStart,
-        charEnd: range.end,
+        charStart: sentStarts[from],
+        charEnd: endChar,
+        sentStart: globalSent + from,
+        sentCharStarts: sentStarts.slice(from, last + 1),
       })
+      from = last + 1
     }
+    globalSent += sentStarts.length
   }
 
   return out
@@ -354,6 +386,13 @@ const clampRate = (r: number) => Math.min(2, Math.max(0.5, r))
 
 /** 合成节流：每合成完一段后等待的间隔（ms），控制 API 请求频率避免触发平台限流 */
 const SYNTH_GAP_MS = 1000
+
+/**
+ * 块与块之间的静默间隔（ms）。
+ * 模型只在块内部产生句间停顿；块与块之间如果不补一点静默，
+ * 段与段会紧贴着念，听感机械。350ms 接近真人换气的停顿。
+ */
+const BLOCK_GAP_MS = 350
 
 /**
  * 章节音频缓存键（唯一出处，合成/播放/下划线标记共用）。
@@ -372,6 +411,8 @@ interface PreparedChapter {
   cacheKey: string
   segments: PlaySegment[]
   startSegIdx: number
+  /** 起始句子的绝对字符偏移（用于块内 seek） */
+  startChar: number
 }
 
 /** 用缓存里的分段音频回填 segments.blob（按字符区间精确匹配，支持部分命中） */
@@ -452,18 +493,29 @@ async function prepareChapter(
     restoreBlobs(segments, fromFile, textHash)
   }
 
-  // 计算起始 segment（生产者和消费者共用）
-  let startSegIdx: number
-  if (opts.startSentenceIndex != null) {
-    startSegIdx = Math.max(0, Math.min(opts.startSentenceIndex, segments.length - 1))
-  } else {
-    const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
-    const startChar = paraRanges[startIndex].start
-    startSegIdx = segments.findIndex((s) => startChar >= s.charStart && startChar < s.charEnd)
-    if (startSegIdx < 0) startSegIdx = 0
+  // 计算起始块（生产者和消费者共用）：传入的是全局句子索引，
+  // 先找到包含该句的块，再记下句子在块内的字符偏移供 seek
+  let startSegIdx = 0
+  let startChar = segments[0]?.charStart ?? 0
+  if (segments.length > 0) {
+    if (opts.startSentenceIndex != null) {
+      const target = Math.max(0, opts.startSentenceIndex)
+      const idx = segments.findIndex(
+        (s) => target >= s.sentStart && target < s.sentStart + s.sentCharStarts.length,
+      )
+      startSegIdx = idx >= 0 ? idx : Math.min(target, segments.length - 1)
+      const seg = segments[startSegIdx]
+      startChar = seg.sentCharStarts[target - seg.sentStart] ?? seg.charStart
+    } else {
+      const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
+      const want = paraRanges[startIndex].start
+      const idx = segments.findIndex((s) => want >= s.charStart && want < s.charEnd)
+      startSegIdx = idx >= 0 ? idx : 0
+      startChar = want
+    }
   }
 
-  return { fullText, paraRanges, textHash, cacheKey, segments, startSegIdx }
+  return { fullText, paraRanges, textHash, cacheKey, segments, startSegIdx, startChar }
 }
 
 /** 保存已有 blob 的段：IDB 缓存 + 物理文件。返回落盘 Promise，供串行排队 */
@@ -778,9 +830,8 @@ export function createTtsController(): TtsController {
     opts: PlayChapterOpts,
     epoch: number,
     startSegIdx: number,
+    startChar: number,
   ) => {
-    const startIndex = segments[startSegIdx]?.firstPara ?? 0
-
     for (let si = startSegIdx; si < segments.length; si++) {
       assertAlive(epoch)
       const seg = segments[si]
@@ -810,13 +861,18 @@ export function createTtsController(): TtsController {
       const el = new Audio(src)
       audio = el
       el.playbackRate = clampRate(opts.rate ?? 1)
+      // 变速不变调：默认 playbackRate 会连音调一起拉高，1.3x 听起来像快进的小动物
+      const pitchEl = el as HTMLAudioElement & { preservesPitch?: boolean; webkitPreservesPitch?: boolean }
+      pitchEl.preservesPitch = true
+      pitchEl.webkitPreservesPitch = true
       el.volume = 1
 
       await waitForMetadata(el)
       assertAlive(epoch)
 
-      let lastReported = -1
-      const reportAt = (force?: number) => {
+      let lastReportedPara = -1
+      let lastReportedSent = -1
+      const reportAt = () => {
         const dur = el.duration
         let charOff = seg.charStart
         if (isFinite(dur) && dur > 0) {
@@ -828,10 +884,19 @@ export function createTtsController(): TtsController {
           if (paraRanges[k].start <= charOff) p = k
           else break
         }
-        if (force !== undefined) p = force
-        if (p !== lastReported) {
-          lastReported = p
+        if (p !== lastReportedPara) {
+          lastReportedPara = p
           opts.onParagraph?.(p)
+        }
+        // 句子高亮：块内按字符位置反推全局句子索引（合成是按块的，高亮仍按句）
+        let sIdx = seg.sentStart
+        for (let k = 1; k < seg.sentCharStarts.length; k++) {
+          if (seg.sentCharStarts[k] <= charOff) sIdx = seg.sentStart + k
+          else break
+        }
+        if (sIdx !== lastReportedSent) {
+          lastReportedSent = sIdx
+          opts.onSentence?.(sIdx)
         }
       }
       const onTime = () => {
@@ -841,20 +906,19 @@ export function createTtsController(): TtsController {
       el.addEventListener('timeupdate', onTime)
 
       if (si === startSegIdx) {
-        const ps = paraRanges[startIndex].start
-        if (ps > seg.charStart && isFinite(el.duration) && el.duration > 0) {
-          const ratio = (ps - seg.charStart) / (seg.charEnd - seg.charStart)
+        // 从块中间的句子开始：按字符比例 seek 到句首
+        if (startChar > seg.charStart && isFinite(el.duration) && el.duration > 0) {
+          const ratio = (startChar - seg.charStart) / (seg.charEnd - seg.charStart)
           try {
             el.currentTime = Math.max(0, ratio * el.duration)
           } catch {
             /* ignore */
           }
         }
-        reportAt(startIndex)
+        reportAt()
       }
 
       status = 'speaking'
-      opts.onSentence?.(si)
       opts.onStatus?.('speaking')
       agentLog(
         'tts.ts:playSegments',
@@ -875,6 +939,11 @@ export function createTtsController(): TtsController {
         el.removeEventListener('timeupdate', onTime)
       }
       assertAlive(epoch)
+      // 块间自然停顿（可被 stop 中断）；最后一块不等
+      if (si < segments.length - 1) {
+        await sleepInterruptible(BLOCK_GAP_MS, epoch)
+        assertAlive(epoch)
+      }
     }
 
     status = 'idle'
@@ -942,7 +1011,7 @@ export function createTtsController(): TtsController {
         opts.onStatus?.('idle', '本章无可朗读内容')
         return
       }
-      const { segments, paraRanges, fullText, cacheKey, startSegIdx } = prep
+      const { segments, paraRanges, fullText, cacheKey, startSegIdx, startChar } = prep
       currentSegments = segments
 
       const needSynth = segments.some((s) => !s.blob)
@@ -992,7 +1061,7 @@ export function createTtsController(): TtsController {
 
       assertAlive(epoch)
       try {
-        await playSegments(segments, paraRanges, opts, epoch, startSegIdx)
+        await playSegments(segments, paraRanges, opts, epoch, startSegIdx, startChar)
       } catch (err) {
         if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return

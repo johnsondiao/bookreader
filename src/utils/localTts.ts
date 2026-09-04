@@ -43,7 +43,6 @@ interface LocalTtsPluginInterface {
     speakers: number
   }>
   synth(o: { text: string; sid?: number; speed?: number }): Promise<{
-    wavBase64: string
     sampleRate: number
     samples: number
   }>
@@ -51,6 +50,10 @@ interface LocalTtsPluginInterface {
   addListener(
     eventName: 'downloadProgress',
     cb: (e: LocalDownloadProgress) => void,
+  ): Promise<{ remove: () => Promise<void> }>
+  addListener(
+    eventName: 'ttsPcm',
+    cb: (e: { pcm: string }) => void,
   ): Promise<{ remove: () => Promise<void> }>
 }
 
@@ -70,12 +73,36 @@ export async function listLocalModels(): Promise<LocalModelInfo[]> {
   return r.models ?? []
 }
 
-/** base64 WAV → Blob（播放端 <audio> 与缓存都吃 Blob） */
-function base64ToBlob(b64: string): Blob {
+/** base64 → 字节（显式 ArrayBuffer：TS6 的 BlobPart 不接受 ArrayBufferLike 视图） */
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64)
-  const bytes = new Uint8Array(bin.length)
+  const bytes = new Uint8Array(new ArrayBuffer(bin.length))
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return new Blob([bytes], { type: 'audio/wav' })
+  return bytes
+}
+
+/** PCM16 小端块拼成 WAV Blob（头在 JS 侧套，原生只流式回传 PCM） */
+function wavBlobFromPcm(parts: Uint8Array<ArrayBuffer>[], sampleRate: number): Blob {
+  let total = 0
+  for (const p of parts) total += p.byteLength
+  const header = new DataView(new ArrayBuffer(44))
+  const wr = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) header.setUint8(off + i, s.charCodeAt(i))
+  }
+  wr(0, 'RIFF')
+  header.setUint32(4, 36 + total, true)
+  wr(8, 'WAVE')
+  wr(12, 'fmt ')
+  header.setUint32(16, 16, true)
+  header.setUint16(20, 1, true) // PCM
+  header.setUint16(22, 1, true) // mono
+  header.setUint32(24, sampleRate, true)
+  header.setUint32(28, sampleRate * 2, true)
+  header.setUint16(32, 2, true)
+  header.setUint16(34, 16, true)
+  wr(36, 'data')
+  header.setUint32(40, total, true)
+  return new Blob([header.buffer, ...parts], { type: 'audio/wav' })
 }
 
 let enginePromise: Promise<void> | null = null
@@ -102,16 +129,28 @@ export function ensureLocalEngine(modelId: string): Promise<void> {
   return enginePromise
 }
 
-/** 合成一句，返回 WAV Blob。调用方负责先 ensureLocalEngine */
+/**
+ * 合成一块，返回 WAV Blob。
+ * 原生端用 generateWithCallback：模型看整块上下文（语调连贯），
+ * 音频按回调小块过桥（避免十几 MB 的 base64 字符串压垮 JS 堆），这里攒齐后套 WAV 头。
+ */
 export async function synthLocalSegment(
   text: string,
   modelId: string,
   speakerId: number,
 ): Promise<Blob> {
   await ensureLocalEngine(modelId)
-  const r = await LocalTts.synth({ text, sid: speakerId, speed: 1 })
-  if (!r?.wavBase64) throw new Error('本地合成返回为空')
-  return base64ToBlob(r.wavBase64)
+  const parts: Uint8Array<ArrayBuffer>[] = []
+  const handle = await LocalTts.addListener('ttsPcm', (e) => {
+    if (e.pcm) parts.push(base64ToBytes(e.pcm))
+  })
+  try {
+    const r = await LocalTts.synth({ text, sid: speakerId, speed: 1 })
+    if (parts.length === 0) throw new Error('本地合成未返回音频')
+    return wavBlobFromPcm(parts, r.sampleRate)
+  } finally {
+    void handle.remove()
+  }
 }
 
 export async function downloadLocalModel(

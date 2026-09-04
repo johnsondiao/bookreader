@@ -24,7 +24,8 @@ import {
   withCharStats,
 } from '../src/utils/charStats'
 import { safeName } from '../src/utils/audioFileStore'
-import { classifyTtsError } from '../src/utils/tts'
+import { classifyTtsError, planSegments, DEFAULT_VOICE_ZH, DEFAULT_VOICE_NOTE } from '../src/utils/tts'
+import { getVoice } from '../src/utils/ttsVoices'
 import { autoChapterizeIfNeeded, useAppStore } from '../src/store/useAppStore'
 import { addSynthChars, getTodayBillable, getTodayChars, getTodayCostYuan } from '../src/utils/costTracker'
 import { getClip, putClip, type ChapterAudio } from '../src/utils/audioCache'
@@ -377,6 +378,71 @@ describe('audioCache 内存快照（消除“刚合成完就重开本章”的�
     }
     expect(await getClip('lru-4')).not.toBeNull()
     expect(await getClip('lru-1')).toBeNull()
+  })
+})
+
+describe('planSegments 合成块规划（语调自然度）', () => {
+  const mk = (texts: string[], kinds?: ('text' | 'note')[]) => {
+    const paras = texts.map((t, i) => ({ text: t, kind: kinds?.[i] ?? ('text' as const) }))
+    let off = 0
+    const ranges = paras.map((p) => {
+      const r = { start: off, end: off + p.text.length }
+      off += p.text.length + 1
+      return r
+    })
+    return { paras, ranges }
+  }
+  const tv = () => getVoice(DEFAULT_VOICE_ZH)!
+  const nv = () => getVoice(DEFAULT_VOICE_NOTE)!
+
+  it('段内多句合并成一个块（模型拿到上下文才有连贯语调）', () => {
+    const { paras, ranges } = mk(['第一句。第二句！第三句？'])
+    const segs = planSegments(paras, ranges, tv(), nv())
+    expect(segs).toHaveLength(1)
+    expect(segs[0].sentStart).toBe(0)
+    expect(segs[0].sentCharStarts).toHaveLength(3)
+    expect(segs[0].charStart).toBe(0)
+    expect(segs[0].charEnd).toBe(paras[0].text.length)
+  })
+
+  it('超过块上限就断开，且全局句子索引连续', () => {
+    const sent = '甲乙丙丁戊己庚辛壬癸子丑寅卯，继续写下去。' // 21 字/句 × 14 = 294 字
+    const { paras, ranges } = mk([Array(14).fill(sent).join('')])
+    const segs = planSegments(paras, ranges, tv(), nv())
+    expect(segs.length).toBe(2)
+    // 12 句 = 252 字 ≤ 260；加第 13 句就超上限，所以在第 12 句后断
+    expect(segs[0].sentCharStarts.length).toBe(12)
+    expect(segs[1].sentStart).toBe(12)
+    expect(segs[1].sentCharStarts.length).toBe(2)
+    // 块首尾拼接 = 整段
+    expect(segs[0].charStart).toBe(0)
+    expect(segs[1].charEnd).toBe(paras[0].text.length)
+    expect(segs[0].charEnd).toBe(segs[1].charStart)
+  })
+
+  it('块不跨段落：两段各自成块，句子索引跨段连续', () => {
+    const { paras, ranges } = mk(['一段一句。一段二句。', '二段一句。'])
+    const segs = planSegments(paras, ranges, tv(), nv())
+    expect(segs).toHaveLength(2)
+    expect(segs[0].firstPara).toBe(0)
+    expect(segs[1].firstPara).toBe(1)
+    expect(segs[1].sentStart).toBe(2)
+  })
+
+  it('块不跨音色：注释段必须另起合成', () => {
+    const { paras, ranges } = mk(['正文一句。', '* 注释一句。'], ['text', 'note'])
+    const segs = planSegments(paras, ranges, tv(), nv())
+    expect(segs).toHaveLength(2)
+    expect(segs[0].voiceKey).not.toBe(segs[1].voiceKey)
+  })
+
+  it('块内句子数之和 = splitSentences 的句子总数（高亮索引对齐的前提）', () => {
+    const texts = ['第一句。第二句。', '注释一句。', '尾段没有标点']
+    const { paras, ranges } = mk(texts, ['text', 'note', 'text'])
+    const segs = planSegments(paras, ranges, tv(), nv())
+    const total = segs.reduce((s, x) => s + x.sentCharStarts.length, 0)
+    const expectTotal = texts.reduce((s, t) => s + splitSentences(t).length, 0)
+    expect(total).toBe(expectTotal)
   })
 })
 
