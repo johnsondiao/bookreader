@@ -72,6 +72,32 @@ class LocalTtsPlugin : Plugin() {
     private val lock = Any()
     private var manifestCache: List<ManifestModel>? = null
 
+    /**
+     * 原生侧日志环：追加写 cacheDir/localtts.log（进程崩了文件还在）。
+     * 每条带 Java 堆 free/max，用于区分 OOM 与其它原生崩溃。
+     */
+    private fun nlog(msg: String) {
+        try {
+            val rt = Runtime.getRuntime()
+            val line = "${System.currentTimeMillis()} $msg free=${rt.freeMemory() / 1048576}MB max=${rt.maxMemory() / 1048576}MB\n"
+            val f = File(context.cacheDir, "localtts.log")
+            if (f.exists() && f.length() > 300_000) f.delete()
+            FileOutputStream(f, true).use { it.write(line.toByteArray()) }
+        } catch (_: Exception) {
+            /* 日志失败不影响主流程 */
+        }
+    }
+
+    @PluginMethod
+    fun getNativeLog(call: PluginCall) {
+        val text = try {
+            File(context.cacheDir, "localtts.log").takeIf { it.exists() }?.readText() ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+        call.resolve(JSObject().apply { put("log", text) })
+    }
+
     /* ==================== 清单与模型状态 ==================== */
 
     private fun loadManifest(): List<ManifestModel> {
@@ -272,6 +298,7 @@ class LocalTtsPlugin : Plugin() {
         val m = manifestOf(modelId) ?: return call.reject("清单里没有模型 $modelId")
         if (!isReady(m)) return call.reject("模型未就绪：${spec.name}，请先在设置里下载")
         val threads = call.getInt("threads") ?: if (modelId.startsWith("kokoro")) 4 else 2
+        nlog("init start model=$modelId threads=$threads loaded=$loadedModelId")
 
         synchronized(lock) {
             if (loadedModelId == modelId && tts != null) {
@@ -295,8 +322,10 @@ class LocalTtsPlugin : Plugin() {
                 // 模型加载是 CPU/IO 密集（int8 melo 约 1-2 秒）；插件方法默认在后台线程执行
                 tts = OfflineTts(assetManager = assets, config = buildConfig(modelId, dir, threads))
                 loadedModelId = modelId
+                nlog("init ok model=$modelId rate=${tts?.sampleRate()} speakers=${tts?.numSpeakers()}")
                 Log.i(TAG, "loaded $modelId sampleRate=${tts?.sampleRate()} speakers=${tts?.numSpeakers()}")
             } catch (e: Exception) {
+                nlog("init FAIL model=$modelId err=${e.message}")
                 Log.e(TAG, "加载模型失败 $modelId", e)
                 call.reject("加载模型失败：${e.message}")
                 return
@@ -371,6 +400,7 @@ class LocalTtsPlugin : Plugin() {
         val speed = call.getFloat("speed") ?: 1.0f
         val engine = synchronized(lock) { tts }
         if (engine == null) return call.reject("本地引擎未初始化，请先 init")
+        nlog("synth start chars=${text.length} sid=$sid")
         try {
             // 流式回传：模型看整块上下文（语调连贯），音频按回调小块过桥。
             // 一次性返回整块 WAV 的 base64 会有十几 MB 字符串，手机上几个块在飞就 OOM。
@@ -386,6 +416,7 @@ class LocalTtsPlugin : Plugin() {
             if (delivered < audio.samples.size) {
                 emitPcm(audio.samples.copyOfRange(delivered, audio.samples.size))
             }
+            nlog("synth ok samples=${audio.samples.size} rate=${audio.sampleRate} chunks=$delivered")
             call.resolve(
                 JSObject().apply {
                     put("sampleRate", audio.sampleRate)
@@ -393,6 +424,7 @@ class LocalTtsPlugin : Plugin() {
                 },
             )
         } catch (e: Exception) {
+            nlog("synth FAIL chars=${text.length} err=${e.message}")
             Log.e(TAG, "合成失败", e)
             call.reject("本地合成失败：${e.message}")
         }

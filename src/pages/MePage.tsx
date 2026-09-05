@@ -17,6 +17,7 @@ import {
 } from '../utils/audioFileStore'
 import { getTodayCostYuan, formatCost } from '../utils/costTracker'
 import { splitParagraphs, splitSentences } from '../utils/chapterParser'
+import { copyDiagnostic } from '../utils/diagnosticDump'
 import { READER_THEMES, type AudioFileRecord } from '../types'
 
 function fmtSize(bytes: number): string {
@@ -307,7 +308,7 @@ export function MePage() {
     <div>
       <header className="page-header">
         <h1>我的</h1>
-        <p className="sub">朗阅 · 本地电子书朗读</p>
+        <p className="sub">朗阅 · 本地电子书朗读 · v{__APP_VERSION__} (build {__APP_BUILD__})</p>
       </header>
 
       <div className="me-card">
@@ -375,6 +376,18 @@ export function MePage() {
               ? `¥${(settings.dailyBudgetYuan ?? 0).toFixed(2)}`
               : '不限制'}
           </span>
+        </button>
+        <button
+          type="button"
+          className="setting-row"
+          onClick={() => {
+            void copyDiagnostic(null).then((ok) => {
+              window.alert(ok ? '诊断日志已复制，请粘贴发给开发者' : '复制失败，请截图本页面')
+            })
+          }}
+        >
+          <span>复制诊断日志</span>
+          <span className="val">闪退排查用</span>
         </button>
       </div>
 

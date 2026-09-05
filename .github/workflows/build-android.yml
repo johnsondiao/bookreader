@@ -63,13 +63,16 @@ jobs:
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk out/langyue-release.apk
+          # 带版本号的副本：用户能直接看出装的是哪一版
+          V=$(node -p "require('./package.json').version")
+          cp out/langyue-release.apk "out/langyue-${V}-run${GITHUB_RUN_NUMBER}.apk"
           ls -lh out/
 
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: bookreader-release-apk
-          path: out/langyue-release.apk
+          path: out/*.apk
           # 免费版 GitHub Actions 存储额度只有 ~500MB，retention 3 天避免堆积；
           # 日常下载走滚动 Release（公开仓库免登录），正式版以 tag Release 为准。
           retention-days: 3
@@ -86,6 +89,7 @@ jobs:
               --notes "每次推送 main 自动更新附件；公开仓库可直接下载，无需登录。"
           fi
           gh release upload "$TAG" out/langyue-release.apk --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" out/langyue-*-run*.apk --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "commit: ${GITHUB_SHA}
           run: #${{ github.run_number }}
           时间: $(date -u '+%Y-%m-%d %H:%M UTC')
@@ -102,6 +106,7 @@ jobs:
           {
             echo "commit=${GITHUB_SHA}"
             echo "run=${{ github.run_number }}"
+            echo "version=$(node -p "require('./package.json').version")"
             echo "built_at=$(date -u '+%Y-%m-%d %H:%M UTC')"
             echo "message=$(git log -1 --pretty=%s)"
           } > apk-branch/BUILD_INFO.txt

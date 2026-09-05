@@ -47,6 +47,7 @@ interface LocalTtsPluginInterface {
     samples: number
   }>
   release(): Promise<{ ok: boolean }>
+  getNativeLog(): Promise<{ log: string }>
   addListener(
     eventName: 'downloadProgress',
     cb: (e: LocalDownloadProgress) => void,
@@ -228,6 +229,17 @@ export async function releaseLocalEngine(): Promise<void> {
   enginePromise = null
   if (!isLocalTtsAvailable()) return
   await LocalTts.release()
+}
+
+/** 原生层日志（cacheDir/localtts.log）：闪退后进程没了文件还在 */
+export async function getNativeLog(): Promise<string> {
+  if (!isLocalTtsAvailable()) return ''
+  try {
+    const r = await LocalTts.getNativeLog()
+    return r.log ?? ''
+  } catch {
+    return ''
+  }
 }
 
 export async function onLocalDownloadProgress(

@@ -10,6 +10,7 @@ import { ReaderPage } from './pages/ReaderPage'
 import { ShelfPage } from './pages/ShelfPage'
 import { useAppStore } from './store/useAppStore'
 import { consumeCrashReport, installCleanExitMarker } from './utils/tts'
+import { initDiagnosticCapture } from './utils/diagnosticDump'
 import './index.css'
 
 function Home() {
@@ -58,6 +59,7 @@ export default function App() {
   // 崩溃哨兵：朗读中会周期写心跳；正常退出/切后台会打 clean 标记。
   // 下次启动若"有心跳无 clean"即上次崩在朗读，把心跳展示出来供定位。
   useEffect(() => {
+    initDiagnosticCapture()
     installCleanExitMarker()
     const report = consumeCrashReport()
     if (report) {

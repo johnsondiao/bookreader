@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BookCard } from '../components/BookCard'
 import { useAppStore } from '../store/useAppStore'
+import { copyDiagnostic } from '../utils/diagnosticDump'
 import { parseEpub } from '../utils/epubParser'
 
 function yieldToMain() {
@@ -121,10 +122,20 @@ export function ShelfPage() {
         <div className="import-banner" style={{ background: '#fff3cd', color: '#7a5c00' }}>
           检测到上次朗读时异常退出，诊断信息：{lastCrashReport}
           <br />
-          请截图发给开发者。
           <button
             type="button"
-            style={{ marginLeft: 8, textDecoration: 'underline' }}
+            style={{ marginRight: 8, textDecoration: 'underline' }}
+            onClick={() => {
+              void copyDiagnostic(lastCrashReport).then((ok) => {
+                window.alert(ok ? '诊断日志已复制，请粘贴发给开发者' : '复制失败，请截图本页面')
+              })
+            }}
+          >
+            复制完整日志
+          </button>
+          <button
+            type="button"
+            style={{ textDecoration: 'underline' }}
             onClick={() => useAppStore.setState({ lastCrashReport: null })}
           >
             清除
