@@ -1,0 +1,5 @@
+commit=2ae5deb062bf21e72eca7e4e700b863f8848b783
+run=108
+version=1.2.0
+built_at=2026-09-05 04:29 UTC
+message=fix(tts): 本地引擎改无回调合成 + 单线程 + 原生崩溃熔断
