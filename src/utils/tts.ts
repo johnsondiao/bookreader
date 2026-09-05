@@ -307,9 +307,54 @@ function buildTextAndRanges(paras: Paragraph[]): { fullText: string; paraRanges:
 /**
  * 单个合成块的字符上限。
  * 太小→退回"一句一念"失去上下文；太大→首句等待久、单次请求体积大。
- * 260 字约等于有声书一句呼吸单元的两到三句，听感与延迟的折中。
+ * 150 字约两到四句：语调上下文足够，且整块 PCM 切句前的瞬态内存可控。
  */
-const MAX_BLOCK_CHARS = 260
+const MAX_BLOCK_CHARS = 150
+
+/* ====== 崩溃哨兵：朗读中周期性写心跳，下次启动若发现"有心跳无正常退出"即上次崩在朗读 ====== */
+const CRASH_SENTINEL_KEY = 'langyue-crash-sentinel'
+const CLEAN_EXIT_KEY = 'langyue-clean-exit'
+
+function writeCrashSentinel(info: Record<string, unknown>) {
+  try {
+    const mem = (performance as unknown as { memory?: { usedJSHeapSize?: number; jsHeapSizeLimit?: number } }).memory
+    localStorage.setItem(
+      CRASH_SENTINEL_KEY,
+      JSON.stringify({ ...info, ts: Date.now(), heap: mem?.usedJSHeapSize, heapLimit: mem?.jsHeapSizeLimit }),
+    )
+  } catch {
+    /* 存储不可用就不记 */
+  }
+}
+
+/** 下次启动调用：返回上次崩溃时的心跳（正常退出则返回 null） */
+export function consumeCrashReport(): string | null {
+  try {
+    const sentinel = localStorage.getItem(CRASH_SENTINEL_KEY)
+    localStorage.removeItem(CRASH_SENTINEL_KEY)
+    const clean = localStorage.getItem(CLEAN_EXIT_KEY)
+    localStorage.removeItem(CLEAN_EXIT_KEY)
+    if (!sentinel || clean === '1') return null
+    return sentinel
+  } catch {
+    return null
+  }
+}
+
+/** 正常退出/切后台时打标记；崩溃时来不及打，下次启动就能分辨 */
+export function installCleanExitMarker() {
+  const mark = () => {
+    try {
+      localStorage.setItem(CLEAN_EXIT_KEY, '1')
+    } catch {
+      /* ignore */
+    }
+  }
+  window.addEventListener('pagehide', mark)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') mark()
+  })
+}
 
 /**
  * 规划播放段（每句一个）并打上合成块标记。
@@ -949,6 +994,16 @@ export function createTtsController(): TtsController {
       status = 'speaking'
       opts.onSentence?.(si)
       opts.onStatus?.('speaking')
+      // 崩溃心跳：每 8 句记一次位置+堆内存，闪退后下次启动能定位
+      if (si % 8 === 0) {
+        writeCrashSentinel({
+          where: 'play',
+          engine: opts.engine ?? 'online',
+          chapter: opts.chapterTitle,
+          si,
+          total: segments.length,
+        })
+      }
       agentLog(
         'tts.ts:playSegments',
         'seg play start',

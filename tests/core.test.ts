@@ -413,15 +413,15 @@ describe('planSegments 合成块规划（语调自然度）', () => {
     const { paras, ranges } = mk([Array(14).fill(sent).join('')])
     const segs = planSegments(paras, ranges, tv(), nv())
     expect(segs).toHaveLength(14)
-    // 12 句 = 252 字 ≤ 260；加第 13 句就超上限，所以块 0 含 12 句
-    expect(segs.filter((s) => s.blockIdx === 0)).toHaveLength(12)
-    expect(segs.filter((s) => s.blockIdx === 1)).toHaveLength(2)
-    expect(segs[11].isBlockEnd).toBe(true)
-    expect(segs[12].isBlockEnd).toBe(false)
+    // 7 句 = 147 字 ≤ 150；加第 8 句就超上限，所以块 0 含 7 句
+    expect(segs.filter((s) => s.blockIdx === 0)).toHaveLength(7)
+    expect(segs.filter((s) => s.blockIdx === 1)).toHaveLength(7)
+    expect(segs[6].isBlockEnd).toBe(true)
+    expect(segs[7].isBlockEnd).toBe(false)
     expect(segs[13].isBlockEnd).toBe(true)
     // 句级段首尾相接 = 整段
     expect(segs[0].charStart).toBe(0)
-    expect(segs[11].charEnd).toBe(segs[12].charStart)
+    expect(segs[6].charEnd).toBe(segs[7].charStart)
     expect(segs[13].charEnd).toBe(paras[0].text.length)
   })
 

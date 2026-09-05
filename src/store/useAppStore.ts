@@ -21,6 +21,8 @@ interface AppState {
   showImportHint: boolean
   /** 刚导入、待展示字数/费用统计的书；null=不展示（不持久化） */
   importStatsBookId: string | null
+  /** 上次会话崩溃心跳（朗读哨兵）；null=无（不持久化） */
+  lastCrashReport: string | null
 
   setTab: (tab: TabId) => void
   setImportStatsBook: (bookId: string | null) => void
@@ -288,6 +290,7 @@ export const useAppStore = create<AppState>()(
       activeBookId: null,
       showImportHint: true,
       importStatsBookId: null,
+      lastCrashReport: null,
 
       setTab: (tab) => set({ tab }),
 

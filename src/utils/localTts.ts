@@ -73,6 +73,21 @@ export async function listLocalModels(): Promise<LocalModelInfo[]> {
   return r.models ?? []
 }
 
+/** PCM16 抽采样（每 N 个样本取 1 个）：44.1k→22.05k。
+ * 语音能量主要在 8kHz 以下，TTS 输出在 11kHz 以上几乎无内容，
+ * 听感几乎无损，但内存/桥接/播放缓冲全部减半——闪退防线之一。 */
+function decimatePcm16(bytes: Uint8Array<ArrayBuffer>, factor: number): Uint8Array<ArrayBuffer> {
+  const samples = Math.floor(bytes.byteLength / 2)
+  const outSamples = Math.ceil(samples / factor)
+  const out = new Uint8Array(new ArrayBuffer(outSamples * 2))
+  for (let i = 0; i < outSamples; i++) {
+    const s = i * factor * 2
+    out[i * 2] = bytes[s]
+    out[i * 2 + 1] = bytes[s + 1]
+  }
+  return out
+}
+
 /** base64 → 字节（显式 ArrayBuffer：TS6 的 BlobPart 不接受 ArrayBufferLike 视图） */
 function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64)
@@ -153,19 +168,38 @@ export async function synthLocalBlock(
     if (parts.length === 0) throw new Error('本地合成未返回音频')
     let total = 0
     for (const p of parts) total += p.byteLength
-    const flat = new Uint8Array(new ArrayBuffer(total))
-    let off = 0
-    for (const p of parts) {
-      flat.set(p, off)
-      off += p.byteLength
+    // 前缀和 + 跨 part 拷贝：不再拷一份完整 PCM，瞬态内存峰值 = 一句而非整块
+    const prefix: number[] = [0]
+    for (const p of parts) prefix.push(prefix[prefix.length - 1] + p.byteLength)
+    const sliceRange = (a: number, b: number): Uint8Array<ArrayBuffer> => {
+      const out = new Uint8Array(new ArrayBuffer(Math.max(0, b - a)))
+      let w = 0
+      let pi = 0
+      while (pi < parts.length && prefix[pi + 1] <= a) pi++
+      let cursor = a
+      while (cursor < b && pi < parts.length) {
+        const pStart = prefix[pi]
+        const from = Math.max(0, cursor - pStart)
+        const to = Math.min(parts[pi].byteLength, b - pStart)
+        if (to > from) {
+          out.set(parts[pi].subarray(from, to), w)
+          w += to - from
+        }
+        cursor = pStart + to
+        pi++
+      }
+      return out
     }
     const blobs: Blob[] = []
+    const decimate = r.sampleRate >= 40000 ? 2 : 1
     for (let i = 0; i < cuts.length; i++) {
       const endF = i + 1 < cuts.length ? cuts[i + 1] : 1
       // 对齐到 4 字节（= 2 个 PCM16 样本），避免切在样本中间产生爆音
       const a = Math.min(total, Math.round((cuts[i] * total) / 4) * 4)
       const b = Math.min(total, Math.max(a + 4, Math.round((endF * total) / 4) * 4))
-      blobs.push(wavBlobFromPcm([flat.slice(a, b)], r.sampleRate))
+      let pcm = sliceRange(a, b)
+      if (decimate > 1) pcm = decimatePcm16(pcm, decimate)
+      blobs.push(wavBlobFromPcm([pcm], Math.round(r.sampleRate / decimate)))
     }
     return blobs
   } finally {

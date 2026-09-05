@@ -17,6 +17,7 @@ export function ShelfPage() {
   const importTextBook = useAppStore((s) => s.importTextBook)
   const importParsedBook = useAppStore((s) => s.importParsedBook)
   const ensureBookCharStats = useAppStore((s) => s.ensureBookCharStats)
+  const lastCrashReport = useAppStore((s) => s.lastCrashReport)
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
@@ -113,6 +114,21 @@ export function ShelfPage() {
       {error && (
         <div className="import-banner" style={{ background: '#fdecea', color: '#8a1f1f' }}>
           {error}
+        </div>
+      )}
+
+      {lastCrashReport && (
+        <div className="import-banner" style={{ background: '#fff3cd', color: '#7a5c00' }}>
+          检测到上次朗读时异常退出，诊断信息：{lastCrashReport}
+          <br />
+          请截图发给开发者。
+          <button
+            type="button"
+            style={{ marginLeft: 8, textDecoration: 'underline' }}
+            onClick={() => useAppStore.setState({ lastCrashReport: null })}
+          >
+            清除
+          </button>
         </div>
       )}
 

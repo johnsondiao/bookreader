@@ -9,6 +9,7 @@ import { MePage } from './pages/MePage'
 import { ReaderPage } from './pages/ReaderPage'
 import { ShelfPage } from './pages/ShelfPage'
 import { useAppStore } from './store/useAppStore'
+import { consumeCrashReport, installCleanExitMarker } from './utils/tts'
 import './index.css'
 
 function Home() {
@@ -52,6 +53,18 @@ export default function App() {
     const unsub = useAppStore.persist.onFinishHydration(() => setHydrated(true))
     if (useAppStore.persist.hasHydrated()) setHydrated(true)
     return unsub
+  }, [])
+
+  // 崩溃哨兵：朗读中会周期写心跳；正常退出/切后台会打 clean 标记。
+  // 下次启动若"有心跳无 clean"即上次崩在朗读，把心跳展示出来供定位。
+  useEffect(() => {
+    installCleanExitMarker()
+    const report = consumeCrashReport()
+    if (report) {
+      // eslint-disable-next-line no-console
+      console.error('[crash-sentinel] 上次会话疑似崩溃：', report)
+      useAppStore.setState({ lastCrashReport: report })
+    }
   }, [])
 
   // Android 物理返回键：阅读器中返回书架，书架中退出 App
