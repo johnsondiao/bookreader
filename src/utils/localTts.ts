@@ -58,8 +58,15 @@ interface LocalTtsPluginInterface {
 
 const LocalTts = registerPlugin<LocalTtsPluginInterface>('LocalTts')
 
-/** 默认本地模型（随安装包） */
-export const DEFAULT_LOCAL_MODEL = 'vits-melo-tts-zh_en'
+/** 默认本地模型：kokoro int8（音质最好、103 音色）；melo 已移除（中文韵律偏怪） */
+export const DEFAULT_LOCAL_MODEL = 'kokoro-int8-multi-lang-v1_1'
+
+/** 随包模型白名单；旧设置里残留的已移除模型（如 melo）回落到默认 */
+export const SUPPORTED_LOCAL_MODELS = ['kokoro-int8-multi-lang-v1_1', 'matcha-icefall-zh-baker']
+
+export function resolveLocalModelId(id: string | undefined): string {
+  return id && SUPPORTED_LOCAL_MODELS.includes(id) ? id : DEFAULT_LOCAL_MODEL
+}
 
 /** 网页预览没有原生插件，只能用在线引擎 */
 export function isLocalTtsAvailable(): boolean {

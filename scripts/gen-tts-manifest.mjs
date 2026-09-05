@@ -26,27 +26,20 @@ const VOCODER = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/vocoder
 /** 通用垃圾文件，任何模型都不下 */
 const DROP = [/^\.gitattributes$/, /^LICENSE$/, /^README\.md$/i, /\.py$/, /^dict\/README\.md$/]
 
-/** 每个模型的取文件规则 */
+/** 每个模型的取文件规则。全部随包（用户明确要求不打在线下载）；
+ * melo-tts 已移除：中文韵律偏怪（"像韩国人说中文"），默认改为 kokoro。 */
 const SPECS = [
-  {
-    id: 'vits-melo-tts-zh_en',
-    repo: 'vits-melo-tts-zh_en',
-    bundled: true,
-    // 官方 Android 配置只用这三个；dict/ 与 *.fst 官方不传，省下 20MB 包体积
-    pick: (f) => ['model.int8.onnx', 'lexicon.txt', 'tokens.txt'].includes(f),
-    extra: [],
-  },
   {
     id: 'matcha-icefall-zh-baker',
     repo: 'matcha-icefall-zh-baker',
-    bundled: false,
+    bundled: true,
     pick: () => true,
     extra: [{ rel: 'vocos-22khz-univ.onnx', url: `${VOCODER}/vocos-22khz-univ.onnx` }],
   },
   {
     id: 'kokoro-int8-multi-lang-v1_1',
     repo: 'kokoro-int8-multi-lang-v1_1',
-    bundled: false,
+    bundled: true,
     // 配置只用 us-en + zh 两个 lexicon
     pick: (f) => f !== 'lexicon-gb-en.txt',
     extra: [],

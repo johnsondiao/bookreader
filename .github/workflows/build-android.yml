@@ -68,14 +68,9 @@ jobs:
           cp out/langyue-release.apk "out/langyue-${V}-run${GITHUB_RUN_NUMBER}.apk"
           ls -lh out/
 
-      - name: Upload signed APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: bookreader-release-apk
-          path: out/*.apk
-          # 免费版 GitHub Actions 存储额度只有 ~500MB，retention 3 天避免堆积；
-          # 日常下载走滚动 Release（公开仓库免登录），正式版以 tag Release 为准。
-          retention-days: 3
+      # 模型全部随包后 APK 约 360MB；Actions 免费存储额度只有 ~500MB，
+      # 上传 artifact 几次就会爆额度，故不再上传 artifact，
+      # 下载走滚动 Release（公开免登录）与 apk-dist 分支。
 
       - name: Publish rolling Release (main/master push)
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'

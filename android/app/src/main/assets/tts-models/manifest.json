@@ -1,31 +1,9 @@
 {
-  "generatedAt": "2026-09-04T11:10:29.168Z",
+  "generatedAt": "2026-09-05T04:56:16.129Z",
   "models": [
     {
-      "id": "vits-melo-tts-zh_en",
-      "bundled": true,
-      "files": [
-        {
-          "rel": "lexicon.txt",
-          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/lexicon.txt",
-          "size": 6837671
-        },
-        {
-          "rel": "model.int8.onnx",
-          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/model.int8.onnx",
-          "size": 53517430
-        },
-        {
-          "rel": "tokens.txt",
-          "url": "https://hf-mirror.com/csukuangfj/vits-melo-tts-zh_en/resolve/main/tokens.txt",
-          "size": 655
-        }
-      ],
-      "totalBytes": 60355756
-    },
-    {
       "id": "matcha-icefall-zh-baker",
-      "bundled": false,
+      "bundled": true,
       "files": [
         {
           "rel": "date.fst",
@@ -112,7 +90,7 @@
     },
     {
       "id": "kokoro-int8-multi-lang-v1_1",
-      "bundled": false,
+      "bundled": true,
       "files": [
         {
           "rel": "date-zh.fst",

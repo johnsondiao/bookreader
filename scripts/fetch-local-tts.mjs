@@ -9,6 +9,7 @@
  */
 import { createWriteStream, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { Readable } from 'node:stream'
 import { finished } from 'node:stream/promises'
@@ -47,12 +48,30 @@ async function download(url, dest, expectSize) {
     return
   }
   mkdirSync(dirname(dest), { recursive: true })
-  console.log(`下载 ${url}`)
-  const res = await fetchWithFallback(url)
-  if (!res.ok || !res.body) throw new Error(`下载失败 ${url}: ${res.status}`)
   const tmp = dest + '.part'
-  const out = createWriteStream(tmp)
-  await finished(Readable.fromWeb(res.body).pipe(out))
+  let ok = false
+  try {
+    console.log(`下载 ${url}`)
+    const res = await fetchWithFallback(url)
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+    const out = createWriteStream(tmp)
+    await finished(Readable.fromWeb(res.body).pipe(out))
+    ok = true
+  } catch (e) {
+    // 直连/镜像都不通时（国内网络常见），走本地 SOCKS5 代理用 curl 拉
+    const socks = process.env.LOCAL_TTS_SOCKS
+    if (!socks) {
+      throw new Error(`下载失败 ${url}: ${e?.message}（可设 LOCAL_TTS_SOCKS=127.0.0.1:7448 走代理）`)
+    }
+    console.log(`fetch 失败，走 SOCKS5 ${socks}: ${url}`)
+    execFileSync(
+      'curl.exe',
+      ['--fail', '--location', '--retry', '2', '--socks5-hostname', socks, '--output', tmp, url],
+      { stdio: 'ignore' },
+    )
+    ok = true
+  }
+  if (!ok) return
   renameSync(tmp, dest)
   const got = statSync(dest).size
   if (expectSize > 0 && got !== expectSize) {

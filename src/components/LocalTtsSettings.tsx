@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReaderSettings } from '../types'
 import {
-  DEFAULT_LOCAL_MODEL,
   deleteLocalModel,
   downloadLocalModel,
   formatBytes,
   isLocalTtsAvailable,
   listLocalModels,
   onLocalDownloadProgress,
+  resolveLocalModelId,
   synthLocalBlock,
   type LocalModelInfo,
 } from '../utils/localTts'
@@ -74,7 +74,7 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
 
   useEffect(() => () => audioRef.current?.pause(), [])
 
-  const currentId = settings.localModelId || DEFAULT_LOCAL_MODEL
+  const currentId = resolveLocalModelId(settings.localModelId)
   const current = models.find((m) => m.id === currentId)
 
   const onDownload = async (id: string) => {
@@ -96,7 +96,7 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
     setError('')
     try {
       await deleteLocalModel(id)
-      if (currentId === id) onUpdateSettings({ localModelId: DEFAULT_LOCAL_MODEL, localSpeakerId: 0 })
+      if (currentId === id) onUpdateSettings({ localModelId: resolveLocalModelId(undefined), localSpeakerId: 0 })
       refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))

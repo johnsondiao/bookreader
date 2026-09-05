@@ -14,7 +14,7 @@ import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { addSynthChars, checkBudget } from './costTracker'
 import { countBillableChars } from './charStats'
-import { synthLocalBlock, DEFAULT_LOCAL_MODEL } from './localTts'
+import { synthLocalBlock, resolveLocalModelId } from './localTts'
 import { getClip, hashText, putClip, restoreClipFromFile, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -901,7 +901,7 @@ export function createTtsController(): TtsController {
         const cuts = seg.blockSentCharStarts.map((c) => (c - seg.blockCharStart) / span)
         const blobs = await synthLocalBlock(
           blockText,
-          opts.localModelId || DEFAULT_LOCAL_MODEL,
+          resolveLocalModelId(opts.localModelId),
           opts.localSpeakerId ?? 0,
           cuts,
         )
