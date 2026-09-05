@@ -153,10 +153,12 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12 }}>
               <strong style={{ color: selected ? '#ff8a80' : undefined }}>{m.name}</strong>
               <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>
-                {m.bundled
-                  ? `随安装包 ${formatBytes(m.totalBytes)}`
-                  : m.ready
-                    ? `已下载 ${formatBytes(m.installedBytes)}`
+                {m.ready
+                  ? m.bundled
+                    ? `随安装包 ${formatBytes(m.totalBytes)}`
+                    : `已下载 ${formatBytes(m.installedBytes)}`
+                  : m.bundled
+                    ? `包内校验失败 ${formatBytes(m.totalBytes)}`
                     : `需下载 ${formatBytes(m.totalBytes)}`}
               </span>
             </div>

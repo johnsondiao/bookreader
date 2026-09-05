@@ -60,7 +60,7 @@ class LocalTtsPlugin : Plugin() {
         const val DEFAULT_MIRROR = "https://hf-mirror.com"
 
         val SPECS = listOf(
-            ModelSpec("vits-melo-tts-zh_en", "MeloTTS 中英", "44.1kHz 女声，中英混排自然，随安装包提供", 1, 44100),
+            // melo 已移除（中文韵律偏怪）；清单与 Kotlin 表必须同步，否则会渲染出不存在的模型行
             ModelSpec("matcha-icefall-zh-baker", "Matcha 标贝", "22kHz 女声，合成速度最快", 1, 22050),
             ModelSpec("kokoro-int8-multi-lang-v1_1", "Kokoro 多语", "24kHz，音质最好，103 个音色", 103, 24000),
         )
@@ -137,10 +137,27 @@ class LocalTtsPlugin : Plugin() {
 
     private fun modelRoot(modelId: String): File = File(context.filesDir, "tts-models/$modelId")
 
+    /** 递归列出 assets 下所有文件的相对路径（assets.list 只列直接子级，
+     *  而 kokoro 的 espeak-ng-data、matcha 的 dict 下有几百个嵌套文件，
+     *  不递归会误判"未就绪"，真机已踩）。注意：Kotlin 块注释可嵌套，注释里不能出现斜杠星号。 */
+    private fun assetPaths(root: String): Set<String> {
+        val out = mutableSetOf<String>()
+        fun walk(prefix: String) {
+            val names = context.assets.list(prefix) ?: return
+            if (names.isEmpty()) {
+                if (prefix.isNotEmpty()) out.add(prefix)
+                return
+            }
+            for (n in names) walk(if (prefix.isEmpty()) n else "$prefix/$n")
+        }
+        walk(root)
+        return out
+    }
+
     private fun isReady(m: ManifestModel): Boolean {
         return if (m.bundled) {
             try {
-                val names = context.assets.list("tts-models/${m.id}")?.toSet() ?: emptySet()
+                val names = assetPaths("tts-models/${m.id}")
                 m.files.all { names.contains(it.rel) }
             } catch (e: Exception) {
                 Log.w(TAG, "读 assets 清单失败 ${m.id}", e)
