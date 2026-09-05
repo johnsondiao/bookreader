@@ -11,6 +11,7 @@ import { ShelfPage } from './pages/ShelfPage'
 import { useAppStore } from './store/useAppStore'
 import { consumeCrashReport, installCleanExitMarker } from './utils/tts'
 import { initDiagnosticCapture } from './utils/diagnosticDump'
+import { clearNativeLog, getNativeLog } from './utils/localTts'
 import './index.css'
 
 function Home() {
@@ -67,6 +68,31 @@ export default function App() {
       console.error('[crash-sentinel] 上次会话疑似崩溃：', report)
       useAppStore.setState({ lastCrashReport: report })
     }
+  }, [])
+
+  // 熔断：原生日志若以 synth start / init start 结尾（有开始无结束）=
+  // 上次死在原生层（ONNX/JNI）。自动切回在线引擎并提示，避免本地引擎反复把 App 带走。
+  useEffect(() => {
+    void (async () => {
+      try {
+        const log = await getNativeLog()
+        if (!log) return
+        const last = log.trim().split('\n').pop() ?? ''
+        if (!/synth start|init start/.test(last)) return
+        const key = 'langyue-native-crash-count'
+        const n = Number(localStorage.getItem(key) ?? '0') + 1
+        localStorage.setItem(key, String(n))
+        await clearNativeLog()
+        useAppStore.getState().updateSettings({ ttsEngine: 'online' })
+        useAppStore.setState({
+          lastCrashReport:
+            `本地语音引擎原生崩溃（第${n}次，死在${last.includes('init') ? '模型加载' : '合成'}中）。` +
+            '已自动切换为在线引擎；想再试本地可在设置里切回。',
+        })
+      } catch {
+        /* 诊断失败不影响主流程 */
+      }
+    })()
   }, [])
 
   // Android 物理返回键：阅读器中返回书架，书架中退出 App

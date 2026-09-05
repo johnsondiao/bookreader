@@ -98,6 +98,17 @@ class LocalTtsPlugin : Plugin() {
         call.resolve(JSObject().apply { put("log", text) })
     }
 
+    /** 熔断处理后清空原生日志，避免下次启动重复判定 */
+    @PluginMethod
+    fun clearNativeLog(call: PluginCall) {
+        try {
+            File(context.cacheDir, "localtts.log").delete()
+        } catch (_: Exception) {
+            /* ignore */
+        }
+        call.resolve(JSObject().apply { put("ok", true) })
+    }
+
     /* ==================== 清单与模型状态 ==================== */
 
     private fun loadManifest(): List<ManifestModel> {
@@ -297,7 +308,7 @@ class LocalTtsPlugin : Plugin() {
         val spec = specOf(modelId) ?: return call.reject("未知模型 $modelId")
         val m = manifestOf(modelId) ?: return call.reject("清单里没有模型 $modelId")
         if (!isReady(m)) return call.reject("模型未就绪：${spec.name}，请先在设置里下载")
-        val threads = call.getInt("threads") ?: if (modelId.startsWith("kokoro")) 4 else 2
+        val threads = call.getInt("threads") ?: if (modelId.startsWith("kokoro")) 2 else 1
         nlog("init start model=$modelId threads=$threads loaded=$loadedModelId")
 
         synchronized(lock) {
@@ -402,24 +413,19 @@ class LocalTtsPlugin : Plugin() {
         if (engine == null) return call.reject("本地引擎未初始化，请先 init")
         nlog("synth start chars=${text.length} sid=$sid")
         try {
-            // 流式回传：模型看整块上下文（语调连贯），音频按回调小块过桥。
-            // 一次性返回整块 WAV 的 base64 会有十几 MB 字符串，手机上几个块在飞就 OOM。
-            var delivered = 0
-            val audio = synchronized(lock) {
-                engine.generateWithCallback(text, sid, speed) { chunk ->
-                    delivered += chunk.size
-                    emitPcm(chunk)
-                    1 // 返回 1 继续生成
-                }
-            }
-            // 回调可能没覆盖尾部样本，补齐
-            if (delivered < audio.samples.size) {
-                emitPcm(audio.samples.copyOfRange(delivered, audio.samples.size))
-            }
-            nlog("synth ok samples=${audio.samples.size} rate=${audio.sampleRate} chunks=$delivered")
+            // 不用 generateWithCallback：真机实测进程死在回调路径的原生调用内部
+            // （init ok 后第一次 synth 即崩，JS/Java 堆都充裕，属原生层崩溃）。
+            // 无回调路径更稳妥；音频整块返回，抽采样后体积可控。
+            val audio = synchronized(lock) { engine.generate(text, sid, speed) }
+            nlog("gen ok samples=${audio.samples.size} rate=${audio.sampleRate}")
+            // 抽采样 44.1k→22.05k：语音能量主要在 8kHz 以下，听感几乎无损，体积减半
+            val decim = if (audio.sampleRate >= 40000) 2 else 1
+            val pcm = pcm16Base64(audio.samples, decim)
+            nlog("synth ok b64=${pcm.length} rate=${audio.sampleRate / decim}")
             call.resolve(
                 JSObject().apply {
-                    put("sampleRate", audio.sampleRate)
+                    put("pcmBase64", pcm)
+                    put("sampleRate", audio.sampleRate / decim)
                     put("samples", audio.samples.size)
                 },
             )
@@ -430,6 +436,22 @@ class LocalTtsPlugin : Plugin() {
         }
     }
 
+    /** Float32 → PCM16 小端 → 抽采样 → base64（一次过，不在 JVM 里留多份拷贝） */
+    private fun pcm16Base64(samples: FloatArray, decim: Int): String {
+        val outSamples = (samples.size + decim - 1) / decim
+        val bytes = ByteArray(outSamples * 2)
+        var i = 0
+        var s = 0
+        while (s < samples.size) {
+            val v = (samples[s] * 32767f).coerceIn(-32768f, 32767f).toInt()
+            bytes[i * 2] = (v and 0xff).toByte()
+            bytes[i * 2 + 1] = ((v shr 8) and 0xff).toByte()
+            i++
+            s += decim
+        }
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
     @PluginMethod
     fun release(call: PluginCall) {
         synchronized(lock) {
@@ -438,20 +460,5 @@ class LocalTtsPlugin : Plugin() {
             loadedModelId = null
         }
         call.resolve(JSObject().apply { put("ok", true) })
-    }
-
-    /** Float32 块 → PCM16 小端 → base64 事件；JS 侧攒齐后自己套 WAV 头 */
-    private fun emitPcm(chunk: FloatArray) {
-        if (chunk.isEmpty()) return
-        val bytes = ByteArray(chunk.size * 2)
-        for (i in chunk.indices) {
-            val v = (chunk[i] * 32767f).coerceIn(-32768f, 32767f).toInt()
-            bytes[i * 2] = (v and 0xff).toByte()
-            bytes[i * 2 + 1] = ((v shr 8) and 0xff).toByte()
-        }
-        notifyListeners(
-            "ttsPcm",
-            JSObject().apply { put("pcm", Base64.encodeToString(bytes, Base64.NO_WRAP)) },
-        )
     }
 }

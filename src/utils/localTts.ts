@@ -43,18 +43,16 @@ interface LocalTtsPluginInterface {
     speakers: number
   }>
   synth(o: { text: string; sid?: number; speed?: number }): Promise<{
+    pcmBase64: string
     sampleRate: number
     samples: number
   }>
   release(): Promise<{ ok: boolean }>
   getNativeLog(): Promise<{ log: string }>
+  clearNativeLog(): Promise<{ ok: boolean }>
   addListener(
     eventName: 'downloadProgress',
     cb: (e: LocalDownloadProgress) => void,
-  ): Promise<{ remove: () => Promise<void> }>
-  addListener(
-    eventName: 'ttsPcm',
-    cb: (e: { pcm: string }) => void,
   ): Promise<{ remove: () => Promise<void> }>
 }
 
@@ -72,21 +70,6 @@ export async function listLocalModels(): Promise<LocalModelInfo[]> {
   if (!isLocalTtsAvailable()) return []
   const r = await LocalTts.getModels()
   return r.models ?? []
-}
-
-/** PCM16 抽采样（每 N 个样本取 1 个）：44.1k→22.05k。
- * 语音能量主要在 8kHz 以下，TTS 输出在 11kHz 以上几乎无内容，
- * 听感几乎无损，但内存/桥接/播放缓冲全部减半——闪退防线之一。 */
-function decimatePcm16(bytes: Uint8Array<ArrayBuffer>, factor: number): Uint8Array<ArrayBuffer> {
-  const samples = Math.floor(bytes.byteLength / 2)
-  const outSamples = Math.ceil(samples / factor)
-  const out = new Uint8Array(new ArrayBuffer(outSamples * 2))
-  for (let i = 0; i < outSamples; i++) {
-    const s = i * factor * 2
-    out[i * 2] = bytes[s]
-    out[i * 2 + 1] = bytes[s + 1]
-  }
-  return out
 }
 
 /** base64 → 字节（显式 ArrayBuffer：TS6 的 BlobPart 不接受 ArrayBufferLike 视图） */
@@ -148,10 +131,7 @@ export function ensureLocalEngine(modelId: string): Promise<void> {
 /**
  * 合成一整块（模型看到整块上下文 → 语调连贯），再按 cuts 把 PCM 切回每句 WAV。
  * cuts[i] = 第 i 句起始字符在块内的比例（cuts[0] 恒为 0）。
- *
- * 为什么不直接返回整块 WAV：60 秒块 = 5MB+ PCM，base64/data URI 进 WebView
- * 就是十几 MB 字符串，几个块在飞直接 OOM 闪退；切回句级后每句约 1MB。
- * 切分按字符比例近似句界，句尾的自然停顿会跟着归到上一句，听感无损。
+ * 原生端已抽采样到 22.05k 并整块 base64 回传（无回调路径，避开真机崩溃的 JNI 回调）。
  */
 export async function synthLocalBlock(
   text: string,
@@ -160,52 +140,24 @@ export async function synthLocalBlock(
   cuts: number[],
 ): Promise<Blob[]> {
   await ensureLocalEngine(modelId)
-  const parts: Uint8Array<ArrayBuffer>[] = []
-  const handle = await LocalTts.addListener('ttsPcm', (e) => {
-    if (e.pcm) parts.push(base64ToBytes(e.pcm))
-  })
-  try {
-    const r = await LocalTts.synth({ text, sid: speakerId, speed: 1 })
-    if (parts.length === 0) throw new Error('本地合成未返回音频')
-    let total = 0
-    for (const p of parts) total += p.byteLength
-    // 前缀和 + 跨 part 拷贝：不再拷一份完整 PCM，瞬态内存峰值 = 一句而非整块
-    const prefix: number[] = [0]
-    for (const p of parts) prefix.push(prefix[prefix.length - 1] + p.byteLength)
-    const sliceRange = (a: number, b: number): Uint8Array<ArrayBuffer> => {
-      const out = new Uint8Array(new ArrayBuffer(Math.max(0, b - a)))
-      let w = 0
-      let pi = 0
-      while (pi < parts.length && prefix[pi + 1] <= a) pi++
-      let cursor = a
-      while (cursor < b && pi < parts.length) {
-        const pStart = prefix[pi]
-        const from = Math.max(0, cursor - pStart)
-        const to = Math.min(parts[pi].byteLength, b - pStart)
-        if (to > from) {
-          out.set(parts[pi].subarray(from, to), w)
-          w += to - from
-        }
-        cursor = pStart + to
-        pi++
-      }
-      return out
-    }
-    const blobs: Blob[] = []
-    const decimate = r.sampleRate >= 40000 ? 2 : 1
-    for (let i = 0; i < cuts.length; i++) {
-      const endF = i + 1 < cuts.length ? cuts[i + 1] : 1
-      // 对齐到 4 字节（= 2 个 PCM16 样本），避免切在样本中间产生爆音
-      const a = Math.min(total, Math.round((cuts[i] * total) / 4) * 4)
-      const b = Math.min(total, Math.max(a + 4, Math.round((endF * total) / 4) * 4))
-      let pcm = sliceRange(a, b)
-      if (decimate > 1) pcm = decimatePcm16(pcm, decimate)
-      blobs.push(wavBlobFromPcm([pcm], Math.round(r.sampleRate / decimate)))
-    }
-    return blobs
-  } finally {
-    void handle.remove()
+  const r = await LocalTts.synth({ text, sid: speakerId, speed: 1 })
+  if (!r?.pcmBase64) throw new Error('本地合成未返回音频')
+  const parts = [base64ToBytes(r.pcmBase64)]
+  const total = parts[0].byteLength
+  const sliceRange = (a: number, b: number): Uint8Array<ArrayBuffer> => {
+    const out = new Uint8Array(new ArrayBuffer(Math.max(0, b - a)))
+    out.set(parts[0].subarray(a, b), 0)
+    return out
   }
+  const blobs: Blob[] = []
+  for (let i = 0; i < cuts.length; i++) {
+    const endF = i + 1 < cuts.length ? cuts[i + 1] : 1
+    // 对齐到 4 字节（= 2 个 PCM16 样本），避免切在样本中间产生爆音
+    const a = Math.min(total, Math.round((cuts[i] * total) / 4) * 4)
+    const b = Math.min(total, Math.max(a + 4, Math.round((endF * total) / 4) * 4))
+    blobs.push(wavBlobFromPcm([sliceRange(a, b)], r.sampleRate))
+  }
+  return blobs
 }
 
 export async function downloadLocalModel(
@@ -239,6 +191,16 @@ export async function getNativeLog(): Promise<string> {
     return r.log ?? ''
   } catch {
     return ''
+  }
+}
+
+/** 熔断处理后清空原生日志 */
+export async function clearNativeLog(): Promise<void> {
+  if (!isLocalTtsAvailable()) return
+  try {
+    await LocalTts.clearNativeLog()
+  } catch {
+    /* ignore */
   }
 }
 
