@@ -8,7 +8,7 @@ import {
   isLocalTtsAvailable,
   listLocalModels,
   onLocalDownloadProgress,
-  synthLocalSegment,
+  synthLocalBlock,
   type LocalModelInfo,
 } from '../utils/localTts'
 
@@ -109,9 +109,14 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
     setBusy('audition')
     setError('')
     try {
-      const blob = await synthLocalSegment(AUDITION_TEXT, currentId, settings.localSpeakerId ?? 0)
+      const blobs = await synthLocalBlock(
+        AUDITION_TEXT,
+        currentId,
+        settings.localSpeakerId ?? 0,
+        [0],
+      )
       audioRef.current?.pause()
-      const a = new Audio(await blobToDataUri(blob))
+      const a = new Audio(await blobToDataUri(blobs[0]))
       audioRef.current = a
       await a.play()
     } catch (e) {

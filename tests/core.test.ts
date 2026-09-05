@@ -395,38 +395,44 @@ describe('planSegments 合成块规划（语调自然度）', () => {
   const tv = () => getVoice(DEFAULT_VOICE_ZH)!
   const nv = () => getVoice(DEFAULT_VOICE_NOTE)!
 
-  it('段内多句合并成一个块（模型拿到上下文才有连贯语调）', () => {
+  it('段内多句 = 多个句级段、同属一个合成块（模型拿到上下文才有连贯语调）', () => {
     const { paras, ranges } = mk(['第一句。第二句！第三句？'])
     const segs = planSegments(paras, ranges, tv(), nv())
-    expect(segs).toHaveLength(1)
-    expect(segs[0].sentStart).toBe(0)
-    expect(segs[0].sentCharStarts).toHaveLength(3)
-    expect(segs[0].charStart).toBe(0)
-    expect(segs[0].charEnd).toBe(paras[0].text.length)
+    expect(segs).toHaveLength(3)
+    expect(new Set(segs.map((s) => s.blockIdx)).size).toBe(1)
+    expect(segs[2].isBlockEnd).toBe(true)
+    expect(segs[0].isBlockEnd).toBe(false)
+    // 块范围 = 整段
+    expect(segs[0].blockCharStart).toBe(0)
+    expect(segs[0].blockCharEnd).toBe(paras[0].text.length)
+    expect(segs[0].blockSentCharStarts).toHaveLength(3)
   })
 
-  it('超过块上限就断开，且全局句子索引连续', () => {
+  it('超过块上限就换块，句级段连续不重不漏', () => {
     const sent = '甲乙丙丁戊己庚辛壬癸子丑寅卯，继续写下去。' // 21 字/句 × 14 = 294 字
     const { paras, ranges } = mk([Array(14).fill(sent).join('')])
     const segs = planSegments(paras, ranges, tv(), nv())
-    expect(segs.length).toBe(2)
-    // 12 句 = 252 字 ≤ 260；加第 13 句就超上限，所以在第 12 句后断
-    expect(segs[0].sentCharStarts.length).toBe(12)
-    expect(segs[1].sentStart).toBe(12)
-    expect(segs[1].sentCharStarts.length).toBe(2)
-    // 块首尾拼接 = 整段
+    expect(segs).toHaveLength(14)
+    // 12 句 = 252 字 ≤ 260；加第 13 句就超上限，所以块 0 含 12 句
+    expect(segs.filter((s) => s.blockIdx === 0)).toHaveLength(12)
+    expect(segs.filter((s) => s.blockIdx === 1)).toHaveLength(2)
+    expect(segs[11].isBlockEnd).toBe(true)
+    expect(segs[12].isBlockEnd).toBe(false)
+    expect(segs[13].isBlockEnd).toBe(true)
+    // 句级段首尾相接 = 整段
     expect(segs[0].charStart).toBe(0)
-    expect(segs[1].charEnd).toBe(paras[0].text.length)
-    expect(segs[0].charEnd).toBe(segs[1].charStart)
+    expect(segs[11].charEnd).toBe(segs[12].charStart)
+    expect(segs[13].charEnd).toBe(paras[0].text.length)
   })
 
-  it('块不跨段落：两段各自成块，句子索引跨段连续', () => {
+  it('块不跨段落：两段各自成块', () => {
     const { paras, ranges } = mk(['一段一句。一段二句。', '二段一句。'])
     const segs = planSegments(paras, ranges, tv(), nv())
-    expect(segs).toHaveLength(2)
-    expect(segs[0].firstPara).toBe(0)
-    expect(segs[1].firstPara).toBe(1)
-    expect(segs[1].sentStart).toBe(2)
+    expect(segs).toHaveLength(3)
+    expect(segs[0].blockIdx).toBe(0)
+    expect(segs[1].blockIdx).toBe(0)
+    expect(segs[2].blockIdx).toBe(1)
+    expect(segs[1].isBlockEnd).toBe(true)
   })
 
   it('块不跨音色：注释段必须另起合成', () => {
@@ -434,15 +440,15 @@ describe('planSegments 合成块规划（语调自然度）', () => {
     const segs = planSegments(paras, ranges, tv(), nv())
     expect(segs).toHaveLength(2)
     expect(segs[0].voiceKey).not.toBe(segs[1].voiceKey)
+    expect(segs[0].blockIdx).not.toBe(segs[1].blockIdx)
   })
 
-  it('块内句子数之和 = splitSentences 的句子总数（高亮索引对齐的前提）', () => {
+  it('句级段数 = splitSentences 的句子总数（高亮索引对齐的前提）', () => {
     const texts = ['第一句。第二句。', '注释一句。', '尾段没有标点']
     const { paras, ranges } = mk(texts, ['text', 'note', 'text'])
     const segs = planSegments(paras, ranges, tv(), nv())
-    const total = segs.reduce((s, x) => s + x.sentCharStarts.length, 0)
     const expectTotal = texts.reduce((s, t) => s + splitSentences(t).length, 0)
-    expect(total).toBe(expectTotal)
+    expect(segs).toHaveLength(expectTotal)
   })
 })
 

@@ -1099,10 +1099,16 @@ button {
 }
 
 .setting-panel {
-  padding: 8px 16px 20px;
+  padding: 8px 16px calc(20px + var(--safe-bottom));
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* 面板 max-height:70%，内容超高时必须自己滚；
+     min-height:0 是 flex 子项能收缩出滚动条的前提 */
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .setting-panel .row {

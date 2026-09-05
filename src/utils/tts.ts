@@ -14,7 +14,7 @@ import { agentLog } from './agentLog'
 import { synthesizeChunk, type SynthProgress } from './minimaxTts'
 import { addSynthChars, checkBudget } from './costTracker'
 import { countBillableChars } from './charStats'
-import { synthLocalSegment, DEFAULT_LOCAL_MODEL } from './localTts'
+import { synthLocalBlock, DEFAULT_LOCAL_MODEL } from './localTts'
 import { getClip, hashText, putClip, restoreClipFromFile, type AudioChunk, type ChapterAudio, type ChapterFileMeta } from './audioCache'
 import {
   DEFAULT_VOICE_EN,
@@ -256,18 +256,18 @@ interface CharRange {
 }
 
 /**
- * 一个播放块 = 同一段内连续若干句子，对应一次语音合成调用。
+ * 一个播放段 = 一个句子（播放/高亮/导航/缓存的单位）。
  *
- * 为什么按块而不是按句：模型只看到孤立一句话时只能给默认平调，句与句之间
- * 没有语气承接，听感就是"一句一句蹦"。把整段（或段内一大块）交给模型，
- * 它才能产生连贯的语调起伏。句子仍然是播放/高亮/导航的单位，
- * 靠块内字符位置反推（见 playSegments 的 reportAt）。
+ * 合成单位是"块"（同段内连续若干句，见 blockIdx）：模型看整块上下文才有
+ * 连贯语调；但音频切回每句单独持有，避免整块 WAV（几十 MB）进 WebView 内存。
  *
- * - voiceKey：该块使用的音色
+ * - voiceKey：该句使用的音色
  * - firstPara/lastPara：在 paragraphs 中的索引（闭区间）
- * - charStart/charEnd：该块在全局拼接文本中的字符区间
- * - sentStart：块内第一句的全局句子索引
- * - sentCharStarts：块内每句起始的绝对字符偏移（与 sentStart 平行）
+ * - charStart/charEnd：该句在全局拼接文本中的字符区间
+ * - blockIdx：所属合成块；同块句子共享一次合成
+ * - isBlockEnd：块内最后一句（本地引擎播完后补一个自然停顿）
+ * - blockCharStart/End、blockSentCharStarts：块的字符范围与块内各句起始，
+ *   供本地引擎把整块 PCM 按比例切回每句
  * - blob：合成好的音频（缓存里就有，否则在合成阶段赋值）
  */
 interface PlaySegment {
@@ -279,8 +279,11 @@ interface PlaySegment {
   lastPara: number
   charStart: number
   charEnd: number
-  sentStart: number
-  sentCharStarts: number[]
+  blockIdx: number
+  isBlockEnd: boolean
+  blockCharStart: number
+  blockCharEnd: number
+  blockSentCharStarts: number[]
   blob?: Blob
   /** 消费者等待此 promise（生产者合成完该段后 resolve） */
   blobReady?: Promise<void>
@@ -309,9 +312,10 @@ function buildTextAndRanges(paras: Paragraph[]): { fullText: string; paraRanges:
 const MAX_BLOCK_CHARS = 260
 
 /**
- * 规划合成块：先按句切（保留句子边界供高亮/导航），再把同段内连续句子合并成块。
- *   - 块不跨段落：段落是天然的韵律单元，跨段合并会把两段语气糊在一起
- *   - 块不跨音色：正文/注释切换必须另起一次合成
+ * 规划播放段（每句一个）并打上合成块标记。
+ *   - 块 = 同段内连续若干句（上限 MAX_BLOCK_CHARS），是合成单位：
+ *     模型看整块上下文才有连贯语调
+ *   - 块不跨段落（段落是天然韵律单元）、不跨音色（正文/注释切换另起合成）
  *   - 句子结束标点：。！？；…\n . ! ? ;
  *   - 段尾没有结束标点的剩余部分也算一句
  */
@@ -324,7 +328,7 @@ export function planSegments(
   const pickVoice = (k: ParagraphKind) => (k === 'note' ? noteVoice : textVoice)
   const boostOf = (v: VoiceDef) => (v.lang === 'en' ? 'English' : 'Chinese')
   const out: PlaySegment[] = []
-  let globalSent = 0
+  let blockIdx = 0
 
   for (let pi = 0; pi < paras.length; pi++) {
     const para = paras[pi]
@@ -334,7 +338,7 @@ export function planSegments(
     if (!text) continue
 
     // 段内句子起始偏移（绝对坐标）；切分规则与 splitSentences 一致，
-    // 保证这里的全局句子索引和 ReaderPage 的 paraSentences 对得上
+    // 保证段索引和 ReaderPage 的 paraSentences 对得上
     const sentStarts: number[] = []
     let sentStart = 0
     for (let ci = 0; ci < text.length; ci++) {
@@ -346,7 +350,7 @@ export function planSegments(
     if (sentStart < text.length) sentStarts.push(range.start + sentStart)
     if (sentStarts.length === 0) continue
 
-    // 合并成块：累加句子字符，超上限就在上一句后面断开
+    // 先划块：累加句子字符，超上限就在上一句后面断开
     let from = 0
     while (from < sentStarts.length) {
       let last = sentStarts.length - 1
@@ -363,20 +367,29 @@ export function planSegments(
         last = k
         endChar = sEnd
       }
-      out.push({
-        voiceKey: voice.key,
-        voiceId: voice.voiceId,
-        languageBoost: boostOf(voice),
-        firstPara: pi,
-        lastPara: pi,
-        charStart: sentStarts[from],
-        charEnd: endChar,
-        sentStart: globalSent + from,
-        sentCharStarts: sentStarts.slice(from, last + 1),
-      })
+      const blockSentStarts = sentStarts.slice(from, last + 1)
+      const blockStart = sentStarts[from]
+      // 块内每句一个播放段
+      for (let k = from; k <= last; k++) {
+        const sEnd = k + 1 < sentStarts.length ? sentStarts[k + 1] : range.end
+        out.push({
+          voiceKey: voice.key,
+          voiceId: voice.voiceId,
+          languageBoost: boostOf(voice),
+          firstPara: pi,
+          lastPara: pi,
+          charStart: sentStarts[k],
+          charEnd: sEnd,
+          blockIdx,
+          isBlockEnd: k === last,
+          blockCharStart: blockStart,
+          blockCharEnd: endChar,
+          blockSentCharStarts: blockSentStarts,
+        })
+      }
+      blockIdx++
       from = last + 1
     }
-    globalSent += sentStarts.length
   }
 
   return out
@@ -493,19 +506,13 @@ async function prepareChapter(
     restoreBlobs(segments, fromFile, textHash)
   }
 
-  // 计算起始块（生产者和消费者共用）：传入的是全局句子索引，
-  // 先找到包含该句的块，再记下句子在块内的字符偏移供 seek
+  // 播放段就是句子（一对一），起始段 = 起始句；记下句首字符供块内 seek
   let startSegIdx = 0
   let startChar = segments[0]?.charStart ?? 0
   if (segments.length > 0) {
     if (opts.startSentenceIndex != null) {
-      const target = Math.max(0, opts.startSentenceIndex)
-      const idx = segments.findIndex(
-        (s) => target >= s.sentStart && target < s.sentStart + s.sentCharStarts.length,
-      )
-      startSegIdx = idx >= 0 ? idx : Math.min(target, segments.length - 1)
-      const seg = segments[startSegIdx]
-      startChar = seg.sentCharStarts[target - seg.sentStart] ?? seg.charStart
+      startSegIdx = Math.max(0, Math.min(opts.startSentenceIndex, segments.length - 1))
+      startChar = segments[startSegIdx].charStart
     } else {
       const startIndex = Math.min(opts.startParagraphIndex ?? 0, paraRanges.length - 1)
       const want = paraRanges[startIndex].start
@@ -693,9 +700,6 @@ export function createTtsController(): TtsController {
     startSegIdx: number,
     budgetYuan?: number,
     onSegmentDone?: () => void,
-    engine?: 'local' | 'online',
-    localModelId?: string,
-    localSpeakerId?: number,
   ): Promise<void> => {
     // 合成顺序：从播放起点开始，确保首句最快就绪
     const order: number[] = []
@@ -718,43 +722,35 @@ export function createTtsController(): TtsController {
           message: `合成${voiceLabel.startsWith('note:') ? '注释' : '正文'}段 ${done + 1}/${needCount}（${text.length} 字）`,
         })
         agentLog('tts.ts:synth', 'segment start', { seg: idx + 1, total: segments.length, chars: text.length, voice: voiceLabel }, 'C')
-        let blob: Blob
-        if (engine === 'local') {
-          // 本地推理：不联网不扣费，无需预算检查与请求节流
-          blob = await synthLocalSegment(text, localModelId || DEFAULT_LOCAL_MODEL, localSpeakerId ?? 0)
-          // 只记阅读量（字数），计费字符记 0：花费页金额只反映在线引擎
-          await addSynthChars(text.length, 0, bookTitle)
-        } else {
-          // 预算检查：超出上限则停止后续合成
-          const budgetCheck = await checkBudget(budgetYuan)
-          if (budgetCheck?.exceeded) {
-            const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
-            // 拒绝所有未完成的段
-            for (const seg of segments) {
-              if (!seg.blob) seg._rejectReady?.(err)
-            }
-            throw err
+        // 预算检查：超出上限则停止后续合成
+        const budgetCheck = await checkBudget(budgetYuan)
+        if (budgetCheck?.exceeded) {
+          const err = new BudgetExceeded(budgetCheck.todayYuan, budgetCheck.budgetYuan)
+          // 拒绝所有未完成的段
+          for (const seg of segments) {
+            if (!seg.blob) seg._rejectReady?.(err)
           }
-          blob = await synthesizeChunk(
-            text,
-            seg.voiceId,
-            (p: SynthProgress) => {
-              const overall = (done + p.progress) / Math.max(1, needCount)
-              onSynthProgress?.({
-                stage: p.stage,
-                progress: Math.min(0.99, overall),
-                message: p.message,
-              })
-            },
-            () => assertAlive(epoch),
-            (abortFn) => { synthAbortFn = abortFn },
-            seg.languageBoost,
-          )
-          synthAbortFn = null
-          // 记账双口径：text.length 是给人看的字数，countBillableChars 才是 MiniMax 扣费的量
-          // （官方规则：1 个汉字 = 2 个计费字符）。只记 text.length 会让花费/预算少一半。
-          await addSynthChars(text.length, countBillableChars(text), bookTitle)
+          throw err
         }
+        const blob = await synthesizeChunk(
+          text,
+          seg.voiceId,
+          (p: SynthProgress) => {
+            const overall = (done + p.progress) / Math.max(1, needCount)
+            onSynthProgress?.({
+              stage: p.stage,
+              progress: Math.min(0.99, overall),
+              message: p.message,
+            })
+          },
+          () => assertAlive(epoch),
+          (abortFn) => { synthAbortFn = abortFn },
+          seg.languageBoost,
+        )
+        synthAbortFn = null
+        // 记账双口径：text.length 是给人看的字数，countBillableChars 才是 MiniMax 扣费的量
+        // （官方规则：1 个汉字 = 2 个计费字符）。只记 text.length 会让花费/预算少一半。
+        await addSynthChars(text.length, countBillableChars(text), bookTitle)
         seg.blob = blob
         // 钱已花（或本地已合成）：立即排队增量落盘，中断也不会丢这一段
         onSegmentDone?.()
@@ -762,8 +758,8 @@ export function createTtsController(): TtsController {
         done++
         // 节流：合成完一段等 1 秒再发下一个请求，控制请求频率，
         // 避免生产者冲刺备货时每分钟上百次请求触发平台 Rate Limit（429）。
-        // 本地引擎没有服务端限流，不需要等；全部就绪则不等；等待可被 stop 中断
-        if (engine !== 'local' && segments.some((s) => !s.blob)) {
+        // 全部就绪则不等；等待可被 stop 中断
+        if (segments.some((s) => !s.blob)) {
           await sleepInterruptible(SYNTH_GAP_MS, epoch)
           assertAlive(epoch)
         }
@@ -823,7 +819,44 @@ export function createTtsController(): TtsController {
       )
     })
 
-  /** 消费者：顺序播放 segments，blob 未就绪时等待生产者合成完成 */
+  /**
+   * 本地引擎：整块合成一次，再按字符比例把 PCM 切回每句 WAV。
+   * 同块后续句子并发请求复用同一个 promise，不会重复合成。
+   * 整块 WAV 不能直接进 WebView（几十 MB 的 data URI 字符串会 OOM），
+   * 切回句级后每句约 1MB，与在线 mp3 同量级。
+   */
+  const makeLocalBlockSynth = (
+    segments: PlaySegment[],
+    fullText: string,
+    opts: PlayChapterOpts,
+  ): ((seg: PlaySegment) => Promise<void>) => {
+    const inflight = new Map<number, Promise<void>>()
+    return (seg: PlaySegment) => {
+      const existing = inflight.get(seg.blockIdx)
+      if (existing) return existing
+      const promise = (async () => {
+        const blockText = fullText.slice(seg.blockCharStart, seg.blockCharEnd)
+        const span = Math.max(1, seg.blockCharEnd - seg.blockCharStart)
+        const cuts = seg.blockSentCharStarts.map((c) => (c - seg.blockCharStart) / span)
+        const blobs = await synthLocalBlock(
+          blockText,
+          opts.localModelId || DEFAULT_LOCAL_MODEL,
+          opts.localSpeakerId ?? 0,
+          cuts,
+        )
+        segments
+          .filter((s) => s.blockIdx === seg.blockIdx)
+          .forEach((s, i) => {
+            s.blob = blobs[i]
+            s._resolveReady?.()
+          })
+      })()
+      inflight.set(seg.blockIdx, promise)
+      return promise
+    }
+  }
+
+  /** 消费者：顺序播放 segments（每句一个），blob 未就绪时先合成 */
   const playSegments = async (
     segments: PlaySegment[],
     paraRanges: CharRange[],
@@ -831,13 +864,19 @@ export function createTtsController(): TtsController {
     epoch: number,
     startSegIdx: number,
     startChar: number,
+    fullText: string,
   ) => {
+    const ensureLocalBlock = makeLocalBlockSynth(segments, fullText, opts)
     for (let si = startSegIdx; si < segments.length; si++) {
       assertAlive(epoch)
       const seg = segments[si]
-      // 生产者-消费者协同：blob 未就绪时等待合成完成
       if (!seg.blob) {
-        if (seg.blobReady) {
+        if (opts.engine === 'local') {
+          // 本地：整块合成 + 切句，不走在线的生产者/缓存路径
+          await ensureLocalBlock(seg)
+          assertAlive(epoch)
+        } else if (seg.blobReady) {
+          // 生产者-消费者协同：blob 未就绪时等待合成完成
           await seg.blobReady
           assertAlive(epoch)
         }
@@ -871,7 +910,6 @@ export function createTtsController(): TtsController {
       assertAlive(epoch)
 
       let lastReportedPara = -1
-      let lastReportedSent = -1
       const reportAt = () => {
         const dur = el.duration
         let charOff = seg.charStart
@@ -888,16 +926,6 @@ export function createTtsController(): TtsController {
           lastReportedPara = p
           opts.onParagraph?.(p)
         }
-        // 句子高亮：块内按字符位置反推全局句子索引（合成是按块的，高亮仍按句）
-        let sIdx = seg.sentStart
-        for (let k = 1; k < seg.sentCharStarts.length; k++) {
-          if (seg.sentCharStarts[k] <= charOff) sIdx = seg.sentStart + k
-          else break
-        }
-        if (sIdx !== lastReportedSent) {
-          lastReportedSent = sIdx
-          opts.onSentence?.(sIdx)
-        }
       }
       const onTime = () => {
         if (epoch !== speakEpoch) return
@@ -906,7 +934,7 @@ export function createTtsController(): TtsController {
       el.addEventListener('timeupdate', onTime)
 
       if (si === startSegIdx) {
-        // 从块中间的句子开始：按字符比例 seek 到句首
+        // 从段中间开始（上句/下句/点句跳转）：按字符比例 seek 到句首
         if (startChar > seg.charStart && isFinite(el.duration) && el.duration > 0) {
           const ratio = (startChar - seg.charStart) / (seg.charEnd - seg.charStart)
           try {
@@ -919,6 +947,7 @@ export function createTtsController(): TtsController {
       }
 
       status = 'speaking'
+      opts.onSentence?.(si)
       opts.onStatus?.('speaking')
       agentLog(
         'tts.ts:playSegments',
@@ -939,10 +968,14 @@ export function createTtsController(): TtsController {
         el.removeEventListener('timeupdate', onTime)
       }
       assertAlive(epoch)
-      // 块间自然停顿（可被 stop 中断）；最后一块不等
-      if (si < segments.length - 1) {
-        await sleepInterruptible(BLOCK_GAP_MS, epoch)
-        assertAlive(epoch)
+      if (opts.engine === 'local') {
+        // 播完即释放：本地音频不落盘、重合成免费，没必要占着内存
+        seg.blob = undefined
+        // 块间自然停顿（模型只产生块内句间停顿）；可被 stop 中断
+        if (seg.isBlockEnd && si < segments.length - 1) {
+          await sleepInterruptible(BLOCK_GAP_MS, epoch)
+          assertAlive(epoch)
+        }
       }
     }
 
@@ -1014,7 +1047,8 @@ export function createTtsController(): TtsController {
       const { segments, paraRanges, fullText, cacheKey, startSegIdx, startChar } = prep
       currentSegments = segments
 
-      const needSynth = segments.some((s) => !s.blob)
+      // 本地引擎不走生产者：播放循环里按需整块合成，避免提前合成整章占内存
+      const needSynth = opts.engine !== 'local' && segments.some((s) => !s.blob)
       let producerPromise: Promise<void> | null = null
 
       if (needSynth) {
@@ -1052,7 +1086,7 @@ export function createTtsController(): TtsController {
         activeFlush = persister.flush
         producerPromise = synthesizeSegments(
           fullText, segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', startSegIdx, opts.budgetYuan,
-          persister.onSegmentDone, opts.engine, opts.localModelId, opts.localSpeakerId,
+          persister.onSegmentDone,
         )
       } else {
         agentLog('tts.ts:playChapter', 'cache hit', { cacheKey, segments: segments.length }, 'A')
@@ -1061,7 +1095,7 @@ export function createTtsController(): TtsController {
 
       assertAlive(epoch)
       try {
-        await playSegments(segments, paraRanges, opts, epoch, startSegIdx, startChar)
+        await playSegments(segments, paraRanges, opts, epoch, startSegIdx, startChar, fullText)
       } catch (err) {
         if (err instanceof SpeakAborted || (err instanceof Error && (err.name === 'SpeakAborted' || err.message === 'aborted'))) {
           return
@@ -1120,6 +1154,12 @@ export function createTtsController(): TtsController {
           opts.onStatus?.('idle', '本章无可合成内容')
           return
         }
+        if (opts.engine === 'local') {
+          // 本地引擎边听边合成、不花钱也不落盘，预合成没有意义
+          status = 'idle'
+          opts.onStatus?.('idle', '本地引擎即时合成，无需预合成')
+          return
+        }
         currentSegments = prep.segments
 
         const needCount = prep.segments.filter((s) => !s.blob).length
@@ -1145,7 +1185,7 @@ export function createTtsController(): TtsController {
           activeFlush = persister.flush
           await synthesizeSegments(
             prep.fullText, prep.segments, opts.onSynthProgress, epoch, opts.bookTitle || '未知', prep.startSegIdx, opts.budgetYuan,
-            persister.onSegmentDone, opts.engine, opts.localModelId, opts.localSpeakerId,
+            persister.onSegmentDone,
           )
           opts.onStatus?.('idle', '合成完成')
         } finally {

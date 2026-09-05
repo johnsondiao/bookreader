@@ -615,8 +615,12 @@ export function ReaderPage() {
     // 网页预览没有原生插件，本地引擎不可用时自动回退在线
     const engine: 'local' | 'online' =
       isLocalTtsAvailable() && settings.ttsEngine !== 'online' ? 'local' : 'online'
-    // 本地引擎不需要 MiniMax key，不弹解锁框
-    if (engine === 'online' && !(await hasTtsKey())) {
+    // 本地引擎不需要 MiniMax key，不弹解锁框；也无需预合成（边听边合成、免费不落盘）
+    if (engine === 'local') {
+      showToast('本地引擎即时合成，无需预合成')
+      return
+    }
+    if (!(await hasTtsKey())) {
       if (!mountedRef.current) return
       const ok = await requestUnlock()
       if (!mountedRef.current || !ok) return

@@ -130,15 +130,19 @@ export function ensureLocalEngine(modelId: string): Promise<void> {
 }
 
 /**
- * 合成一块，返回 WAV Blob。
- * 原生端用 generateWithCallback：模型看整块上下文（语调连贯），
- * 音频按回调小块过桥（避免十几 MB 的 base64 字符串压垮 JS 堆），这里攒齐后套 WAV 头。
+ * 合成一整块（模型看到整块上下文 → 语调连贯），再按 cuts 把 PCM 切回每句 WAV。
+ * cuts[i] = 第 i 句起始字符在块内的比例（cuts[0] 恒为 0）。
+ *
+ * 为什么不直接返回整块 WAV：60 秒块 = 5MB+ PCM，base64/data URI 进 WebView
+ * 就是十几 MB 字符串，几个块在飞直接 OOM 闪退；切回句级后每句约 1MB。
+ * 切分按字符比例近似句界，句尾的自然停顿会跟着归到上一句，听感无损。
  */
-export async function synthLocalSegment(
+export async function synthLocalBlock(
   text: string,
   modelId: string,
   speakerId: number,
-): Promise<Blob> {
+  cuts: number[],
+): Promise<Blob[]> {
   await ensureLocalEngine(modelId)
   const parts: Uint8Array<ArrayBuffer>[] = []
   const handle = await LocalTts.addListener('ttsPcm', (e) => {
@@ -147,7 +151,23 @@ export async function synthLocalSegment(
   try {
     const r = await LocalTts.synth({ text, sid: speakerId, speed: 1 })
     if (parts.length === 0) throw new Error('本地合成未返回音频')
-    return wavBlobFromPcm(parts, r.sampleRate)
+    let total = 0
+    for (const p of parts) total += p.byteLength
+    const flat = new Uint8Array(new ArrayBuffer(total))
+    let off = 0
+    for (const p of parts) {
+      flat.set(p, off)
+      off += p.byteLength
+    }
+    const blobs: Blob[] = []
+    for (let i = 0; i < cuts.length; i++) {
+      const endF = i + 1 < cuts.length ? cuts[i + 1] : 1
+      // 对齐到 4 字节（= 2 个 PCM16 样本），避免切在样本中间产生爆音
+      const a = Math.min(total, Math.round((cuts[i] * total) / 4) * 4)
+      const b = Math.min(total, Math.max(a + 4, Math.round((endF * total) / 4) * 4))
+      blobs.push(wavBlobFromPcm([flat.slice(a, b)], r.sampleRate))
+    }
+    return blobs
   } finally {
     void handle.remove()
   }
