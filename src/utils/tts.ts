@@ -334,7 +334,14 @@ export function consumeCrashReport(): string | null {
     localStorage.removeItem(CRASH_SENTINEL_KEY)
     const clean = localStorage.getItem(CLEAN_EXIT_KEY)
     localStorage.removeItem(CLEAN_EXIT_KEY)
-    if (!sentinel || clean === '1') return null
+    if (!sentinel) return null
+    // clean 里存的是打标记的时间戳：只有它晚于最后一次心跳才算"播完后正常退出"；
+    // 同一次会话里先切后台再崩的旧 bug 就是被无时间戳的 clean 吞掉了横幅
+    if (clean) {
+      const cleanTs = Number(clean)
+      const sentTs = Number((JSON.parse(sentinel) as { ts?: number }).ts ?? 0)
+      if (Number.isFinite(cleanTs) && cleanTs > sentTs) return null
+    }
     return sentinel
   } catch {
     return null
@@ -345,14 +352,23 @@ export function consumeCrashReport(): string | null {
 export function installCleanExitMarker() {
   const mark = () => {
     try {
-      localStorage.setItem(CLEAN_EXIT_KEY, '1')
+      localStorage.setItem(CLEAN_EXIT_KEY, String(Date.now()))
     } catch {
       /* ignore */
     }
   }
   window.addEventListener('pagehide', mark)
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') mark()
+    if (document.visibilityState === 'hidden') {
+      mark()
+    } else {
+      // 回到前台：清掉上次后台时打的标记，否则本会话后续真崩会被误判为正常退出
+      try {
+        localStorage.removeItem(CLEAN_EXIT_KEY)
+      } catch {
+        /* ignore */
+      }
+    }
   })
 }
 
