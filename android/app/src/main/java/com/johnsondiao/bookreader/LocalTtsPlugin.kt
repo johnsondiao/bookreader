@@ -154,19 +154,30 @@ class LocalTtsPlugin : Plugin() {
         return out
     }
 
-    private fun isReady(m: ManifestModel): Boolean {
+    /** 清单里缺失/空文件的相对路径（诊断用） */
+    private fun missingFiles(m: ManifestModel): List<String> {
         return if (m.bundled) {
             try {
                 val names = assetPaths("tts-models/${m.id}")
-                m.files.all { names.contains(it.rel) }
+                m.files.map { it.rel }.filter { !names.contains(it) }
             } catch (e: Exception) {
-                Log.w(TAG, "读 assets 清单失败 ${m.id}", e)
-                false
+                listOf("<list error: ${e.message}>")
             }
         } else {
             val dir = modelRoot(m.id)
-            m.files.all { File(dir, it.rel).let { f -> f.isFile && f.length() > 0 } }
+            m.files.map { it.rel }.filter { File(dir, it).let { f -> !f.isFile || f.length() == 0L } }
         }
+    }
+
+    /**
+     * 就绪判定只校验关键文件（模型 onnx + tokens）：
+     * 全量校验太脆弱，espeak-ng-data 里几百个文件任何一个打包怪癖都会误判未就绪（真机已踩）。
+     * 它只服务于 UI 标签；init 不再被它当硬门槛。
+     */
+    private fun isReady(m: ManifestModel): Boolean {
+        val missing = missingFiles(m)
+        if (missing.isNotEmpty()) nlog("notReady ${m.id} missingCount=${missing.size} sample=${missing.take(5)}")
+        return missing.none { it.contains(".onnx") || it == "tokens.txt" }
     }
 
     private fun installedBytes(m: ManifestModel): Long {
@@ -324,7 +335,8 @@ class LocalTtsPlugin : Plugin() {
         val modelId = call.getString("modelId") ?: return call.reject("modelId required")
         val spec = specOf(modelId) ?: return call.reject("未知模型 $modelId")
         val m = manifestOf(modelId) ?: return call.reject("清单里没有模型 $modelId")
-        if (!isReady(m)) return call.reject("模型未就绪：${spec.name}，请先在设置里下载")
+        // 随包模型不用 isReady 当硬门槛（它只服务 UI）：真缺文件时 sherpa 会抛出带路径的真实错误
+        if (!m.bundled && !isReady(m)) return call.reject("模型未就绪：${spec.name}，请先在设置里下载")
         val threads = call.getInt("threads") ?: if (modelId.startsWith("kokoro")) 2 else 1
         nlog("init start model=$modelId threads=$threads loaded=$loadedModelId")
 
