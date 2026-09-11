@@ -137,20 +137,23 @@ class LocalTtsPlugin : Plugin() {
 
     private fun modelRoot(modelId: String): File = File(context.filesDir, "tts-models/$modelId")
 
-    /** 递归列出 assets 下所有文件的相对路径（assets.list 只列直接子级，
-     *  而 kokoro 的 espeak-ng-data、matcha 的 dict 下有几百个嵌套文件，
-     *  不递归会误判"未就绪"，真机已踩）。注意：Kotlin 块注释可嵌套，注释里不能出现斜杠星号。 */
+    /** 递归列出 assets 下所有文件的相对路径（相对 root，如 "model.int8.onnx"、
+     *  "espeak-ng-data/phondata"），与 manifest 的 rel 字段同口径可直接比对。
+     *  assets.list 只列直接子级，而 kokoro 的 espeak-ng-data、matcha 的 dict 下有几百个
+     *  嵌套文件，不递归会误判"未就绪"，真机已踩。
+     *  另注：返回值必须剥掉 root 前缀再比对 rel——历史上这里忘了剥前缀，
+     *  导致所有随包模型永远"包内校验失败"、选用按钮被禁用（真机已踩，v2 修复）。 */
     private fun assetPaths(root: String): Set<String> {
         val out = mutableSetOf<String>()
-        fun walk(prefix: String) {
-            val names = context.assets.list(prefix) ?: return
+        fun walk(abs: String, rel: String) {
+            val names = context.assets.list(abs) ?: return
             if (names.isEmpty()) {
-                if (prefix.isNotEmpty()) out.add(prefix)
+                if (rel.isNotEmpty()) out.add(rel)
                 return
             }
-            for (n in names) walk(if (prefix.isEmpty()) n else "$prefix/$n")
+            for (n in names) walk("$abs/$n", if (rel.isEmpty()) n else "$rel/$n")
         }
-        walk(root)
+        walk(root, "")
         return out
     }
 

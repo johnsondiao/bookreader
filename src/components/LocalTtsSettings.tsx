@@ -1,12 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReaderSettings } from '../types'
 import {
-  deleteLocalModel,
-  downloadLocalModel,
   formatBytes,
   isLocalTtsAvailable,
   listLocalModels,
-  onLocalDownloadProgress,
   resolveLocalModelId,
   synthLocalBlock,
   type LocalModelInfo,
@@ -30,18 +27,13 @@ function blobToDataUri(blob: Blob): Promise<string> {
 }
 
 /**
- * 本地 TTS 模型管理：选用 / 下载（带进度）/ 删除 / 发音人 / 试听。
- * 模型清单与就绪状态来自原生插件（assets 里的 manifest.json + 已下载目录）。
+ * 本地 TTS 模型管理：选用 / 发音人 / 逐模型试听。
+ * 模型全部随安装包（assets/tts-models），没有下载与删除；就绪状态来自原生插件校验。
+ * 每个模型一行、带独立"试听"按钮——真机排查哪个模型能响，一眼便知。
  */
 export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
   const available = isLocalTtsAvailable()
   const [models, setModels] = useState<LocalModelInfo[]>([])
-  const [progress, setProgress] = useState<{
-    modelId: string
-    done: number
-    total: number
-    file: string
-  } | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -56,65 +48,19 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
     refresh()
   }, [])
 
-  useEffect(() => {
-    let un: (() => void) | null = null
-    void onLocalDownloadProgress((e) => {
-      setProgress({ modelId: e.modelId, done: e.done, total: e.total, file: e.file })
-      if (e.total > 0 && e.done >= e.total) {
-        setProgress(null)
-        refresh()
-      }
-    }).then((f) => {
-      un = f
-    })
-    return () => {
-      un?.()
-    }
-  }, [])
-
   useEffect(() => () => audioRef.current?.pause(), [])
 
   const currentId = resolveLocalModelId(settings.localModelId)
   const current = models.find((m) => m.id === currentId)
 
-  const onDownload = async (id: string) => {
-    setBusy(id)
+  /** 逐模型试听：非当前模型用 0 号发音人；当前模型沿用所选发音人，方便调音色 */
+  const onAudition = async (m: LocalModelInfo) => {
+    const key = `audition:${m.id}`
+    setBusy(key)
     setError('')
     try {
-      await downloadLocalModel(id, undefined)
-      refresh()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-      setProgress(null)
-    }
-  }
-
-  const onDelete = async (id: string) => {
-    setBusy(id)
-    setError('')
-    try {
-      await deleteLocalModel(id)
-      if (currentId === id) onUpdateSettings({ localModelId: resolveLocalModelId(undefined), localSpeakerId: 0 })
-      refresh()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const onAudition = async () => {
-    setBusy('audition')
-    setError('')
-    try {
-      const blobs = await synthLocalBlock(
-        AUDITION_TEXT,
-        currentId,
-        settings.localSpeakerId ?? 0,
-        [0],
-      )
+      const sid = m.id === currentId ? settings.localSpeakerId ?? 0 : 0
+      const blobs = await synthLocalBlock(AUDITION_TEXT, m.id, sid, [0])
       audioRef.current?.pause()
       const a = new Audio(await blobToDataUri(blobs[0]))
       audioRef.current = a
@@ -140,10 +86,7 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {models.map((m) => {
         const selected = m.id === currentId
-        const pct =
-          progress?.modelId === m.id && progress.total > 0
-            ? Math.min(100, Math.round((progress.done / progress.total) * 100))
-            : null
+        const auditioning = busy === `audition:${m.id}`
         return (
           <div
             key={m.id}
@@ -154,32 +97,11 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
               <strong style={{ color: selected ? '#ff8a80' : undefined }}>{m.name}</strong>
               <span style={{ opacity: 0.8, whiteSpace: 'nowrap' }}>
                 {m.ready
-                  ? m.bundled
-                    ? `随安装包 ${formatBytes(m.totalBytes)}`
-                    : `已下载 ${formatBytes(m.installedBytes)}`
-                  : m.bundled
-                    ? `包内校验失败 ${formatBytes(m.totalBytes)}`
-                    : `需下载 ${formatBytes(m.totalBytes)}`}
+                  ? `随安装包 ${formatBytes(m.totalBytes)}`
+                  : `包内校验失败 ${formatBytes(m.totalBytes)}`}
               </span>
             </div>
             <p style={{ margin: '4px 0 6px', fontSize: 11, lineHeight: 1.5, opacity: 0.8 }}>{m.desc}</p>
-
-            {pct != null && progress && (
-              <div style={{ fontSize: 11, opacity: 0.85 }}>
-                <div
-                  style={{
-                    height: 4,
-                    borderRadius: 2,
-                    background: 'rgba(255,255,255,0.15)',
-                    overflow: 'hidden',
-                    margin: '2px 0 4px',
-                  }}
-                >
-                  <div style={{ width: `${pct}%`, height: '100%', background: '#ff8a80' }} />
-                </div>
-                {pct}% · {progress.file}
-              </div>
-            )}
 
             <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
               <button
@@ -189,30 +111,17 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
                 disabled={!m.ready || busy != null}
                 onClick={() => onUpdateSettings({ localModelId: m.id, localSpeakerId: 0 })}
               >
-                {selected ? '当前使用' : m.ready ? '选用' : '先下载'}
+                {selected ? '当前使用' : '选用'}
               </button>
-              {!m.bundled && m.ready && (
-                <button
-                  type="button"
-                  className="voice-select"
-                  style={{ width: 'auto', padding: '6px 8px', fontSize: 12 }}
-                  disabled={busy != null}
-                  onClick={() => void onDelete(m.id)}
-                >
-                  删除
-                </button>
-              )}
-              {!m.ready && (
-                <button
-                  type="button"
-                  className="voice-select"
-                  style={{ width: 'auto', padding: '6px 8px', fontSize: 12 }}
-                  disabled={busy != null}
-                  onClick={() => void onDownload(m.id)}
-                >
-                  {busy === m.id ? '下载中…' : '下载'}
-                </button>
-              )}
+              <button
+                type="button"
+                className="voice-select"
+                style={{ width: 'auto', padding: '6px 8px', fontSize: 12 }}
+                disabled={!m.ready || busy != null}
+                onClick={() => void onAudition(m)}
+              >
+                {auditioning ? '合成中…' : '试听'}
+              </button>
             </div>
           </div>
         )
@@ -246,21 +155,6 @@ export function LocalTtsSettings({ settings, onUpdateSettings }: Props) {
           </div>
         </div>
       )}
-
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <button
-          type="button"
-          className="voice-select"
-          style={{ width: 'auto', padding: '6px 12px', fontSize: 12 }}
-          disabled={busy != null || !current?.ready}
-          onClick={() => void onAudition()}
-        >
-          {busy === 'audition' ? '合成中…' : '试听当前模型'}
-        </button>
-        <span style={{ fontSize: 11, opacity: 0.7 }}>
-          {current?.ready ? `${current.sampleRate / 1000}kHz` : '模型未就绪'}
-        </span>
-      </div>
 
       {error && <span style={{ fontSize: 11, color: '#ff8a80' }}>{error}</span>}
     </div>

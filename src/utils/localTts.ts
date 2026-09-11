@@ -4,9 +4,8 @@
  * 与在线 MiniMax 引擎并列：合成链路（按句 segment → blob → 缓存 → 播放 → 高亮）
  * 完全复用，只是"取音频"这一步换成原生推理，不联网、不扣费。
  *
- * 模型清单在 android assets 的 tts-models/manifest.json：
- *   - vits-melo-tts-zh_en 随安装包，开箱即用
- *   - matcha-icefall-zh-baker / kokoro-int8-multi-lang-v1_1 在设置里按需下载
+ * 模型全部随安装包（android assets 的 tts-models/，CI 构建前按 manifest.json 拉取）：
+ * kokoro-int8-multi-lang-v1_1（默认）与 matcha-icefall-zh-baker，开箱即用、无需下载。
  */
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
@@ -23,20 +22,8 @@ export interface LocalModelInfo {
   installedBytes: number
 }
 
-export interface LocalDownloadProgress {
-  modelId: string
-  file: string
-  fileIndex: number
-  fileCount: number
-  done: number
-  total: number
-  fileTotal: number
-}
-
 interface LocalTtsPluginInterface {
   getModels(): Promise<{ models: LocalModelInfo[] }>
-  downloadModel(o: { modelId: string; mirror?: string }): Promise<{ ok: boolean; bytes: number }>
-  deleteModel(o: { modelId: string }): Promise<{ ok: boolean }>
   init(o: { modelId: string; threads?: number }): Promise<{
     modelId: string
     sampleRate: number
@@ -50,10 +37,6 @@ interface LocalTtsPluginInterface {
   release(): Promise<{ ok: boolean }>
   getNativeLog(): Promise<{ log: string }>
   clearNativeLog(): Promise<{ ok: boolean }>
-  addListener(
-    eventName: 'downloadProgress',
-    cb: (e: LocalDownloadProgress) => void,
-  ): Promise<{ remove: () => Promise<void> }>
 }
 
 const LocalTts = registerPlugin<LocalTtsPluginInterface>('LocalTts')
@@ -167,22 +150,6 @@ export async function synthLocalBlock(
   return blobs
 }
 
-export async function downloadLocalModel(
-  modelId: string,
-  mirror: string | undefined,
-): Promise<void> {
-  await LocalTts.downloadModel({ modelId, mirror })
-}
-
-export async function deleteLocalModel(modelId: string): Promise<void> {
-  // 删掉正在用的模型时引擎实例也要释放
-  if (engineModelId === modelId) {
-    engineModelId = null
-    enginePromise = null
-  }
-  await LocalTts.deleteModel({ modelId })
-}
-
 export async function releaseLocalEngine(): Promise<void> {
   engineModelId = null
   enginePromise = null
@@ -208,16 +175,6 @@ export async function clearNativeLog(): Promise<void> {
     await LocalTts.clearNativeLog()
   } catch {
     /* ignore */
-  }
-}
-
-export async function onLocalDownloadProgress(
-  cb: (e: LocalDownloadProgress) => void,
-): Promise<() => void> {
-  if (!isLocalTtsAvailable()) return () => {}
-  const handle = await LocalTts.addListener('downloadProgress', cb)
-  return () => {
-    void handle.remove()
   }
 }
 
