@@ -337,7 +337,9 @@ class LocalTtsPlugin : Plugin() {
         val m = manifestOf(modelId) ?: return call.reject("清单里没有模型 $modelId")
         // 随包模型不用 isReady 当硬门槛（它只服务 UI）：真缺文件时 sherpa 会抛出带路径的真实错误
         if (!m.bundled && !isReady(m)) return call.reject("模型未就绪：${spec.name}，请先在设置里下载")
-        val threads = call.getInt("threads") ?: if (modelId.startsWith("kokoro")) 2 else 1
+        // 统一 1 线程：多线程推理在部分 sherpa-onnx/kokoro 组合下会触发原生层崩溃
+        // （表现为 init 成功但首次 generate 即崩、进程被杀=闪退）。单线程牺牲少量速度换取稳定。
+        val threads = call.getInt("threads") ?: 1
         nlog("init start model=$modelId threads=$threads loaded=$loadedModelId")
 
         synchronized(lock) {
@@ -436,11 +438,15 @@ class LocalTtsPlugin : Plugin() {
     @PluginMethod
     fun synth(call: PluginCall) {
         val text = call.getString("text") ?: return call.reject("text required")
-        val sid = call.getInt("sid") ?: 0
         val speed = call.getFloat("speed") ?: 1.0f
         val engine = synchronized(lock) { tts }
         if (engine == null) return call.reject("本地引擎未初始化，请先 init")
-        nlog("synth start chars=${text.length} sid=$sid")
+        // sid 越界会触发 sherpa 原生层越界访问 → 进程被杀（闪退）。必须在 Java 层先钳制，
+        // 否则即使 UI 正常、只要 settings 里残留了旧模型的 sid（升级/迁移场景）就会崩。
+        val maxSid = (engine?.numSpeakers() ?: 1) - 1
+        val rawSid = call.getInt("sid") ?: 0
+        val sid = if (rawSid < 0) 0 else if (maxSid >= 0 && rawSid > maxSid) maxSid else rawSid
+        nlog("synth start chars=${text.length} sid=$sid maxSid=$maxSid speed=$speed")
         try {
             // 不用 generateWithCallback：真机实测进程死在回调路径的原生调用内部
             // （init ok 后第一次 synth 即崩，JS/Java 堆都充裕，属原生层崩溃）。
