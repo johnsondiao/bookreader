@@ -16,9 +16,12 @@ import { finished } from 'node:stream/promises'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+// v1.13.8（2026-09-10）：含 "Fix data race on shared PRNG" 与 onnxruntime 1.28.2 升级。
+// v1.13.7 在 kokoro int8 上首次 generate() 即原生崩溃（真机实测，Matcha 正常），
+// 期望该版本能治；若仍崩则考虑换 kokoro 模型文件或回退默认模型。
 const AAR_URL =
-  'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.7/sherpa-onnx-1.13.7.aar'
-const AAR_PATH = join(ROOT, 'android/app/libs/sherpa-onnx-1.13.7.aar')
+  'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar'
+const AAR_PATH = join(ROOT, 'android/app/libs/sherpa-onnx-1.13.8.aar')
 const MANIFEST = join(ROOT, 'android/app/src/main/assets/tts-models/manifest.json')
 const ASSETS = join(ROOT, 'android/app/src/main/assets/tts-models')
 
@@ -81,7 +84,7 @@ async function download(url, dest, expectSize) {
 }
 
 // 1) AAR
-await download(AAR_URL, AAR_PATH, 49113869)
+await download(AAR_URL, AAR_PATH, 50129134)
 
 // 2) 随包模型
 const manifest = JSON.parse(await readFile(MANIFEST, 'utf8'))
