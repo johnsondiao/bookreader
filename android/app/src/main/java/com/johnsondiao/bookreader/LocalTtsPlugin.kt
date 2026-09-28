@@ -62,7 +62,8 @@ class LocalTtsPlugin : Plugin() {
         val SPECS = listOf(
             // melo 已移除（中文韵律偏怪）；清单与 Kotlin 表必须同步，否则会渲染出不存在的模型行
             ModelSpec("matcha-icefall-zh-baker", "Matcha 标贝", "22kHz 女声，合成速度最快", 1, 22050),
-            ModelSpec("kokoro-int8-multi-lang-v1_1", "Kokoro 多语", "24kHz，音质最好，103 个音色", 103, 24000),
+            // v1_1 在部分设备 init 即原生崩溃（模型加载抛 Ort::Exception，JNI 接不住），退回 v1_0
+            ModelSpec("kokoro-int8-multi-lang-v1_0", "Kokoro 多语", "24kHz，音质最好，54 个音色", 54, 24000),
         )
     }
 
@@ -420,7 +421,7 @@ class LocalTtsPlugin : Plugin() {
                 ruleFsts = "$dir/phone.fst,$dir/date.fst,$dir/number.fst",
             )
 
-            "kokoro-int8-multi-lang-v1_1" -> OfflineTtsConfig(
+            "kokoro-int8-multi-lang-v1_0" -> OfflineTtsConfig(
                 model = OfflineTtsModelConfig(
                     kokoro = OfflineTtsKokoroModelConfig(
                         model = "$dir/model.int8.onnx",

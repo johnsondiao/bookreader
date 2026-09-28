@@ -5,7 +5,8 @@
  * 完全复用，只是"取音频"这一步换成原生推理，不联网、不扣费。
  *
  * 模型全部随安装包（android assets 的 tts-models/，CI 构建前按 manifest.json 拉取）：
- * kokoro-int8-multi-lang-v1_1（默认）与 matcha-icefall-zh-baker，开箱即用、无需下载。
+ * kokoro-int8-multi-lang-v1_0（默认）与 matcha-icefall-zh-baker，开箱即用、无需下载。
+ * 注：kokoro v1_1 在部分设备 init 阶段原生崩溃（上游模型加载异常 JNI 接不住），故用 v1_0。
  */
 import { Capacitor, registerPlugin } from '@capacitor/core'
 
@@ -41,11 +42,11 @@ interface LocalTtsPluginInterface {
 
 const LocalTts = registerPlugin<LocalTtsPluginInterface>('LocalTts')
 
-/** 默认本地模型：kokoro int8（音质最好、103 音色）；melo 已移除（中文韵律偏怪） */
-export const DEFAULT_LOCAL_MODEL = 'kokoro-int8-multi-lang-v1_1'
+/** 默认本地模型：kokoro int8（音质最好、54 音色）；melo 已移除（中文韵律偏怪） */
+export const DEFAULT_LOCAL_MODEL = 'kokoro-int8-multi-lang-v1_0'
 
-/** 随包模型白名单；旧设置里残留的已移除模型（如 melo）回落到默认 */
-export const SUPPORTED_LOCAL_MODELS = ['kokoro-int8-multi-lang-v1_1', 'matcha-icefall-zh-baker']
+/** 随包模型白名单；旧设置里残留的已移除模型（如 melo、kokoro v1_1）回落到默认 */
+export const SUPPORTED_LOCAL_MODELS = ['kokoro-int8-multi-lang-v1_0', 'matcha-icefall-zh-baker']
 
 export function resolveLocalModelId(id: string | undefined): string {
   return id && SUPPORTED_LOCAL_MODELS.includes(id) ? id : DEFAULT_LOCAL_MODEL

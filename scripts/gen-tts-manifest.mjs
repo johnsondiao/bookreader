@@ -37,8 +37,10 @@ const SPECS = [
     extra: [{ rel: 'vocos-22khz-univ.onnx', url: `${VOCODER}/vocos-22khz-univ.onnx` }],
   },
   {
-    id: 'kokoro-int8-multi-lang-v1_1',
-    repo: 'kokoro-int8-multi-lang-v1_1',
+    // v1_1 在部分设备（Redmi/Android 16）init 阶段原生崩溃（Ort::Exception 加载模型，
+    // JNI 接不住直接杀进程，真机已踩）；退回 v1_0 做对照，配置结构两版完全一致。
+    id: 'kokoro-int8-multi-lang-v1_0',
+    repo: 'kokoro-int8-multi-lang-v1_0',
     bundled: true,
     // 配置只用 us-en + zh 两个 lexicon
     pick: (f) => f !== 'lexicon-gb-en.txt',
