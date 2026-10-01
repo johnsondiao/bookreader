@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import { BookCard } from '../components/BookCard'
 import { useAppStore } from '../store/useAppStore'
-import { copyDiagnostic } from '../utils/diagnosticDump'
 import { parseEpub } from '../utils/epubParser'
 
 function yieldToMain() {
@@ -17,23 +16,12 @@ export function ShelfPage() {
   const removeBook = useAppStore((s) => s.removeBook)
   const importTextBook = useAppStore((s) => s.importTextBook)
   const importParsedBook = useAppStore((s) => s.importParsedBook)
-  const ensureBookCharStats = useAppStore((s) => s.ensureBookCharStats)
-  const lastCrashReport = useAppStore((s) => s.lastCrashReport)
+  const importAudioPackage = useAppStore((s) => s.importAudioPackage)
   const fileRef = useRef<HTMLInputElement>(null)
+  const pkgRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState('')
   const [error, setError] = useState('')
-
-  // 本功能上线前导入的旧书没有字数统计：等书架画完再补齐，结果会落盘，只跑一次
-  useEffect(() => {
-    let cancelled = false
-    void yieldToMain().then(() => {
-      if (!cancelled) ensureBookCharStats()
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [ensureBookCharStats])
 
   const onPickFile = async (file: File) => {
     setError('')
@@ -42,19 +30,12 @@ export function ShelfPage() {
     try {
       const name = file.name.toLowerCase()
       if (name.endsWith('.epub')) {
-        // 大文件先让 UI 画出「导入中」再开始重活
         await yieldToMain()
         const buf = await file.arrayBuffer()
         const parsed = await parseEpub(buf, file.name, (p) => {
-          if (p.phase === 'unzip') {
-            setProgress('解压 EPUB…')
-          } else if (p.total > 0) {
-            setProgress(`解析章节 ${Math.min(p.current + 1, p.total)}/${p.total}`)
-          }
+          if (p.phase === 'unzip') setProgress('解压 EPUB…')
+          else if (p.total > 0) setProgress(`解析章节 ${Math.min(p.current + 1, p.total)}/${p.total}`)
         })
-        setProgress('统计字数…')
-        await yieldToMain()
-        // 导入成功后 store 会记下 importStatsBookId，由 Home 层弹字数/费用统计
         importParsedBook(parsed)
         return
       }
@@ -68,7 +49,6 @@ export function ShelfPage() {
       setError('暂仅支持 TXT、EPUB 格式')
     } catch (e) {
       const msg = e instanceof Error ? e.message : '导入失败，请换一个文件试试'
-      // localStorage 配额问题的友好提示（旧数据迁移后一般不会再出现）
       if (/quota|exceeded|存储/i.test(msg)) {
         setError('书籍过大，存储空间不足。请删除部分书籍后再试。')
       } else {
@@ -80,11 +60,33 @@ export function ShelfPage() {
     }
   }
 
+  const onPickPackage = async (file: File) => {
+    setError('')
+    setBusy(true)
+    setProgress('导入音频包…')
+    try {
+      await yieldToMain()
+      setProgress('解包并解析 manifest…')
+      const r = await importAudioPackage(file)
+      setProgress('')
+      window.alert(
+        r.isNew
+          ? `导入成功：《${file.name.replace(/\.langyue\.zip$/i, '') || '书籍'}》已入库，含 ${r.totalCount} 章音频。`
+          : `合并成功：本次 ${r.mergedCount} 章，本书累计 ${r.totalCount} 章有音频。`,
+      )
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '音频包导入失败')
+    } finally {
+      setBusy(false)
+      setProgress('')
+    }
+  }
+
   return (
     <div>
       <header className="page-header">
         <h1>书架</h1>
-        <p className="sub">共 {books.length} 本 · 支持 TXT / EPUB</p>
+        <p className="sub">共 {books.length} 本 · 支持 TXT / EPUB / 音频包</p>
       </header>
 
       <div className="shelf-toolbar">
@@ -92,13 +94,24 @@ export function ShelfPage() {
           className="btn-primary"
           type="button"
           disabled={busy}
-          onClick={() => fileRef.current?.click()}
+          onClick={() => pkgRef.current?.click()}
         >
-          {busy ? progress || '导入中…' : '+ 导入电子书'}
+          {busy ? progress || '导入中…' : '+ 导入音频包'}
         </button>
         <button className="btn-ghost" type="button" disabled={busy} onClick={() => fileRef.current?.click()}>
           TXT / EPUB
         </button>
+        <input
+          ref={pkgRef}
+          type="file"
+          accept=".zip,application/zip"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) void onPickPackage(f)
+            e.target.value = ''
+          }}
+        />
         <input
           ref={fileRef}
           type="file"
@@ -118,43 +131,16 @@ export function ShelfPage() {
         </div>
       )}
 
-      {lastCrashReport && (
-        <div className="import-banner" style={{ background: '#fff3cd', color: '#7a5c00' }}>
-          检测到上次朗读时异常退出，诊断信息：{lastCrashReport}
-          <br />
-          <button
-            type="button"
-            style={{ marginRight: 8, textDecoration: 'underline' }}
-            onClick={() => {
-              void copyDiagnostic(lastCrashReport).then((ok) => {
-                window.alert(ok ? '诊断日志已复制，请粘贴发给开发者' : '复制失败，请截图本页面')
-              })
-            }}
-          >
-            复制完整日志
-          </button>
-          <button
-            type="button"
-            style={{ textDecoration: 'underline' }}
-            onClick={() => useAppStore.setState({ lastCrashReport: null })}
-          >
-            清除
-          </button>
-        </div>
-      )}
-
-      {busy && progress && (
-        <div className="import-banner">大书解析需要一点时间，请稍候，界面不会卡住…</div>
-      )}
+      {busy && progress && <div className="import-banner">导入中，请稍候…</div>}
 
       {showImportHint && !busy && (
         <div className="import-banner">
-          可导入手机上的 TXT 或 EPUB；朗读位置与阅读进度会自动记录。
+          导入 PC 端导出的音频包（.langyue.zip）即可听书；或导入 TXT / EPUB 纯文本阅读。阅读位置会自动记录。
         </div>
       )}
 
       {books.length === 0 ? (
-        <div className="empty-state">书架空空如也，导入一本电子书开始吧</div>
+        <div className="empty-state">书架空空如也，导入音频包或电子书开始吧</div>
       ) : (
         <div className="shelf-grid">
           {books.map((b) => (

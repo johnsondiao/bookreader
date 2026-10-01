@@ -61,7 +61,7 @@ export function HistoryPage() {
                 <div className="body">
                   <div className="book-name">
                     {book.title}
-                    <span className={`tag ${s.source}`}>{s.source === 'tts' ? '朗读' : '阅读'}</span>
+                    <span className={`tag ${s.source}`}>{s.source === 'audio' ? '朗读' : '阅读'}</span>
                   </div>
                   <div className="detail">
                     {s.chapterTitle} · 第 {s.paragraphIndex + 1} 段 · 进度 {s.progressPercent}%

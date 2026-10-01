@@ -16,8 +16,4 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     __APP_BUILD__: JSON.stringify(process.env.GITHUB_RUN_NUMBER || 'dev'),
   },
-  assetsInclude: ['**/*.wasm'],
-  worker: {
-    format: 'es',
-  },
 })

@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import type { Book } from '../types'
-import { formatCharsCost } from '../utils/charStats'
 
 function formatProgress(p: number) {
   if (p <= 0) return '未读'
@@ -26,18 +25,17 @@ interface Props {
 
 export function BookCard({ book, onOpen, onRemove }: Props) {
   const [confirming, setConfirming] = useState(false)
+  const hasAudio = (book.audioChapterCount ?? 0) > 0
 
   const handleRemoveClick = (e: React.MouseEvent) => {
     e.stopPropagation()
     setConfirming(true)
   }
-
   const handleConfirm = (e: React.MouseEvent) => {
     e.stopPropagation()
     onRemove?.(book.id)
     setConfirming(false)
   }
-
   const handleCancel = (e: React.MouseEvent) => {
     e.stopPropagation()
     setConfirming(false)
@@ -51,13 +49,9 @@ export function BookCard({ book, onOpen, onRemove }: Props) {
         <div className="progress-bar">
           <i style={{ width: `${Math.min(100, book.progressPercent)}%` }} />
         </div>
+        {hasAudio && <span className="book-audio-tag">有声</span>}
         {onRemove && !confirming && (
-          <button
-            type="button"
-            className="book-remove-btn"
-            aria-label="删除书籍"
-            onClick={handleRemoveClick}
-          >
+          <button type="button" className="book-remove-btn" aria-label="删除书籍" onClick={handleRemoveClick}>
             ×
           </button>
         )}
@@ -65,12 +59,8 @@ export function BookCard({ book, onOpen, onRemove }: Props) {
           <div className="book-remove-confirm" onClick={(e) => e.stopPropagation()}>
             <div className="confirm-text">从书架移除？</div>
             <div className="confirm-actions">
-              <button type="button" className="confirm-yes" onClick={handleConfirm}>
-                删除
-              </button>
-              <button type="button" className="confirm-no" onClick={handleCancel}>
-                取消
-              </button>
+              <button type="button" className="confirm-yes" onClick={handleConfirm}>删除</button>
+              <button type="button" className="confirm-no" onClick={handleCancel}>取消</button>
             </div>
           </div>
         )}
@@ -80,8 +70,8 @@ export function BookCard({ book, onOpen, onRemove }: Props) {
         <div className="info">
           {formatProgress(book.progressPercent)} · {formatTime(book.lastReadAt)}
         </div>
-        {typeof book.totalChars === 'number' && typeof book.totalBillable === 'number' && (
-          <div className="info cost">{formatCharsCost(book.totalChars, book.totalBillable)}</div>
+        {hasAudio && (
+          <div className="info audio-count">有声 {book.audioChapterCount} / {book.chapters.length} 章</div>
         )}
       </div>
     </div>
