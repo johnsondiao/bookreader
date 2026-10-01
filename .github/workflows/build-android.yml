@@ -54,9 +54,10 @@ jobs:
         run: |
           mkdir -p out
           cp android/app/build/outputs/apk/release/app-release.apk out/langyue-release.apk
-          # 带版本号的副本：用户能直接看出装的是哪一版
+          # 带版本号 + 构建日期的副本：文件名一眼能看出装的是哪一版、什么时候编的
           V=$(node -p "require('./package.json').version")
-          cp out/langyue-release.apk "out/langyue-${V}-run${GITHUB_RUN_NUMBER}.apk"
+          D=$(date -u '+%Y%m%d')
+          cp out/langyue-release.apk "out/langyue-v${V}-run${GITHUB_RUN_NUMBER}-${D}.apk"
           ls -lh out/
 
       # 模型全部随包后 APK 约 360MB；Actions 免费存储额度只有 ~500MB，
@@ -74,12 +75,22 @@ jobs:
               --title "最新构建（自动更新）" \
               --notes "每次推送 main 自动更新附件；公开仓库可直接下载，无需登录。"
           fi
+          V=$(node -p "require('./package.json').version")
+          # 清掉历史版本附件：Release 里只留最新的一个带版本号 APK，避免越积越多反而分不清
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' \
+            | grep -E '^langyue-v.*-run[0-9]+' | grep -v -- "-run${GITHUB_RUN_NUMBER}-" \
+            | while read -r a; do gh release delete-asset "$TAG" "$a" --repo "$GITHUB_REPOSITORY" --yes || true; done
           gh release upload "$TAG" out/langyue-release.apk --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload "$TAG" out/langyue-*-run*.apk --repo "$GITHUB_REPOSITORY" --clobber
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "commit: ${GITHUB_SHA}
+          gh release upload "$TAG" out/langyue-v*-run*.apk --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "版本: v${V}
+          commit: ${GITHUB_SHA}
           run: #${{ github.run_number }}
           时间: $(date -u '+%Y-%m-%d %H:%M UTC')
-          说明: $(git log -1 --pretty=%s)"
+          说明: $(git log -1 --pretty=%s)
+
+          APK 附件说明：
+            langyue-release.apk          —— 始终等于最新一次构建（滚动覆盖）
+            langyue-v${V}-run*.apk       —— 当前最新一版的带版本号副本，装这个即可"
 
       - name: Publish APK to apk-dist branch (git 通道下载，不依赖 github.com HTTPS 直连)
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
