@@ -143,12 +143,12 @@ export async function getChapterAudioUrl(bookId: string, chapterId: string): Pro
   }
 }
 
-// ─────────────────────────── 文件夹导入（大包正解） ───────────────────────────
+// ─────────────────────────── 文件夹导入（备用方式） ───────────────────────────
 //
-// 背景：1.2G 的音频包在手机 WebView 里整体解压必然 OOM/卡死。
-// 正解是用户在电脑/手机上**手动解压**，把解压出的文件夹放进
-// `Documents/LangyueReader/inbox/<任意名>/`（含 manifest.json、book/、audio/），
-// App 扫描后**同分区 rename 原地接管**——秒级完成、不复制、不额外占空间。
+// 主路径是 App 内直接导入 zip（见 audioPackage.ts 的流式逐章解压），用户无需手动解压。
+// 本区块是备用路径：仅当用户已在别处解压好文件夹、想省去再解压一份空间时才用。
+// 把解压出的文件夹放进 `Documents/LangyueReader/inbox/<任意名>/`
+// （含 manifest.json、book/、audio/），App 扫描后**同分区 rename 原地接管**——秒级、不复制。
 
 /** inbox 里扫描到的一个待导入包 */
 export interface InboxCandidate {

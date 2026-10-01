@@ -412,27 +412,40 @@ export const useAppStore = create<AppState>()(
 
       importAudioPackage: async (file, onProgress) => {
         // 流式打开：只解析中央目录与 manifest；mp3 逐章解压 → 即时落盘 → 释放。
-        // 内存峰值从「整包大小」降到「压缩包 + 单章大小」，1.2G 的包也不会拖死 WebView。
+        // 底层用 zip.js 的随机读取（blob.slice），压缩包本身不整体进内存，
+        // 内存峰值 = 单章解压后大小，1.1G 的包也不会拖死 WebView。
         const opened = await openAudioPackage(file, onProgress)
         const { manifest } = opened
         const bookId = manifest.book.id
         const total = opened.audioChapterIds.length
 
-        for (let i = 0; i < total; i++) {
-          const chapterId = opened.audioChapterIds[i]
-          const bytes = await opened.readChapter(chapterId)
-          if (bytes) await saveChapterAudio(bookId, chapterId, bytes)
-          onProgress?.({
-            phase: 'write',
-            current: i + 1,
-            total,
-            detail: `写入第 ${i + 1} / ${total} 章`,
-          })
-        }
+        try {
+          for (let i = 0; i < total; i++) {
+            const chapterId = opened.audioChapterIds[i]
+            onProgress?.({
+              phase: 'unzip',
+              current: i + 1,
+              total,
+              detail: `解压第 ${i + 1} / ${total} 章`,
+            })
+            const bytes = await opened.readChapter(chapterId)
+            if (bytes) await saveChapterAudio(bookId, chapterId, bytes)
+            onProgress?.({
+              phase: 'write',
+              current: i + 1,
+              total,
+              detail: `写入第 ${i + 1} / ${total} 章`,
+            })
+            // 让出主线程，保证进度条持续刷新、界面不假死
+            await new Promise<void>((r) => setTimeout(r, 0))
+          }
 
-        const sourceBytes = await opened.readSource()
-        if (sourceBytes && opened.source) {
-          await saveBookSource(bookId, opened.source.ext, sourceBytes)
+          const sourceBytes = await opened.readSource()
+          if (sourceBytes && opened.source) {
+            await saveBookSource(bookId, opened.source.ext, sourceBytes)
+          }
+        } finally {
+          await opened.close()
         }
 
         return applyAudioManifest(get, set, manifest)

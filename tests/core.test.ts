@@ -130,13 +130,13 @@ const PACKAGE_MANIFEST = {
   ],
 }
 
-async function makePackageZip(): Promise<ArrayBuffer> {
+async function makePackageZip(compression: 'DEFLATE' | 'STORE' = 'DEFLATE'): Promise<ArrayBuffer> {
   const zip = new JSZip()
   zip.file('manifest.json', JSON.stringify(PACKAGE_MANIFEST))
   zip.file('book/source.txt', '原始文本')
   zip.file('audio/ch-0.mp3', new Uint8Array([1, 2, 3, 4]))
   zip.file('audio/ch-1.mp3', new Uint8Array([5, 6]))
-  return await zip.generateAsync({ type: 'arraybuffer' })
+  return await zip.generateAsync({ type: 'arraybuffer', compression })
 }
 
 describe('openAudioPackage', () => {
@@ -173,6 +173,13 @@ describe('openAudioPackage', () => {
     const unzip = events.filter((e) => e.phase === 'unzip')
     expect(unzip.map((e) => e.current)).toEqual([1, 2])
     expect(unzip.every((e) => e.total === 2)).toBe(true)
+  })
+
+  it('STORE（不压缩）条目也能正确读取', async () => {
+    const opened = await openAudioPackage(await makePackageZip('STORE'))
+    expect([...(await opened.readChapter('ch-0'))!]).toEqual([1, 2, 3, 4])
+    expect(new TextDecoder().decode((await opened.readSource())!)).toBe('原始文本')
+    await opened.close()
   })
 })
 

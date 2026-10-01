@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { BookCard } from '../components/BookCard'
 import { useAppStore } from '../store/useAppStore'
 import { parseEpub } from '../utils/epubParser'
-import { ZIP_IN_MEMORY_LIMIT, formatBytes, type ImportProgress } from '../utils/audioPackage'
+import { formatBytes, type ImportProgress } from '../utils/audioPackage'
 import {
   isAllFilesAccessGranted,
   requestAllFilesAccess,
@@ -128,17 +128,8 @@ export function ShelfPage() {
 
   const onPickPackage = async (file: File) => {
     setError('')
-    // 大包预警：整体解压会把手机内存吃满，引导走文件夹导入
-    if (file.size > ZIP_IN_MEMORY_LIMIT) {
-      const ok = window.confirm(
-        `这个音频包有 ${formatBytes(file.size)}，直接导入需要在手机内存里完整解压，很可能卡死或失败。\n\n` +
-          `建议改用「文件夹导入」：在电脑或手机文件管理器里先把 zip 解压，把解压出来的文件夹放进\n` +
-          `${inboxPath || 'Documents/LangyueReader/inbox'}，\n` +
-          `再点「扫描文件夹导入」，几秒就能完成，且不额外占用空间。\n\n` +
-          `仍要直接导入这个 ${formatBytes(file.size)} 的 zip 吗？`,
-      )
-      if (!ok) return
-    }
+    // 流式逐章解压：无论多大的包都不再要求用户手动解压，由 App 自动完成，
+    // 全程有进度条与过程日志（见下方 import-progress / import-log 区块）。
     beginSession(`导入音频包 ${file.name}（${formatBytes(file.size)}）`)
     try {
       await yieldToMain()
@@ -324,15 +315,15 @@ export function ShelfPage() {
       {folderOpen && (
         <div className="folder-import">
           <div className="folder-import-head">
-            <strong>文件夹导入（推荐用于大包）</strong>
+            <strong>文件夹导入（备用方式）</strong>
             <button className="link-btn" type="button" onClick={() => setFolderOpen(false)}>
               收起
             </button>
           </div>
           <p className="folder-import-tip">
-            在电脑或手机文件管理器里先把 <code>.langyue.zip</code> 解压，把解压出来的文件夹（里面应含
-            <code>manifest.json</code>、<code>book/</code>、<code>audio/</code>）整体放进下面这个目录，然后点「重新扫描」。
-            App 会直接原地接管，不复制文件、不额外占用空间，1.2G 的包也是秒级完成。
+            一般不需要用这个：直接点「+ 导入音频包」选 <code>.langyue.zip</code>，App 会自动流式解压并导入，全程有进度。
+            仅当你已经在别处解压好了文件夹（里面应含 <code>manifest.json</code>、<code>book/</code>、<code>audio/</code>），
+            想免去再次解压、省一份空间时，才把它整体放进下面这个目录，然后点「重新扫描」——App 会原地接管，不复制数据。
           </p>
           <div className="folder-import-path">
             <code>{inboxPath || '读取中…'}</code>
@@ -390,7 +381,7 @@ export function ShelfPage() {
 
       {showImportHint && !busy && (
         <div className="import-banner">
-          导入 PC 端导出的音频包（.langyue.zip）即可听书；大包建议用「文件夹导入」。阅读位置会自动记录。
+          导入 PC 端导出的音频包（.langyue.zip）即可听书，App 会自动解压导入并显示进度；阅读位置会自动记录。
         </div>
       )}
 

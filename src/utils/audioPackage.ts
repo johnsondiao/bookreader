@@ -7,11 +7,23 @@
  *   ├── book/source.epub|txt   # 源电子书（可选）
  *   └── audio/{chapterId}.mp3  # 每章一个 mp3（正文段 + 注释段）
  *
- * 本模块职责：解包 → 校验 format/version → 解析 manifest → 提取源文件与各章 mp3 字节。
+ * 本模块职责：解包 → 校验 format/version → 解析 manifest → 按需读取源文件与各章 mp3 字节。
  * 不负责落盘（见 audioPackageStore.ts）与播放（见 audioPlayer.ts）。
+ *
+ * 关键设计（为什么不用 JSZip）：
+ *   JSZip.loadAsync 需要把整个 zip 读进内存（ArrayBuffer），1.1G 的包会直接把
+ *   WebView 撑爆。改用 @zip.js/zip.js 的「随机读取」Reader：
+ *     - BlobReader(File)      → 用 blob.slice() 只读需要的字节区间，文件不整体进内存
+ *     - Uint8ArrayReader(buf) → 内存字节（测试/小包）
+ *   Zone/中央目录只读末尾一小段；解压某章节时也只会短暂持有「该章解压后」的字节。
+ *   于是内存峰值 ≈ 单章大小，与包体总量无关。
  */
-import JSZip from 'jszip'
+import { BlobReader, configure, TextWriter, Uint8ArrayReader, Uint8ArrayWriter, ZipReader, type FileEntry } from '@zip.js/zip.js'
 import type { AudioManifest } from '../types'
+
+// 关闭 Web Worker：Capacitor WebView 里加载 worker 脚本不可靠，
+// 且现代 WebView 自带原生 DecompressionStream，主线程解压已足够快（逐章让出主线程）。
+configure({ useWebWorkers: false })
 
 export const AUDIO_PACKAGE_FORMAT = 'langyue-audiobook'
 export const AUDIO_PACKAGE_VERSION = 1
@@ -29,7 +41,7 @@ export interface ParsedAudioPackage {
  * 导入进度回调。
  *
  * phase 语义：
- *  - read     读取压缩包字节（current/total = 已读/总字节）
+ *  - read     读取压缩包字节（仅内存字节模式使用；流式模式下不再出现）
  *  - manifest 解析中央目录与 manifest（total 无意义）
  *  - scan     扫描候选目录（current/total = 已检查/总目录数）
  *  - unzip    解压单章 mp3（current/total = 第 n/总章数）
@@ -52,14 +64,11 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-/** 超过该体积的 zip 建议改用「文件夹导入」（整体解压会占满手机内存） */
-export const ZIP_IN_MEMORY_LIMIT = 200 * 1024 * 1024
-
 /**
  * 已打开的音频包：只解析了中央目录与 manifest，mp3 按需逐章解压。
  *
- * 关键设计：不再一次性把所有 mp3 解进内存（1.2G 的包会直接 OOM），
- * 而是让调用方「读一章 → 写一章 → 释放」，内存峰值仅为一章大小。
+ * 调用方「读一章 → 写一章 → 释放」，内存峰值仅为一章大小。
+ * 用完请调用 close() 释放底层 Reader 引用。
  */
 export interface OpenedAudioPackage {
   /** 压缩包原始字节数 */
@@ -71,24 +80,7 @@ export interface OpenedAudioPackage {
   audioChapterIds: string[]
   readSource: () => Promise<Uint8Array | null>
   readChapter: (chapterId: string) => Promise<Uint8Array | null>
-}
-
-/** 带进度地读取文件字节（FileReader 分片读取，可上报已读字节数） */
-function readFileWithProgress(file: File, onProgress?: ProgressFn): Promise<ArrayBuffer> {
-  return new Promise<ArrayBuffer>((resolve, reject) => {
-    const fr = new FileReader()
-    fr.onprogress = (e) => {
-      onProgress?.({
-        phase: 'read',
-        current: e.loaded,
-        total: e.lengthComputable ? e.total : file.size,
-        detail: `读取压缩包 ${formatBytes(e.loaded)}${e.lengthComputable ? ` / ${formatBytes(e.total)}` : ''}`,
-      })
-    }
-    fr.onload = () => resolve(fr.result as ArrayBuffer)
-    fr.onerror = () => reject(fr.error ?? new Error('读取压缩包失败'))
-    fr.readAsArrayBuffer(file)
-  })
+  close: () => Promise<void>
 }
 
 function normalizeChapterId(id: unknown): string | null {
@@ -183,38 +175,50 @@ export function parseAudioManifest(raw: unknown): AudioManifest {
 }
 
 /**
- * 打开音频包：解析中央目录与 manifest，返回按需读取句柄（不解压 mp3）。
+ * 打开音频包：仅解析中央目录与 manifest，返回按需读取句柄（不整体解压）。
  *
- * 相比一次性全解，内存占用从「整包大小」降到「压缩包本身 + 单章大小」，
- * 1.2G 的包也不会再把手机 WebView 拖死。
+ * File 走 BlobReader（随机切片读，文件不整体进内存）；
+ * ArrayBuffer 走 Uint8ArrayReader（测试/小包场景）。
  */
 export async function openAudioPackage(
   file: File | ArrayBuffer,
   onProgress?: ProgressFn,
 ): Promise<OpenedAudioPackage> {
   const sizeBytes = file instanceof ArrayBuffer ? file.byteLength : file.size
-  const data = file instanceof ArrayBuffer ? file : await readFileWithProgress(file, onProgress)
 
   onProgress?.({
     phase: 'manifest',
     current: 0,
     total: 0,
-    detail: `解析压缩包目录（${formatBytes(sizeBytes)}）…`,
+    detail: `读取压缩包目录（${formatBytes(sizeBytes)}）…`,
   })
-  const zip = await JSZip.loadAsync(data, { createFolders: false })
+
+  const zipReader = new ZipReader(
+    file instanceof ArrayBuffer ? new Uint8ArrayReader(new Uint8Array(file)) : new BlobReader(file),
+  )
+  const entries = await zipReader.getEntries()
+
+  // 文件名 → 条目（跳过目录条目）
+  const byName = new Map<string, FileEntry>()
+  for (const e of entries) {
+    if (!e.directory) byName.set(e.filename, e as FileEntry)
+  }
 
   // 1. manifest.json
-  const manifestEntry = zip.file('manifest.json')
-  if (!manifestEntry) throw new Error('不是音频包：缺少 manifest.json')
-  const manifestRaw = JSON.parse(await manifestEntry.async('text')) as unknown
+  const manifestEntry = byName.get('manifest.json')
+  if (!manifestEntry) {
+    await zipReader.close()
+    throw new Error('不是音频包：缺少 manifest.json')
+  }
+  const manifestRaw = JSON.parse(await manifestEntry.getData!(new TextWriter())) as unknown
   const manifest = parseAudioManifest(manifestRaw)
 
   // 2. 源文件 book/source.*（只记元信息，内容按需读）
   let source: OpenedAudioPackage['source'] = null
-  let sourceEntry: JSZip.JSZipObject | null = null
+  let sourceEntry: FileEntry | null = null
   for (const ext of ['epub', 'txt'] as const) {
     const name = `book/source.${ext}`
-    const e = zip.file(name)
+    const e = byName.get(name)
     if (e) {
       source = { name, ext }
       sourceEntry = e
@@ -222,50 +226,53 @@ export async function openAudioPackage(
     }
   }
 
-  // 3. 逐章探测 mp3 是否存在（不解压内容）
-  const chapterEntry = new Map<string, JSZip.JSZipObject>()
+  // 3. 逐章登记 mp3 条目（不解压内容）
+  const chapterEntry = new Map<string, FileEntry>()
   for (const ch of manifest.chapters) {
     const id = normalizeChapterId(ch.id)
     if (!id) continue
-    const e = zip.file(`audio/${id}.mp3`) ?? zip.file(`audio/${encodeURIComponent(id)}.mp3`)
+    const e = byName.get(`audio/${id}.mp3`) ?? byName.get(`audio/${encodeURIComponent(id)}.mp3`)
     if (e) chapterEntry.set(id, e)
   }
-  const audioChapterIds = [...chapterEntry.keys()]
 
   return {
     sizeBytes,
     manifest,
     source,
-    audioChapterIds,
-    readSource: async () => (sourceEntry ? await sourceEntry.async('uint8array') : null),
+    audioChapterIds: [...chapterEntry.keys()],
+    readSource: async () => (sourceEntry ? await sourceEntry.getData!(new Uint8ArrayWriter()) : null),
     readChapter: async (chapterId: string) => {
       const e = chapterEntry.get(chapterId)
-      return e ? await e.async('uint8array') : null
+      return e ? await e.getData!(new Uint8ArrayWriter()) : null
     },
+    close: () => zipReader.close(),
   }
 }
 
-/** 从 zip 文件解包音频包（一次性全解，仅供小包/测试使用；大包请用 openAudioPackage） */
+/** 从 zip 解包音频包（一次性全解，仅供小包/测试使用；大包请用 openAudioPackage 逐章流式） */
 export async function parseAudioPackage(file: File | ArrayBuffer, onProgress?: ProgressFn): Promise<ParsedAudioPackage> {
   const opened = await openAudioPackage(file, onProgress)
+  try {
+    const sourceBytes = await opened.readSource()
+    const source: ParsedAudioPackage['source'] =
+      sourceBytes && opened.source ? { name: opened.source.name, ext: opened.source.ext, bytes: sourceBytes } : null
 
-  const sourceBytes = await opened.readSource()
-  const source: ParsedAudioPackage['source'] =
-    sourceBytes && opened.source ? { name: opened.source.name, ext: opened.source.ext, bytes: sourceBytes } : null
+    const audio = new Map<string, Uint8Array>()
+    const total = opened.audioChapterIds.length
+    for (let i = 0; i < total; i++) {
+      const id = opened.audioChapterIds[i]
+      const bytes = await opened.readChapter(id)
+      if (bytes) audio.set(id, bytes)
+      onProgress?.({
+        phase: 'unzip',
+        current: i + 1,
+        total,
+        detail: `解压第 ${i + 1} / ${total} 章`,
+      })
+    }
 
-  const audio = new Map<string, Uint8Array>()
-  const total = opened.audioChapterIds.length
-  for (let i = 0; i < total; i++) {
-    const id = opened.audioChapterIds[i]
-    const bytes = await opened.readChapter(id)
-    if (bytes) audio.set(id, bytes)
-    onProgress?.({
-      phase: 'unzip',
-      current: i + 1,
-      total,
-      detail: `解压第 ${i + 1} / ${total} 章`,
-    })
+    return { manifest: opened.manifest, source, audio }
+  } finally {
+    await opened.close()
   }
-
-  return { manifest: opened.manifest, source, audio }
 }
