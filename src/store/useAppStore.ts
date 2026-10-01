@@ -1,13 +1,31 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { v4 as uuid } from 'uuid'
-import type { AudioChapter, Book, Chapter, ProgressSnapshot, ReaderSettings, Screen, TabId, TocEntry } from '../types'
+import type {
+  AudioChapter,
+  AudioManifest,
+  Book,
+  Chapter,
+  ProgressSnapshot,
+  ReaderSettings,
+  Screen,
+  TabId,
+  TocEntry,
+} from '../types'
 import type { ParsedEbook } from '../utils/epubParser'
 import { bindTocToChapters, tocFromChapters } from '../utils/epubParser'
 import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, splitParagraphTexts } from '../utils/chapterParser'
 import { createIdbStorage } from '../utils/idbStorage'
-import { parseAudioPackage } from '../utils/audioPackage'
-import { saveChapterAudio, saveBookSource, deleteBookAudio } from '../utils/audioPackageStore'
+import { openAudioPackage, type ProgressFn } from '../utils/audioPackage'
+import {
+  deleteBookAudio,
+  ensureInboxDir,
+  importInboxPackage,
+  saveBookSource,
+  saveChapterAudio,
+  scanInbox,
+  type InboxCandidate,
+} from '../utils/audioPackageStore'
 
 /** 导入音频包的返回结果 */
 export interface AudioImportResult {
@@ -18,6 +36,8 @@ export interface AudioImportResult {
   totalCount: number
   /** 是否新建书籍 */
   isNew: boolean
+  /** 目录接管模式：move=同分区移动（零拷贝），copy=逐文件复制 */
+  transferMode?: 'move' | 'copy'
 }
 
 interface AppState {
@@ -34,7 +54,13 @@ interface AppState {
   closeReader: () => void
   importTextBook: (content: string, filename?: string) => string
   importParsedBook: (parsed: ParsedEbook) => string
-  importAudioPackage: (file: File) => Promise<AudioImportResult>
+  importAudioPackage: (file: File, onProgress?: ProgressFn) => Promise<AudioImportResult>
+  /** 扫描 inbox 目录，返回可导入的候选包（大包推荐走这条路） */
+  scanInboxFolders: (onProgress?: ProgressFn) => Promise<InboxCandidate[]>
+  /** 从手动解压好的文件夹导入：同分区原地接管，秒级完成 */
+  importFromFolder: (cand: InboxCandidate, onProgress?: ProgressFn) => Promise<AudioImportResult>
+  /** 确保 inbox 目录存在并返回绝对路径（UI 引导用户放置文件夹用） */
+  prepareInbox: () => Promise<string>
   removeBook: (bookId: string) => void
   updateReadingProgress: (payload: {
     bookId: string
@@ -241,6 +267,94 @@ function chapterContentFromAudio(ac: AudioChapter): string {
   return notes ? `${body}\n${notes}` : body
 }
 
+/**
+ * 由音频包 manifest 构造/合并书籍记录（zip 导入与文件夹导入共用）。
+ *
+ * 音频章节的正文文本直接取自 manifest 的句级数据，不再重新解析源文件，
+ * 从根本上规避 PC 端与手机端章节切分不一致导致的错位。
+ */
+function buildBookFromAudioManifest(
+  existing: Book | undefined,
+  manifest: AudioManifest,
+  colorIndex: number,
+): { book: Book; isNew: boolean; mergedCount: number; totalCount: number } {
+  const audioChapters: Record<string, AudioChapter> = existing?.audioChapters ? { ...existing.audioChapters } : {}
+  for (const ac of manifest.chapters) audioChapters[ac.id] = ac
+
+  if (existing) {
+    const mergedChapters = [...existing.chapters]
+    for (const ac of manifest.chapters) {
+      const idx = mergedChapters.findIndex((c) => c.id === ac.id)
+      const ch: Chapter = {
+        id: ac.id,
+        title: ac.title,
+        startIndex: idx >= 0 ? mergedChapters[idx].startIndex : mergedChapters.length,
+        content: chapterContentFromAudio(ac),
+      }
+      if (idx >= 0) mergedChapters[idx] = ch
+      else mergedChapters.push(ch)
+    }
+    const book: Book = {
+      ...existing,
+      title: manifest.book.title,
+      author: manifest.book.author ?? existing.author,
+      chapters: mergedChapters,
+      toc: tocFromChapters(mergedChapters),
+      audioChapters,
+      audioChapterCount: Object.keys(audioChapters).length,
+    }
+    return { book, isNew: false, mergedCount: manifest.chapters.length, totalCount: book.audioChapterCount ?? 0 }
+  }
+
+  const chapters: Chapter[] = manifest.chapters.map((ac, i) => ({
+    id: ac.id,
+    title: ac.title,
+    startIndex: i,
+    content: chapterContentFromAudio(ac),
+  }))
+  const book: Book = {
+    id: manifest.book.id,
+    title: manifest.book.title,
+    author: manifest.book.author ?? 'PC 合成',
+    coverColor: COVER_COLORS[colorIndex % COVER_COLORS.length],
+    coverEmoji: manifest.book.title.slice(0, 1) || '书',
+    content: '',
+    chapters,
+    toc: tocFromChapters(chapters),
+    addedAt: Date.now(),
+    lastReadAt: Date.now(),
+    chapterId: chapters[0]?.id ?? '',
+    paragraphIndex: 0,
+    charOffset: 0,
+    progressPercent: 0,
+    furthestChapterIndex: 0,
+    readChapterIds: chapters[0] ? [chapters[0].id] : [],
+    audioChapters,
+    audioChapterCount: chapters.length,
+  }
+  return { book, isNew: true, mergedCount: chapters.length, totalCount: chapters.length }
+}
+
+/** 用 manifest 建/合并书籍并写入 store（zip 导入与文件夹导入共用收尾） */
+function applyAudioManifest(
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void,
+  manifest: AudioManifest,
+): AudioImportResult {
+  const existing = get().books.find((b) => b.id === manifest.book.id)
+  const r = buildBookFromAudioManifest(existing, manifest, get().books.length)
+  const books = existing
+    ? get().books.map((b) => (b.id === r.book.id ? r.book : b))
+    : [r.book, ...get().books]
+  set({ books, showImportHint: false })
+  return {
+    bookId: r.book.id,
+    mergedCount: r.mergedCount,
+    totalCount: r.totalCount,
+    isNew: r.isNew,
+  }
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
@@ -296,95 +410,44 @@ export const useAppStore = create<AppState>()(
         return book.id
       },
 
-      importAudioPackage: async (file) => {
-        const pkg = await parseAudioPackage(file)
-        const { manifest } = pkg
+      importAudioPackage: async (file, onProgress) => {
+        // 流式打开：只解析中央目录与 manifest；mp3 逐章解压 → 即时落盘 → 释放。
+        // 内存峰值从「整包大小」降到「压缩包 + 单章大小」，1.2G 的包也不会拖死 WebView。
+        const opened = await openAudioPackage(file, onProgress)
+        const { manifest } = opened
+        const bookId = manifest.book.id
+        const total = opened.audioChapterIds.length
 
-        // 找到已有书籍（按 manifest.book.id 幂等合并），否则新建
-        const existing = get().books.find((b) => b.id === manifest.book.id)
-
-        // 逐章落盘 mp3（幂等：重复导入覆盖同名文件）
-        for (const [chapterId, bytes] of pkg.audio.entries()) {
-          await saveChapterAudio(manifest.book.id, chapterId, bytes)
-        }
-        // 源文件落盘（供日后纯文本重读）
-        if (pkg.source) {
-          await saveBookSource(manifest.book.id, pkg.source.ext, pkg.source.bytes)
-        }
-
-        const audioChapters: Record<string, AudioChapter> = existing?.audioChapters
-          ? { ...existing.audioChapters }
-          : {}
-        for (const ac of manifest.chapters) {
-          audioChapters[ac.id] = ac
+        for (let i = 0; i < total; i++) {
+          const chapterId = opened.audioChapterIds[i]
+          const bytes = await opened.readChapter(chapterId)
+          if (bytes) await saveChapterAudio(bookId, chapterId, bytes)
+          onProgress?.({
+            phase: 'write',
+            current: i + 1,
+            total,
+            detail: `写入第 ${i + 1} / ${total} 章`,
+          })
         }
 
-        if (existing) {
-          // 合并：章节并集 + 音频覆盖
-          const mergedChapters = [...existing.chapters]
-          for (const ac of manifest.chapters) {
-            const idx = mergedChapters.findIndex((c) => c.id === ac.id)
-            const ch: Chapter = {
-              id: ac.id,
-              title: ac.title,
-              startIndex: idx >= 0 ? mergedChapters[idx].startIndex : mergedChapters.length,
-              content: chapterContentFromAudio(ac),
-            }
-            if (idx >= 0) mergedChapters[idx] = ch
-            else mergedChapters.push(ch)
-          }
-          const next: Book = {
-            ...existing,
-            title: manifest.book.title,
-            author: manifest.book.author ?? existing.author,
-            chapters: mergedChapters,
-            toc: tocFromChapters(mergedChapters),
-            audioChapters,
-            audioChapterCount: Object.keys(audioChapters).length,
-          }
-          set({ books: get().books.map((b) => (b.id === next.id ? next : b)) })
-          return {
-            bookId: next.id,
-            mergedCount: manifest.chapters.length,
-            totalCount: next.audioChapterCount ?? 0,
-            isNew: false,
-          }
+        const sourceBytes = await opened.readSource()
+        if (sourceBytes && opened.source) {
+          await saveBookSource(bookId, opened.source.ext, sourceBytes)
         }
 
-        // 新建：整本书从 manifest 构造（音频章节自带句级对齐文本）
-        const chapters: Chapter[] = manifest.chapters.map((ac, i) => ({
-          id: ac.id,
-          title: ac.title,
-          startIndex: i,
-          content: chapterContentFromAudio(ac),
-        }))
-        const book: Book = {
-          id: manifest.book.id,
-          title: manifest.book.title,
-          author: manifest.book.author ?? 'PC 合成',
-          coverColor: COVER_COLORS[get().books.length % COVER_COLORS.length],
-          coverEmoji: manifest.book.title.slice(0, 1) || '书',
-          content: '',
-          chapters,
-          toc: tocFromChapters(chapters),
-          addedAt: Date.now(),
-          lastReadAt: Date.now(),
-          chapterId: chapters[0]?.id ?? '',
-          paragraphIndex: 0,
-          charOffset: 0,
-          progressPercent: 0,
-          furthestChapterIndex: 0,
-          readChapterIds: chapters[0] ? [chapters[0].id] : [],
-          audioChapters,
-          audioChapterCount: chapters.length,
-        }
-        set({ books: [book, ...get().books], showImportHint: false })
-        return {
-          bookId: book.id,
-          mergedCount: chapters.length,
-          totalCount: chapters.length,
-          isNew: true,
-        }
+        return applyAudioManifest(get, set, manifest)
+      },
+
+      scanInboxFolders: (onProgress) => scanInbox(onProgress),
+
+      prepareInbox: () => ensureInboxDir(),
+
+      importFromFolder: async (cand, onProgress) => {
+        const { manifest } = cand
+        // 同分区 rename 原地接管：1.2G 也是秒级完成，不复制、不额外占空间
+        const { mode } = await importInboxPackage(cand, manifest.book.id, onProgress)
+        const r = applyAudioManifest(get, set, manifest)
+        return { ...r, transferMode: mode }
       },
 
       removeBook: (bookId) => {

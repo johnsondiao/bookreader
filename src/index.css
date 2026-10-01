@@ -463,6 +463,212 @@ button {
   font-size: 14px;
 }
 
+/* —— 导入进度 / 过程日志 / 文件夹导入 —— */
+.import-progress {
+  margin: 0 16px 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.import-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.import-progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.import-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.import-progress-track.indeterminate .import-progress-fill {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent) 40%,
+    rgba(255, 255, 255, 0.4) 50%,
+    var(--accent) 60%,
+    var(--accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: importSlide 1.1s linear infinite;
+}
+
+@keyframes importSlide {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+.import-progress-detail {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.import-log {
+  margin: 0 16px 12px;
+}
+
+.import-log-toggle {
+  width: 100%;
+  text-align: left;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.import-log-body {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.import-log-line {
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.folder-import {
+  margin: 0 16px 12px;
+  padding: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.folder-import-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.folder-import-tip {
+  margin: 10px 0;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+.folder-import-tip code {
+  padding: 1px 4px;
+  margin: 0 2px;
+  background: var(--bg);
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+
+.folder-import-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
+.folder-import-path code {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.link-btn {
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.folder-import-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.folder-import-empty {
+  padding: 10px 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inbox-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.inbox-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.inbox-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.inbox-item-meta {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.inbox-item-warn {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #b26a00;
+}
+
+.inbox-item-dir {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
 /* —— History —— */
 .history-list {
   padding: 8px 16px 24px;
