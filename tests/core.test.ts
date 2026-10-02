@@ -352,7 +352,9 @@ describe('parseMpegFrame / buildChapterGeometry', () => {
     const geo = buildChapterGeometry(fakeMp3())!
     expect(geo.frameCount).toBe(800)
     expect(geo.durationMs).toBeCloseTo((800 * 1152) / 44100 * 1000, 5)
-    const at = (ms: number) => 10 + Math.round((ms / geo.durationMs) * (geo.frameCount - 1)) * 417
+    // 绝对帧映射：ms ÷ 每帧时长(1152/44100) = 帧序号
+    const per = (1152 / 44100) * 1000
+    const at = (ms: number) => 10 + Math.round(ms / per) * 417
     expect(byteAtMs(geo, 0)).toBe(10)
     expect(byteAtMs(geo, geo.durationMs)).toBe(10 + 799 * 417)
     expect(byteAtMs(geo, 10000)).toBe(at(10000))
@@ -403,9 +405,44 @@ describe('首帧长度 ≠ 全章帧长（真包实况）', () => {
 
   it('首帧也参与「时间→帧」的标定：中点落在正中间那帧', () => {
     const geo = buildChapterGeometry(fakeMp3WithBigFirstFrame())!
-    // durationMs/2 对应第 400 帧（fi = round(0.5 × (801-1)）= 400），起点要把首帧那 180 字节算进去
+    // 绝对帧映射：durationMs/2 = 14418ms ÷ 36ms/帧 = 400.5 → 第 401 帧；
+    // 起点要把首帧那 180 字节单独算进去
     const mid = byteAtMs(geo, geo.durationMs / 2)
-    expect(mid).toBe(10 + 180 + 399 * 144)
+    expect(mid).toBe(10 + 180 + 400 * 144)
+  })
+})
+
+describe('前导补偿：Xing 元数据帧 + 编码器延迟', () => {
+  /** 首帧 40kbps@16k(180B, 可当 Xing 表头帧) + 其后 400 帧 32kbps@16k(144B) */
+  function fakeWithXing(withTag: boolean) {
+    const frames = 400
+    const bytes = new Uint8Array(10 + 180 + frames * 144)
+    bytes.set([0x49, 0x44, 0x33, 0x03, 0, 0, 0, 0, 0, 0], 0)
+    bytes[10] = 0xff
+    bytes[11] = 0xf3
+    bytes[12] = (5 << 4) | (2 << 2) // 首帧 40kbps / 16000Hz
+    if (withTag) bytes.set([0x49, 0x6e, 0x66, 0x6f], 10 + 21) // "Info"，帧头4+side info 17 之后
+    for (let i = 0; i < frames; i++) {
+      const off = 190 + i * 144
+      bytes[off] = 0xff
+      bytes[off + 1] = 0xf3
+      bytes[off + 2] = (4 << 4) | (2 << 2)
+      for (let j = 4; j < 144; j++) bytes[off + j] = 0x41
+    }
+    return bytes
+  }
+
+  it('首帧是 Xing/Info 元数据帧 → 补 3 帧（36 + 72ms）', () => {
+    const geo = buildChapterGeometry(fakeWithXing(true))!
+    expect(geo.leadMs).toBeCloseTo(3 * 36, 5)
+    // 0ms 不再落在首帧（那是个表头帧），而是跳过表头 + 2 帧编码器延迟
+    expect(byteAtMs(geo, 0)).toBe(10 + 180 + 2 * 144)
+  })
+
+  it('首帧是普通音频帧（已剥前导的新包）→ 不补偿', () => {
+    const geo = buildChapterGeometry(fakeWithXing(false))!
+    expect(geo.leadMs).toBe(0)
+    expect(byteAtMs(geo, 0)).toBe(10)
   })
 })
 
@@ -461,6 +498,24 @@ describe('buildChunkSlots 按句切段（本段开头 → 下一段开头）', (
     const legacy = { ...chapter, titleStartMs: undefined, titleEndMs: undefined }
     const slots = buildChunkSlots(legacy, true)
     expect(slots[0].kind).toBe('body')
+  })
+
+  it('零长度句（纯标点 / 注释标记）不单独成段', () => {
+    // 真包实况：… 、”、〔2〕、）、* * * 这类片段 TTS 不发声，startMs == endMs。
+    // 给它切段只能切出 1 帧 → 播出来是「下一句开头的一小截」+ 一次切段停顿。
+    const withPunct = {
+      ...chapter,
+      sentences: [
+        { index: 0, text: '甲。', kind: 'text', startMs: 3150, endMs: 6000 },
+        { index: 1, text: '…', kind: 'text', startMs: 6000, endMs: 6000 },
+        { index: 2, text: '乙。', kind: 'text', startMs: 6000, endMs: 9000 },
+      ],
+    }
+    const slots = buildChunkSlots(withPunct, true)
+    expect(slots.map((s) => s.kind)).toEqual(['title', 'body', 'body', 'note'])
+    // 甲句的段照旧到 6000 收口，零长度句不再插进来
+    expect(slots[1]).toMatchObject({ sentenceIndex: 0, startMs: 3150, endMs: 6000 })
+    expect(slots[2]).toMatchObject({ sentenceIndex: 2, startMs: 6000, endMs: 12000 })
   })
 })
 

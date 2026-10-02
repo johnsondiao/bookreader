@@ -74,6 +74,16 @@ export interface ChapterGeometry {
   durationMs: number
   /** 第一帧的实际字节数（真包实测首帧 180、其余 144；frames.frameLen 是全章统一帧长） */
   firstFrameLen: number
+  /**
+   * 音频内容相对「帧时间轴」的前导量（ms）。
+   *
+   * 三种东西会占掉帧时间轴却不含正文声音：
+   *   ① 首帧的 Xing/Info 元数据帧（真包首帧 180 字节那个，占 1 帧 = 36ms）；
+   *   ② LAME/ffmpeg 的编码器前导延迟（实测 2 帧 = 72ms）。
+   * 不补掉它，切出来的每一段都会比 manifest 标的位置**早 ~108ms**，段尾就把
+   * 下一句的开头带进来念了（听感「下一句前几个字被上一句念走」）。
+   */
+  leadMs: number
 }
 
 /** MPEG1 Layer III 码率表（kbps，索引 = bitrate_index，0 为 free） */
@@ -183,6 +193,22 @@ function dominantFrameLen(bytes: Uint8Array, start: number): number {
  *   ③ 逐个候选试「等距走到底不断链」，谁先走得通就用谁，帧数即真实帧数。
  * 最后时长由「帧数 × 每帧采样点数 / 采样率」算出，天然吃掉 LAME 尾部 padding。
  */
+/**
+ * 首帧是不是 Xing/Info 元数据帧（ffmpeg 写的 Xing 头里带 "Info"/"Xing" 字样）。
+ * 这种帧占满一帧的字节，但里面装的是表头不是声音。
+ */
+function isXingFrame(bytes: Uint8Array, info: MpegFrameInfo): boolean {
+  const end = Math.min(bytes.length, info.offset + Math.min(info.frameLen, 64))
+  for (let i = info.offset; i + 4 <= end; i++) {
+    const tag = String.fromCharCode(bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3])
+    if (tag === 'Xing' || tag === 'Info') return true
+  }
+  return false
+}
+
+/** 编码器前导延迟有几帧：ffmpeg/libmp3lame 固定 2 帧（实测 108ms 前导里的 72ms） */
+const ENCODER_DELAY_FRAMES = 2
+
 export function buildChapterGeometry(bytes: Uint8Array, notesDurationMs?: number): ChapterGeometry | null {
   const first = parseMpegFrame(bytes)
   if (!first) return null
@@ -210,7 +236,19 @@ export function buildChapterGeometry(bytes: Uint8Array, notesDurationMs?: number
     if (audioBytes - covered > 2 * frameLen || covered - audioBytes > 2 * frameLen) continue
     const durationMs = ((frameCount * first.samplesPerFrame) / first.sampleRate) * 1000
     if (!Number.isFinite(durationMs) || durationMs <= 0) continue
-    return { frames: { ...first, frameLen }, frameCount, size: bytes.length, durationMs, firstFrameLen: first.frameLen }
+    const msPerFrame = (first.samplesPerFrame / first.sampleRate) * 1000
+    // 元数据帧自己占 1 帧；前面再垫 ENCODER_DELAY_FRAMES 帧静音。
+    // 已剥掉前导的新包没有 Xing 帧，leadMs 就是 0，什么都不补。
+    const leadFrames = (isXingFrame(bytes, first) ? 1 : 0) + ENCODER_DELAY_FRAMES
+    const leadMs = isXingFrame(bytes, first) ? leadFrames * msPerFrame : 0
+    return {
+      frames: { ...first, frameLen },
+      frameCount,
+      size: bytes.length,
+      durationMs,
+      firstFrameLen: first.frameLen,
+      leadMs,
+    }
   }
   return null
 }
@@ -230,12 +268,17 @@ function frameStartAt(geo: ChapterGeometry, fi: number): number {
 
 /**
  * 把「毫秒」换算成整章里的字节偏移（帧边界对齐）。
- * 用整章帧数做比例标定，避免帧数取整造成的累计漂移。
+ *
+ * 用**绝对帧时长**推导（`ms / 每帧时长`），而不是拿整章时长做比例 —— 比例映射会把
+ * manifest 与音频之间的固定前导均匀摊到全章，摊不掉反而引入随位置变化的漂移。
+ *
+ * `leadMs`（前导补偿）必须加上：见 `buildChapterGeometry` 里的说明。
  */
 export function byteAtMs(geo: ChapterGeometry, ms: number): number {
-  const { frameCount, size } = geo
-  const clamped = Math.max(0, Math.min(ms, geo.durationMs))
-  const fi = Math.round((clamped / geo.durationMs) * (frameCount - 1))
+  const { frames, frameCount, size } = geo
+  const msPerFrame = (frames.samplesPerFrame / frames.sampleRate) * 1000
+  const t = ms + geo.leadMs
+  const fi = Math.max(0, Math.min(Math.round(t / msPerFrame), frameCount - 1))
   const start = frameStartAt(geo, fi)
   return Math.max(0, Math.min(start, size))
 }
@@ -273,18 +316,29 @@ export function buildChunkSlots(chapter: AudioChapter, withTitle: boolean): Chun
 
   const notes = chapter.notes.filter((n) => n.startMs != null && n.endMs != null)
 
+  // 小于这个值（1 帧 = 36ms 的两倍多）的段不单独播：见下面「零长度句」的说明
+  const MIN_SLOT_MS = 80
+
   chapter.sentences.forEach((s, i) => {
     const start = s.startMs
     // 上一条注释的开头 = 本句的物理终点；没有注释就用整章时长封口
     const nextNote = notes.find((n) => (n.startMs ?? 0) > start)
     const nextSentence = chapter.sentences[i + 1]
     const endMs = nextSentence?.startMs ?? nextNote?.startMs ?? chapter.notesDurationMs ?? start
+    //
+    // 跳过「零长度句」：manifest 里有一批时长为 0 的句子，文本是纯标点/标记
+    // （… 、”、〔2〕、）、* * * 之类）。TTS 对它们不发声，所以 startMs == endMs。
+    // 如果照样给它切一段，只能切出 1 帧（36ms）—— 播出来是「下一句开头的一小截」
+    // 紧接着一次切段停顿，然后再从头念下一句，听感就是「下一句前几个字被上一句念了」。
+    // 这类句子不产生声音，直接不排进播放序列；它们的文本照常显示在屏幕上。
+    if (endMs - start < MIN_SLOT_MS) return
     slots.push({ kind: 'body', startMs: start, endMs, sentenceIndex: s.index ?? i })
   })
 
   notes.forEach((n, i) => {
     const next = notes[i + 1]
     const endMs = next?.startMs ?? chapter.notesDurationMs ?? (n.endMs ?? 0)
+    if (endMs - (n.startMs ?? 0) < MIN_SLOT_MS) return // 同上，零长度注释不单独成段
     slots.push({ kind: 'note', startMs: n.startMs!, endMs, noteId: n.id })
   })
 
