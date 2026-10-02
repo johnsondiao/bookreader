@@ -18,13 +18,12 @@ import { COVER_COLORS, calcProgress, guessTitleFromContent, parseChapters, split
 import { createIdbStorage } from '../utils/idbStorage'
 import { openAudioPackage, type ProgressFn } from '../utils/audioPackage'
 import {
+  clearStaging,
+  commitStaging,
   deleteBookAudio,
-  ensureInboxDir,
-  importInboxPackage,
-  saveBookSource,
-  saveChapterAudio,
-  scanInbox,
-  type InboxCandidate,
+  resetStaging,
+  writeStagedChapter,
+  writeStagedSource,
 } from '../utils/audioPackageStore'
 
 /** 导入音频包的返回结果 */
@@ -36,8 +35,6 @@ export interface AudioImportResult {
   totalCount: number
   /** 是否新建书籍 */
   isNew: boolean
-  /** 目录接管模式：move=同分区移动（零拷贝），copy=逐文件复制 */
-  transferMode?: 'move' | 'copy'
 }
 
 interface AppState {
@@ -54,13 +51,8 @@ interface AppState {
   closeReader: () => void
   importTextBook: (content: string, filename?: string) => string
   importParsedBook: (parsed: ParsedEbook) => string
+  /** 导入音频包（.langyue.zip）：两阶段——先解压到暂存目录，再整体导入书架 */
   importAudioPackage: (file: File, onProgress?: ProgressFn) => Promise<AudioImportResult>
-  /** 扫描 inbox 目录，返回可导入的候选包（大包推荐走这条路） */
-  scanInboxFolders: (onProgress?: ProgressFn) => Promise<InboxCandidate[]>
-  /** 从手动解压好的文件夹导入：同分区原地接管，秒级完成 */
-  importFromFolder: (cand: InboxCandidate, onProgress?: ProgressFn) => Promise<AudioImportResult>
-  /** 确保 inbox 目录存在并返回绝对路径（UI 引导用户放置文件夹用） */
-  prepareInbox: () => Promise<string>
   removeBook: (bookId: string) => void
   updateReadingProgress: (payload: {
     bookId: string
@@ -411,17 +403,18 @@ export const useAppStore = create<AppState>()(
       },
 
       importAudioPackage: async (file, onProgress) => {
-        // 流式打开：只解析中央目录与 manifest；mp3 逐章解压 → 即时落盘 → 释放。
-        // 底层用 zip.js 的随机读取（blob.slice），压缩包本身不整体进内存，
-        // 内存峰值 = 单章解压后大小，1.1G 的包也不会拖死 WebView。
+        // 打开音频包：只解析中央目录与 manifest（zip.js 随机读取，压缩包本身不整体进内存）。
         const opened = await openAudioPackage(file, onProgress)
         const { manifest } = opened
         const bookId = manifest.book.id
-        const total = opened.audioChapterIds.length
+        const chapterIds = opened.audioChapterIds
+        const total = chapterIds.length
 
         try {
+          // 阶段一：逐章流式解压 → 暂存目录（App 私有目录，零权限）
+          await resetStaging(bookId)
           for (let i = 0; i < total; i++) {
-            const chapterId = opened.audioChapterIds[i]
+            const chapterId = chapterIds[i]
             onProgress?.({
               phase: 'unzip',
               current: i + 1,
@@ -429,38 +422,26 @@ export const useAppStore = create<AppState>()(
               detail: `解压第 ${i + 1} / ${total} 章`,
             })
             const bytes = await opened.readChapter(chapterId)
-            if (bytes) await saveChapterAudio(bookId, chapterId, bytes)
-            onProgress?.({
-              phase: 'write',
-              current: i + 1,
-              total,
-              detail: `写入第 ${i + 1} / ${total} 章`,
-            })
+            if (bytes) await writeStagedChapter(bookId, chapterId, bytes)
             // 让出主线程，保证进度条持续刷新、界面不假死
             await new Promise<void>((r) => setTimeout(r, 0))
           }
-
           const sourceBytes = await opened.readSource()
           if (sourceBytes && opened.source) {
-            await saveBookSource(bookId, opened.source.ext, sourceBytes)
+            await writeStagedSource(bookId, opened.source.ext, sourceBytes)
           }
         } finally {
           await opened.close()
         }
 
+        // 阶段二：暂存目录 → 正式书架（同分区逐章搬入，零拷贝），完成后清理暂存
+        try {
+          await commitStaging(bookId, chapterIds, onProgress)
+        } finally {
+          await clearStaging(bookId)
+        }
+
         return applyAudioManifest(get, set, manifest)
-      },
-
-      scanInboxFolders: (onProgress) => scanInbox(onProgress),
-
-      prepareInbox: () => ensureInboxDir(),
-
-      importFromFolder: async (cand, onProgress) => {
-        const { manifest } = cand
-        // 同分区 rename 原地接管：1.2G 也是秒级完成，不复制、不额外占空间
-        const { mode } = await importInboxPackage(cand, manifest.book.id, onProgress)
-        const r = applyAudioManifest(get, set, manifest)
-        return { ...r, transferMode: mode }
       },
 
       removeBook: (bookId) => {

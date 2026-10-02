@@ -3,11 +3,6 @@ import { BookCard } from '../components/BookCard'
 import { useAppStore } from '../store/useAppStore'
 import { parseEpub } from '../utils/epubParser'
 import { formatBytes, type ImportProgress } from '../utils/audioPackage'
-import {
-  isAllFilesAccessGranted,
-  requestAllFilesAccess,
-  type InboxCandidate,
-} from '../utils/audioPackageStore'
 
 function yieldToMain() {
   return new Promise<void>((resolve) => {
@@ -17,11 +12,11 @@ function yieldToMain() {
 
 const PHASE_LABEL: Record<ImportProgress['phase'], string> = {
   read: '读取压缩包',
-  manifest: '解析 manifest',
-  scan: '扫描文件夹',
+  manifest: '解析清单',
+  scan: '扫描目录',
   unzip: '解压音频',
-  write: '写入音频',
-  move: '接管目录',
+  write: '导入书架',
+  move: '搬运文件',
 }
 
 interface LogLine {
@@ -37,9 +32,6 @@ export function ShelfPage() {
   const importTextBook = useAppStore((s) => s.importTextBook)
   const importParsedBook = useAppStore((s) => s.importParsedBook)
   const importAudioPackage = useAppStore((s) => s.importAudioPackage)
-  const scanInboxFolders = useAppStore((s) => s.scanInboxFolders)
-  const importFromFolder = useAppStore((s) => s.importFromFolder)
-  const prepareInbox = useAppStore((s) => s.prepareInbox)
 
   const fileRef = useRef<HTMLInputElement>(null)
   const pkgRef = useRef<HTMLInputElement>(null)
@@ -51,12 +43,6 @@ export function ShelfPage() {
   const [logs, setLogs] = useState<LogLine[]>([])
   const [showLog, setShowLog] = useState(false)
   const [error, setError] = useState('')
-
-  const [folderOpen, setFolderOpen] = useState(false)
-  const [inboxPath, setInboxPath] = useState('')
-  const [scanning, setScanning] = useState(false)
-  const [candidates, setCandidates] = useState<InboxCandidate[] | null>(null)
-  const [importingDir, setImportingDir] = useState<string | null>(null)
 
   /** 重置一次导入会话的进度与日志 */
   const beginSession = useCallback((title: string) => {
@@ -128,8 +114,8 @@ export function ShelfPage() {
 
   const onPickPackage = async (file: File) => {
     setError('')
-    // 流式逐章解压：无论多大的包都不再要求用户手动解压，由 App 自动完成，
-    // 全程有进度条与过程日志（见下方 import-progress / import-log 区块）。
+    // 全自动导入：App 自己把 zip 解压到私有暂存目录，再导入书架。
+    // 用户无需手动解压，全程有进度条与过程日志（见下方 import-progress / import-log 区块）。
     beginSession(`导入音频包 ${file.name}（${formatBytes(file.size)}）`)
     try {
       await yieldToMain()
@@ -149,86 +135,6 @@ export function ShelfPage() {
     }
   }
 
-  /** 打开文件夹导入面板：准备目录 + 自动扫一次 */
-  const openFolderPanel = async () => {
-    setError('')
-    setFolderOpen(true)
-    if (candidates === null) void doScan()
-  }
-
-  const doScan = async () => {
-    setError('')
-    setScanning(true)
-    setCandidates(null)
-    startedAtRef.current = Date.now()
-    lastLogKeyRef.current = ''
-    setLogs([{ at: 0, text: '扫描待导入文件夹…' }])
-    try {
-      const granted = await isAllFilesAccessGranted()
-      if (!granted) {
-        const r = await requestAllFilesAccess()
-        if (!r.granted) {
-          const path = await prepareInbox()
-          setInboxPath(path)
-          setError('需要「所有文件访问权限」才能读取解压好的文件夹，请在系统设置里授权后重试。')
-          setScanning(false)
-          return
-        }
-      }
-      const path = await prepareInbox()
-      setInboxPath(path)
-      const list = await scanInboxFolders(onProgress)
-      setCandidates(list)
-      setLogs((prev) => [
-        ...prev,
-        {
-          at: Date.now() - startedAtRef.current,
-          text: list.length ? `扫描完成：发现 ${list.length} 个音频包` : '未发现音频包',
-        },
-      ])
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '扫描失败')
-    } finally {
-      setScanning(false)
-      setProgress(null)
-    }
-  }
-
-  const onImportCandidate = async (cand: InboxCandidate) => {
-    setError('')
-    setImportingDir(cand.dirName)
-    beginSession(`导入《${cand.manifest.book.title}》（${cand.expectedChapterCount} 章）`)
-    try {
-      const r = await importFromFolder(cand, onProgress)
-      finishSession(
-        r.transferMode === 'copy'
-          ? `完成：${r.totalCount} 章可用（逐文件复制）`
-          : `完成：${r.totalCount} 章可用（目录已原地接管，未复制数据）`,
-      )
-      window.alert(
-        `导入成功：《${cand.manifest.book.title}》\n` +
-          `共 ${r.totalCount} 章音频${r.transferMode === 'copy' ? '（复制模式）' : '，秒级完成'}。`,
-      )
-      await doScan()
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : '文件夹导入失败'
-      setError(msg)
-      finishSession(`失败：${msg}`)
-    } finally {
-      setImportingDir(null)
-      setBusy(false)
-    }
-  }
-
-  const copyInboxPath = async () => {
-    try {
-      await navigator.clipboard.writeText(inboxPath)
-      window.alert('路径已复制')
-    } catch {
-      window.alert(`请手动复制：\n${inboxPath}`)
-    }
-  }
-
   const pct =
     progress && progress.total > 0 ? Math.min(100, Math.round((progress.current / progress.total) * 100)) : null
   const indeterminate = progress !== null && (progress.total <= 0 || pct === null)
@@ -243,9 +149,6 @@ export function ShelfPage() {
       <div className="shelf-toolbar">
         <button className="btn-primary" type="button" disabled={busy} onClick={() => pkgRef.current?.click()}>
           + 导入音频包
-        </button>
-        <button className="btn-ghost" type="button" disabled={busy} onClick={() => void openFolderPanel()}>
-          文件夹导入
         </button>
         <button className="btn-ghost" type="button" disabled={busy} onClick={() => fileRef.current?.click()}>
           TXT / EPUB
@@ -311,77 +214,9 @@ export function ShelfPage() {
         </div>
       )}
 
-      {/* 文件夹导入面板 */}
-      {folderOpen && (
-        <div className="folder-import">
-          <div className="folder-import-head">
-            <strong>文件夹导入（备用方式）</strong>
-            <button className="link-btn" type="button" onClick={() => setFolderOpen(false)}>
-              收起
-            </button>
-          </div>
-          <p className="folder-import-tip">
-            一般不需要用这个：直接点「+ 导入音频包」选 <code>.langyue.zip</code>，App 会自动流式解压并导入，全程有进度。
-            仅当你已经在别处解压好了文件夹（里面应含 <code>manifest.json</code>、<code>book/</code>、<code>audio/</code>），
-            想免去再次解压、省一份空间时，才把它整体放进下面这个目录，然后点「重新扫描」——App 会原地接管，不复制数据。
-          </p>
-          <div className="folder-import-path">
-            <code>{inboxPath || '读取中…'}</code>
-            <button className="link-btn" type="button" onClick={() => void copyInboxPath()}>
-              复制路径
-            </button>
-          </div>
-          <div className="folder-import-actions">
-            <button className="btn-ghost" type="button" disabled={scanning || busy} onClick={() => void doScan()}>
-              {scanning ? '扫描中…' : '重新扫描'}
-            </button>
-          </div>
-
-          {scanning && !candidates && <div className="folder-import-empty">正在扫描…</div>}
-
-          {candidates && candidates.length === 0 && (
-            <div className="folder-import-empty">
-              这个目录里还没有可导入的音频包。把解压好的文件夹放进去后点「重新扫描」即可。
-            </div>
-          )}
-
-          {candidates && candidates.length > 0 && (
-            <div className="inbox-list">
-              {candidates.map((c) => {
-                const missing = c.expectedChapterCount - c.audioFileCount
-                return (
-                  <div className="inbox-item" key={c.dirName}>
-                    <div className="inbox-item-main">
-                      <div className="inbox-item-title">《{c.manifest.book.title}》</div>
-                      <div className="inbox-item-meta">
-                        {c.manifest.book.author ? `${c.manifest.book.author} · ` : ''}
-                        {c.expectedChapterCount} 章 · {c.audioFileCount} 个音频文件
-                        {c.sizeBytes > 0 ? ` · ${formatBytes(c.sizeBytes)}` : ''}
-                      </div>
-                      {missing > 0 && (
-                        <div className="inbox-item-warn">有 {missing} 章没有音频文件（只能纯文本阅读）</div>
-                      )}
-                      <div className="inbox-item-dir">目录：{c.dirName}</div>
-                    </div>
-                    <button
-                      className="btn-primary"
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void onImportCandidate(c)}
-                    >
-                      {importingDir === c.dirName ? '导入中…' : '导入'}
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
       {showImportHint && !busy && (
         <div className="import-banner">
-          导入 PC 端导出的音频包（.langyue.zip）即可听书，App 会自动解压导入并显示进度；阅读位置会自动记录。
+          导入 PC 端导出的音频包（.langyue.zip）即可听书，App 会自动解压并导入、全程显示进度；阅读位置会自动记录。
         </div>
       )}
 
