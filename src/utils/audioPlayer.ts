@@ -1,29 +1,31 @@
 /**
- * 音频包播放器：按 manifest 的句级偏移驱动单章 mp3。
+ * 音频包播放器。
  *
- * ## 核心设计：整章顺序播放 + 位置推导高亮（进度途中零 seek）
+ * ## 主模式：按句切字节，一次只播「这一句那一块」(chunk)
  *
- * 一章 mp3 的物理内容就是「章标题 → 正文（逐句连读）→ 注释」一整条，
- * 所以正确做法是把整章当成一个连续音轨从头播到尾，**只在用户主动点击时
- * 才 seek**。朗读位置的高亮、注释高亮，全部由 `currentTime` 反查时间轴得出。
+ * 一章 mp3 是 CBR 流，所以「第 i 句」在文件里就是一段确定的字节：
+ * **[第 i 句开头, 第 i+1 句开头)**。播放时把这段字节 `Blob.slice()` 出来
+ * 单独喂给 `<audio>`，播完再换下一段。
  *
- * 为什么不能「每句 seek 一次」：Android WebView 上报的 `currentTime` 是媒体
- * 时钟的阶梯值（约 250ms 刷新一次），并且**滞后于真正在喇叭里响的位置**
- * 一个输出缓冲（实测 200~300ms，正好是一个汉字）。任何一次「seek 回段首」，
- * 都会把该段开头已经念过的那 200~300ms 再念一遍 —— 听感就是
- * 「每句开头重复一个字 / 三个字」。
+ * 这样「每句开头重复一个字」从原理上被消灭了：
+ *   - 播的是**精确的一段字节**，起点就是这句的第一帧，不存在「把上一句尾巴
+ *     和下一句开头一起读进来」的可能；
+ *   - 跳句 / 跳注释不再是 seek（seek 会连带重放缓冲区里已念过的那 200~300ms），
+ *     而是直接换 src，没有重播窗口；
+ *   - 高亮由「当前在播第几段」直接决定，不靠 currentTime 反推。
  *
- * 历史版本踩过的坑：
- *   ① 无条件 `currentTime = seg.start`（每句重复 3 个字）
- *   ② 改成「位置已在段内就不回退」（每句仍重复 1 个字，因为 fallback 分支
- *      还是 seek 了，而触发时上报位置恰好落在段起点之前）
- * 最终方案：进度路径上根本不产生 seek，重复从原理上不可能发生。
+ * 帧边界对齐（chapterChunks 负责）：切片必须从完整帧开头切，否则解码器丢帧；
+ * 段尾最多多带一帧（32kbps/16k 时 = 36ms，是句尾静音，听不出来）。
  *
- * 副作用（已与 manifest 布局一致，不算损失）：注释按**物理顺序**在正文念完后
- * 连读（mp3 本来就是这么排的）；「某句引用注释 → 播完这句插读注释」需要
- * seek（播完这句后要跳回正文），因此不再自动插播，改为点注释角标手动跳播。
+ * ## 回退模式：整章顺序播放（旧实现，保留）
+ *
+ * 极少数环境里 `<audio src="blob:...">` 解不了（部分 WebView 内核），
+ * 或者 mp3 帧头解不出来 / VBR。这时自动回退：整章一条流连播，
+ * 高亮仍由 `currentTime` 反查（沿用注释里的 seek 铁律：进度路径不写 currentTime）。
+ * 回退意味着可能回到「每句开头重复」的老表现，但至少能听。
  */
 import type { AudioChapter } from '../types'
+import { buildChunkSlots, buildChapterGeometry, byteRange, type ChunkSlot, type ChapterGeometry } from './chapterChunks'
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused' | 'ended'
 
@@ -55,10 +57,7 @@ export interface PlayChapterOptions {
   callbacks: PlayerCallbacks
 }
 
-/**
- * 把一章摊平成**时间升序**的槽位序列：标题 → 正文句 → 注释。
- * 导出供测试断言顺序；排序后直接当时间轴用，播放器不需要任何跳转。
- */
+/** 把一章摊平成**时间升序**的槽位序列（标题 → 正文句 → 注释），回退模式用 */
 export function buildSegments(chapter: AudioChapter, withTitle: boolean): Segment[] {
   const segs: Segment[] = []
   const ts = chapter.titleStartMs ?? 0
@@ -81,8 +80,7 @@ export function buildSegments(chapter: AudioChapter, withTitle: boolean): Segmen
 
 /**
  * 二分：返回播放位置 t 对应的槽位下标 = 最后一个 start <= t 的槽位。
- * 落在句间空档（TTS 的静音间隙）时沿用前一个槽位，高亮不闪断；
- * 仅当 t 早于整个时间轴起点时才返回 -1。导出供测试断言推导正确性。
+ * 仅回退模式用；切句模式下高亮由段序号直接给出。
  */
 export function activeSlotIndex(segments: Segment[], t: number): number {
   let lo = 0
@@ -112,21 +110,70 @@ export interface AudioPlayerController {
   isStopped: () => boolean
 }
 
+/** 整章字节缓存（切句模式要用它反复 Blob.slice，避免每次重新下载） */
+const byteCache = new Map<string, ArrayBuffer>()
+const BYTE_CACHE_MAX = 2
+
+async function loadChapterBytes(url: string): Promise<ArrayBuffer | null> {
+  if (!url) return null
+  const hit = byteCache.get(url)
+  if (hit) return hit
+  try {
+    const ctrl = new AbortController()
+    const id = window.setTimeout(() => ctrl.abort(), 30000)
+    const res = await fetch(url, { signal: ctrl.signal })
+    window.clearTimeout(id)
+    if (!res.ok) return null
+    const buf = await res.arrayBuffer()
+    if (buf.byteLength < 4096) return null
+    byteCache.set(url, buf)
+    while (byteCache.size > BYTE_CACHE_MAX) {
+      const oldest = byteCache.keys().next().value
+      if (oldest === undefined) break
+      byteCache.delete(oldest)
+    }
+    return buf
+  } catch {
+    return null
+  }
+}
+
 export function createAudioPlayer(): AudioPlayerController {
   let audio: HTMLAudioElement | null = null
-  let segments: Segment[] = []
-  /** 当前高亮对应的槽位下标（仅用于「变了才回调」，不参与播放控制） */
-  let cursor = -1
   let cb: PlayerCallbacks = {}
   let stopped = true
+  /** chunk = 按句切字节（主）；continuous = 整章连播（回退） */
+  let mode: 'chunk' | 'continuous' = 'continuous'
   let timer: number | null = null
-  /** 本章的 ended 监听（换章/停止时要摘掉，避免上一章的收尾回调打到新章） */
-  let endHandler: (() => void) | null = null
+  let rate = 1
+
+  // —— 回退模式状态 ——
+  let segments: Segment[] = []
+  let cursor = -1
+
+  // —— 切句模式状态 ——
+  let slots: ChunkSlot[] = []
+  let bytes: ArrayBuffer | null = null
+  let geo: ChapterGeometry | null = null
+  let slotIdx = -1
+  const chunkUrls = new Map<number, string>()
+  let watchdog: number | null = null
+  let userPaused = false
+  /** 上一次看门狗观测到的播放位置，用于判断「卡住不动」 */
+  let lastTime = -1
 
   const ensureAudio = (): HTMLAudioElement => {
     if (!audio) {
       audio = new Audio()
       audio.preload = 'auto'
+      audio.addEventListener('ended', () => {
+        if (stopped) return
+        if (mode === 'chunk' && slotIdx >= 0) void playSlot(slotIdx + 1)
+      })
+      audio.addEventListener('error', () => {
+        if (stopped) return
+        if (mode === 'chunk') fallbackContinuous()
+      })
     }
     return audio
   }
@@ -138,52 +185,117 @@ export function createAudioPlayer(): AudioPlayerController {
     }
   }
 
-  const emit = (seg: Segment | undefined) => {
-    if (!seg) return
-    if (seg.kind === 'body') cb.onSentence?.(seg.sentenceIndex)
-    else if (seg.kind === 'title') cb.onTitle?.(seg.index)
-    else cb.onNote?.(seg.noteId)
+  const clearWatchdog = () => {
+    if (watchdog !== null) {
+      window.clearTimeout(watchdog)
+      watchdog = null
+    }
   }
 
-  /**
-   * 用户主动跳转才走这里：先 pause，等 seeked 完成再 play，
-   * 避免 seek 生效前把旧位置（上一段尾巴）的残留音频吐出来。
-   * 跳转到未来（续读某句）和回退（点注释角标）都用它，均属用户意图，重复可容忍。
-   */
-  const seekInto = async (seg: Segment) => {
-    const a = ensureAudio()
-    cursor = segments.indexOf(seg)
-    if (!a.src || a.readyState === 0) {
-      emit(seg)
+  /** chunk 模式：为第 i 段现切一段字节并生成 objectURL（惰性，用完自动回收） */
+  const makeChunkUrl = (i: number): string | null => {
+    if (!bytes || !geo) return null
+    const cached = chunkUrls.get(i)
+    if (cached) return cached
+    const slot = slots[i]
+    if (!slot) return null
+    const r = byteRange(geo, slot.startMs, slot.endMs)
+    if (r.end <= r.start || r.start >= bytes.byteLength) return null
+    const part = bytes.slice(r.start, r.end)
+    const url = URL.createObjectURL(new Blob([part], { type: 'audio/mpeg' }))
+    chunkUrls.set(i, url)
+    // 只留最近 6 段的 URL，更早的及时 revoke（Blob 底层数据仍在，切回来时重新 slice）
+    if (chunkUrls.size > 6) {
+      const oldest = chunkUrls.keys().next().value
+      if (oldest !== undefined && oldest !== i) {
+        const u = chunkUrls.get(oldest)
+        if (u) URL.revokeObjectURL(u)
+        chunkUrls.delete(oldest)
+      }
+    }
+    return url
+  }
+
+  const emitChunk = (slot: ChunkSlot) => {
+    if (slot.kind === 'body') cb.onSentence?.(slot.sentenceIndex)
+    else if (slot.kind === 'title') cb.onTitle?.(slot.index)
+    else cb.onNote?.(slot.noteId)
+  }
+
+  const startWatchdog = () => {
+    clearWatchdog()
+    // 新的一段塞进播放器却一直没出声 / 卡住不动 → 这个环境解不了 blob 切片，回退整章
+    watchdog = window.setTimeout(() => {
+      if (stopped || mode !== 'chunk') return
+      const a = ensureAudio()
+      // 用户自己按的暂停不算「播不出来」
+      if (userPaused) return
+      if (a.paused || a.error || Math.abs(a.currentTime - lastTime) < 0.01) {
+        fallbackContinuous()
+        return
+      }
+      lastTime = a.currentTime
+    }, 1200)
+  }
+
+  /** chunk 模式播放第 i 段（播完自动进下一段，由 audio 的 ended 驱动） */
+  async function playSlot(i: number) {
+    if (stopped || mode !== 'chunk') return
+    const slot = slots[i]
+    if (!slot) {
+      finish()
       return
     }
-    a.pause()
-    await new Promise<void>((resolve) => {
-      let done = false
-      const finish = () => {
-        if (done) return
-        done = true
-        a.removeEventListener('seeked', onSeeked)
-        window.clearTimeout(t)
-        resolve()
-      }
-      const onSeeked = () => finish()
-      const t = window.setTimeout(finish, 800)
-      a.addEventListener('seeked', onSeeked)
-      a.currentTime = seg.start / 1000
-    })
-    emit(seg)
+    const a = ensureAudio()
+    const url = makeChunkUrl(i)
+    if (!url) {
+      fallbackContinuous()
+      return
+    }
+    slotIdx = i
+    a.playbackRate = rate
+    if (a.src !== url) a.src = url
+    emitChunk(slot)
     if (stopped) return
-    void a.play().catch(() => {})
+    startWatchdog()
+    try {
+      await a.play()
+      lastTime = a.currentTime
+    } catch {
+      /* play() 被拒/失败：ended 或 watchdog 会兜底 */
+    }
   }
 
-  /** 每 100ms 只看一眼播放位置，反查该高亮哪一句 —— 全程不写 currentTime */
+  function slotIndexOfSentence(index: number): number {
+    return slots.findIndex((s) => s.kind === 'body' && s.sentenceIndex === index)
+  }
+
+  /** 回退到整章连播（只走一次，切回后不再判定回退） */
+  function fallbackContinuous() {
+    if (mode === 'continuous' || stopped) return
+    mode = 'continuous'
+    clearWatchdog()
+    const a = ensureAudio()
+    a.pause()
+    for (const [i, u] of [...chunkUrls]) {
+      URL.revokeObjectURL(u)
+      chunkUrls.delete(i)
+    }
+    segments = buildSegments(lastChapter ?? ({} as AudioChapter), withTitle)
+    slotIdx = -1
+    cursor = 0
+    a.src = lastUrl ?? ''
+    a.playbackRate = rate
+    if (stopped) return
+    void a.play().catch(() => {})
+    if (!timer) startTimer()
+  }
+
+  // —— 回退模式的 tick：只看位置反查高亮，全程不写 currentTime ——
   const tick = () => {
-    if (stopped || !audio || segments.length === 0) return
+    if (stopped || mode !== 'continuous' || !audio || segments.length === 0) return
     const t = (audio.currentTime || 0) * 1000
     const last = segments[segments.length - 1]
-    // 兜底：mp3 比 manifest 长约百来毫秒（LAME 帧对齐），正常收尾走 ended 事件，
-    // 这里只防音频缓冲卡死不会真的播完。
     if (t >= last.end + 2000) {
       finish()
       return
@@ -191,14 +303,11 @@ export function createAudioPlayer(): AudioPlayerController {
     const i = activeSlotIndex(segments, t)
     if (i !== cursor && i >= 0) {
       cursor = i
-      emit(segments[i])
+      const seg = segments[i]
+      if (seg.kind === 'body') cb.onSentence?.(seg.sentenceIndex)
+      else if (seg.kind === 'title') cb.onTitle?.(seg.index)
+      else cb.onNote?.(seg.noteId)
     }
-  }
-
-  const finish = () => {
-    if (stopped) return
-    stop()
-    cb.onChapterEnd?.()
   }
 
   const startTimer = () => {
@@ -206,73 +315,116 @@ export function createAudioPlayer(): AudioPlayerController {
     timer = window.setInterval(tick, 100)
   }
 
+  // 回退要用的现场信息
+  let lastChapter: AudioChapter | null = null
+  let lastUrl = ''
+  let withTitle = false
+
+  const finish = () => {
+    if (stopped) return
+    stop()
+    cb.onChapterEnd?.()
+  }
+
   async function playChapter(opts: PlayChapterOptions): Promise<void> {
     cb = opts.callbacks
+    rate = opts.rate && opts.rate > 0 ? opts.rate : 1
+    lastChapter = opts.chapter
+    lastUrl = opts.url
+    withTitle = (opts.startSentenceIndex ?? 0) <= 0
+    userPaused = false
+
     const a = ensureAudio()
     clearTimer()
-    if (endHandler) {
-      a.removeEventListener('ended', endHandler)
-      endHandler = null
-    }
+    clearWatchdog()
     a.pause()
     a.src = ''
     stopped = true
+    mode = 'chunk'
+    segments = []
+    slots = []
+    bytes = null
+    geo = null
+    slotIdx = -1
+    cursor = -1
 
-    segments = buildSegments(opts.chapter, (opts.startSentenceIndex ?? 0) <= 0)
-    // 续读中间某句：一次性前跳到该句（forward seek，用户意图，无重复风险）
-    const startIdx = opts.startSentenceIndex ?? 0
-    let target = 0
-    if (startIdx > 0) {
-      const i = segments.findIndex((s) => s.kind === 'body' && s.sentenceIndex >= startIdx)
-      if (i >= 0) target = i
+    const bytesBuf = await loadChapterBytes(opts.url)
+    if (bytesBuf) {
+      const g = buildChapterGeometry(new Uint8Array(bytesBuf), opts.chapter.notesDurationMs)
+      const s = buildChunkSlots(opts.chapter, withTitle)
+      if (g && s.length > 0) {
+        bytes = bytesBuf
+        geo = g
+        slots = s
+      }
     }
 
+    if (mode === 'chunk' && geo && slots.length > 0) {
+      const startIdx = opts.startSentenceIndex ?? 0
+      let target = 0
+      if (startIdx > 0) {
+        const i = slotIndexOfSentence(startIdx)
+        if (i >= 0) target = i
+      }
+      stopped = false
+      cb.onStatus?.('playing')
+      await playSlot(target)
+      return
+    }
+
+    // —— 回退：整章连播 ——
+    mode = 'continuous'
+    segments = buildSegments(opts.chapter, withTitle)
+    if (segments.length === 0) {
+      cb.onStatus?.('idle')
+      return
+    }
     a.src = opts.url
-    a.playbackRate = opts.rate && opts.rate > 0 ? opts.rate : 1
-
-    // 等待元数据就绪后才能 seek / 读 currentTime
+    a.playbackRate = rate
     await new Promise<void>((resolve) => {
-      const done = () => resolve()
-      a.addEventListener('loadedmetadata', done, { once: true })
-      window.setTimeout(done, 2000)
+      a.addEventListener('loadedmetadata', () => resolve(), { once: true })
+      window.setTimeout(resolve, 2000)
     })
-
-    const onEnded = () => finish()
-    endHandler = onEnded
-    a.addEventListener('ended', onEnded)
-
+    cursor = 0
     stopped = false
-    cursor = target
     cb.onStatus?.('playing')
-    if (target > 0) {
-      await seekInto(segments[target])
-    } else {
-      emit(segments[target])
-    }
+    emit(segments[0])
     startTimer()
+    void a.play().catch(() => {})
+  }
+
+  const emit = (seg: Segment | undefined) => {
+    if (!seg) return
+    if (seg.kind === 'body') cb.onSentence?.(seg.sentenceIndex)
+    else if (seg.kind === 'title') cb.onTitle?.(seg.index)
+    else cb.onNote?.(seg.noteId)
   }
 
   function pause() {
     if (stopped) return
-    audio?.pause()
+    userPaused = true
+    ensureAudio().pause()
     cb.onStatus?.('paused')
   }
 
   function resume() {
-    if (stopped || !audio) return
-    void audio.play().catch(() => {})
+    if (stopped) return
+    userPaused = false
+    void ensureAudio().play().catch(() => {})
     cb.onStatus?.('playing')
   }
 
   function stop() {
     stopped = true
     cursor = -1
+    slotIdx = -1
     clearTimer()
+    clearWatchdog()
+    for (const [i, u] of [...chunkUrls]) {
+      URL.revokeObjectURL(u)
+      chunkUrls.delete(i)
+    }
     if (audio) {
-      if (endHandler) {
-        audio.removeEventListener('ended', endHandler)
-        endHandler = null
-      }
       audio.pause()
       audio.src = ''
     }
@@ -281,19 +433,44 @@ export function createAudioPlayer(): AudioPlayerController {
 
   function seekToSegment(seg: Segment | undefined) {
     if (!seg) return
-    if (audio && audio.src) void seekInto(seg)
-    else emit(seg)
+    if (audio && audio.src) {
+      const a = audio
+      a.pause()
+      a.addEventListener('seeked', () => emit(seg), { once: true })
+      a.currentTime = seg.start / 1000
+      return
+    }
+    emit(seg)
   }
 
   function seekToSentence(index: number) {
+    if (mode === 'chunk') {
+      const i = slotIndexOfSentence(index)
+      if (i < 0) return
+      if (stopped) {
+        stopped = false
+        cb.onStatus?.('playing')
+      }
+      void playSlot(i)
+      return
+    }
     const i = segments.findIndex((s) => s.kind === 'body' && s.sentenceIndex === index)
     if (i < 0) return
     cursor = i
     seekToSegment(segments[i])
   }
 
-  /** 回到章首重念标题（仅当本章带标题朗读段时有效） */
   function seekToTitle() {
+    if (mode === 'chunk') {
+      const i = slots.findIndex((s) => s.kind === 'title')
+      if (i < 0) return
+      if (stopped) {
+        stopped = false
+        cb.onStatus?.('playing')
+      }
+      void playSlot(i)
+      return
+    }
     const i = segments.findIndex((s) => s.kind === 'title')
     if (i < 0) return
     cursor = i
@@ -301,6 +478,16 @@ export function createAudioPlayer(): AudioPlayerController {
   }
 
   function seekToNote(noteId: string) {
+    if (mode === 'chunk') {
+      const i = slots.findIndex((s) => s.kind === 'note' && s.noteId === noteId)
+      if (i < 0) return
+      if (stopped) {
+        stopped = false
+        cb.onStatus?.('playing')
+      }
+      void playSlot(i)
+      return
+    }
     const i = segments.findIndex((s) => s.kind === 'note' && s.noteId === noteId)
     if (i < 0) return
     cursor = i

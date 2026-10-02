@@ -20,6 +20,13 @@ import {
   type ImportProgress,
 } from '../src/utils/audioPackage'
 import { activeSlotIndex, buildSegments } from '../src/utils/audioPlayer'
+import {
+  parseMpegFrame,
+  buildChapterGeometry,
+  byteAtMs,
+  byteRange,
+  buildChunkSlots,
+} from '../src/utils/chapterChunks'
 
 describe('isSentenceEnd', () => {
   it('中文标点', () => {
@@ -293,6 +300,117 @@ describe('openAudioPackage', () => {
     expect([...(await opened.readChapter('ch-0'))!]).toEqual([1, 2, 3, 4])
     expect(new TextDecoder().decode((await opened.readSource())!)).toBe('原始文本')
     await opened.close()
+  })
+})
+
+// ───────────────── 切句模式：mp3 帧结构解析 + 按句切字节 ─────────────────
+
+/** 拼一段假的 MPEG1 Layer III mp3：128kbps / 44100Hz → 1044 字节/帧，26.12ms/帧 */
+function fakeMp3(firstFrameBytes = 0xff, secondFrameBytes = 0xfb, bitrateIndex = 9, srIndex = 0) {
+  const frameLen = 417
+  // 800 帧 ≈ 21s，够放下测试用例里的时间轴（最长 14000ms）
+  const frames = 800
+  const bytes = new Uint8Array(10 + frames * frameLen)
+  bytes.set([0x49, 0x44, 0x33, 0x03, 0, 0, 0, 0, 0, 0], 0) // ID3v2 tag（长度 0，占满 10 字节）
+  for (let i = 0; i < frames; i++) {
+    const off = 10 + i * frameLen
+    bytes[off] = firstFrameBytes
+    bytes[off + 1] = secondFrameBytes
+    bytes[off + 2] = (bitrateIndex << 4) | (srIndex << 2) // 128kbps / 44100Hz
+    bytes[off + 3] = 0
+    for (let j = 4; j < frameLen; j++) bytes[off + j] = 0x41
+  }
+  return bytes
+}
+
+describe('parseMpegFrame / buildChapterGeometry', () => {
+  it('跳过 ID3v2 并解出 MPEG1 Layer III 的帧结构', () => {
+    const f = parseMpegFrame(fakeMp3())!
+    expect(f.offset).toBe(10)
+    // 128kbps @44100Hz：1152/44100 × 16000 字节/秒 ≈ 417 字节/帧
+    expect(f.frameLen).toBe(417)
+    expect(f.samplesPerFrame).toBe(1152)
+    expect(f.sampleRate).toBe(44100)
+  })
+
+  it('换成 32kbps/16kHz（MPEG2 Layer III）换算为 144 字节/帧', () => {
+    const b = new Uint8Array(600)
+    // MPEG2 (version=2) Layer III, bitrate 32kbps(idx=4), sr 16000(idx=2)
+    b.set([0xff, 0xf3, (4 << 4) | (2 << 2), 0], 0)
+    const f = parseMpegFrame(b)!
+    expect(f.samplesPerFrame).toBe(576)
+    expect(f.frameLen).toBe(144)
+    expect(f.sampleRate).toBe(16000)
+  })
+
+  it('非 mp3 / 层号不符 返回 null', () => {
+    const bad = new Uint8Array([1, 2, 3, 4, 5])
+    expect(parseMpegFrame(bad)).toBeNull()
+  })
+
+  it('按帧数推算整章时长，并让时间↔字节线性对应', () => {
+    const geo = buildChapterGeometry(fakeMp3())!
+    expect(geo.frameCount).toBe(800)
+    expect(geo.durationMs).toBeCloseTo((800 * 1152) / 44100 * 1000, 5)
+    const at = (ms: number) => 10 + Math.round((ms / geo.durationMs) * (geo.frameCount - 1)) * 417
+    expect(byteAtMs(geo, 0)).toBe(10)
+    expect(byteAtMs(geo, geo.durationMs)).toBe(10 + 799 * 417)
+    expect(byteAtMs(geo, 10000)).toBe(at(10000))
+  })
+})
+
+describe('buildChunkSlots 按句切段（本段开头 → 下一段开头）', () => {
+  const chapter: any = {
+    id: 'ch-0',
+    title: '章',
+    titleStartMs: 0,
+    titleEndMs: 1600,
+    durationMs: 9000,
+    sentenceCount: 2,
+    sentences: [
+      { index: 0, text: '甲。', kind: 'text', startMs: 3150, endMs: 6000 },
+      { index: 1, text: '乙。', kind: 'text', startMs: 6000, endMs: 9000 },
+    ],
+    notes: [{ id: 'n0', index: 0, kind: 'note', text: '注', startMs: 12000, endMs: 14000 }],
+    notesDurationMs: 14000,
+  }
+
+  it('每句的区间到「下一句开头」为止，不留重叠', () => {
+    const slots = buildChunkSlots(chapter, true)
+    expect(slots.map((s) => s.kind)).toEqual(['title', 'body', 'body', 'note'])
+    expect(slots[1]).toMatchObject({ kind: 'body', sentenceIndex: 0, startMs: 3150, endMs: 6000 })
+    expect(slots[2]).toMatchObject({ kind: 'body', sentenceIndex: 1, startMs: 6000, endMs: 12000 })
+    expect(slots[3]).toMatchObject({ kind: 'note', noteId: 'n0', startMs: 12000, endMs: 14000 })
+  })
+
+  it('每段都落在帧边界上，且相邻段在字节层面正好首尾相接', () => {
+    const geo = buildChapterGeometry(fakeMp3())!
+    const slots = buildChunkSlots(chapter, true)
+    for (const s of slots) {
+      const r = byteRange(geo, s.startMs, s.endMs)
+      expect((r.start - geo.frames.offset) % geo.frames.frameLen).toBe(0)
+      expect((r.end - geo.frames.offset) % geo.frames.frameLen).toBe(0)
+    }
+    for (let i = 1; i < slots.length; i++) {
+      // 时间轴：本段结尾 = 下一段开头（中间那点静音归本段，播完即切）
+      expect(slots[i].startMs).toBeGreaterThanOrEqual(slots[i - 1].endMs)
+      // 字节层面：下一段绝不越过上一段的结尾，也就是「绝不把下一句开头读进来」
+      const prev = byteRange(geo, slots[i - 1].startMs, slots[i - 1].endMs)
+      const cur = byteRange(geo, slots[i].startMs, slots[i].endMs)
+      expect(cur.start).toBeGreaterThanOrEqual(prev.end)
+    }
+  })
+
+  it('无注释时末句用整章时长封口', () => {
+    const noNote = { ...chapter, notes: [] }
+    const slots = buildChunkSlots(noNote, true)
+    expect(slots[2]).toMatchObject({ kind: 'body', sentenceIndex: 1, endMs: 14000 })
+  })
+
+  it('旧包（无标题区间）不产生标题段', () => {
+    const legacy = { ...chapter, titleStartMs: undefined, titleEndMs: undefined }
+    const slots = buildChunkSlots(legacy, true)
+    expect(slots[0].kind).toBe('body')
   })
 })
 
