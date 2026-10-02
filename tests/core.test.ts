@@ -359,6 +359,56 @@ describe('parseMpegFrame / buildChapterGeometry', () => {
   })
 })
 
+/**
+ * 真包（毛选 ch-3）的坑：第一帧是 180 字节 / 40kbps，其余十万余帧全是 144 字节 / 32kbps。
+ * 帧起点必须把首帧单独算进去，否则 fi>=1 的起点会落在第一帧内部 → 解码丢帧、
+ * 句间静音被吃掉一帧（36ms），听感「赶」。
+ */
+describe('首帧长度 ≠ 全章帧长（真包实况）', () => {
+  /** 首帧 40kbps@16k(180B)，其后 800 帧 32kbps@16k(144B) */
+  function fakeMp3WithBigFirstFrame(frames = 800) {
+    const bytes = new Uint8Array(10 + 180 + frames * 144)
+    bytes.set([0x49, 0x44, 0x33, 0x03, 0, 0, 0, 0, 0, 0], 0) // ID3v2（长度 0）
+    for (const off of [10, 190]) {
+      bytes[off] = 0xff
+      bytes[off + 1] = 0xf3 // MPEG2、Layer III、无 CRC
+    }
+    bytes[12] = (5 << 4) | (2 << 2) // 首帧 40kbps / 16000Hz
+    for (let i = 0; i < frames; i++) {
+      const off = 190 + i * 144
+      bytes[off] = 0xff
+      bytes[off + 1] = 0xf3
+      bytes[off + 2] = (4 << 4) | (2 << 2) // 其余帧 32kbps / 16000Hz
+      bytes[off + 3] = 0
+      for (let j = 4; j < 144; j++) bytes[off + j] = 0x41
+    }
+    return bytes
+  }
+
+  it('链校验挑出 144 作为统一帧长，并记下首帧 180', () => {
+    const geo = buildChapterGeometry(fakeMp3WithBigFirstFrame())!
+    expect(geo.frames.frameLen).toBe(144)
+    expect(geo.firstFrameLen).toBe(180)
+    expect(geo.frameCount).toBe(801) // 800 + 第一帧
+  })
+
+  it('帧起点把首帧长度算进去，每帧起点都落在真正的帧头', () => {
+    const geo = buildChapterGeometry(fakeMp3WithBigFirstFrame())!
+    // 第 0 帧 → ID3 之后；第 1 帧 → 首帧末尾；第 2 帧 → 再一帧
+    expect(byteAtMs(geo, 0)).toBe(10)
+    expect(byteAtMs(geo, geo.durationMs / 801)).toBe(190)
+    expect(byteAtMs(geo, (geo.durationMs / 801) * 2)).toBe(334)
+    expect(byteAtMs(geo, geo.durationMs)).toBe(190 + 799 * 144)
+  })
+
+  it('首帧也参与「时间→帧」的标定：中点落在正中间那帧', () => {
+    const geo = buildChapterGeometry(fakeMp3WithBigFirstFrame())!
+    // durationMs/2 对应第 400 帧（fi = round(0.5 × (801-1)）= 400），起点要把首帧那 180 字节算进去
+    const mid = byteAtMs(geo, geo.durationMs / 2)
+    expect(mid).toBe(10 + 180 + 399 * 144)
+  })
+})
+
 describe('buildChunkSlots 按句切段（本段开头 → 下一段开头）', () => {
   const chapter: any = {
     id: 'ch-0',

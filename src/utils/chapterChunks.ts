@@ -72,6 +72,8 @@ export interface ChapterGeometry {
   size: number
   /** 按帧结构推算的整章时长（ms） */
   durationMs: number
+  /** 第一帧的实际字节数（真包实测首帧 180、其余 144；frames.frameLen 是全章统一帧长） */
+  firstFrameLen: number
 }
 
 /** MPEG1 Layer III 码率表（kbps，索引 = bitrate_index，0 为 free） */
@@ -208,9 +210,22 @@ export function buildChapterGeometry(bytes: Uint8Array, notesDurationMs?: number
     if (audioBytes - covered > 2 * frameLen || covered - audioBytes > 2 * frameLen) continue
     const durationMs = ((frameCount * first.samplesPerFrame) / first.sampleRate) * 1000
     if (!Number.isFinite(durationMs) || durationMs <= 0) continue
-    return { frames: { ...first, frameLen }, frameCount, size: bytes.length, durationMs }
+    return { frames: { ...first, frameLen }, frameCount, size: bytes.length, durationMs, firstFrameLen: first.frameLen }
   }
   return null
+}
+
+/**
+ * 第 `fi` 帧在整章里的字节起点。
+ *
+ * 必须把「第一帧长度 ≠ 全章帧长」算进去（真包首帧 180 字节、其余 144）：
+ * 否则 fi>=1 的起点会全部落在第一帧内部，解码器丢帧，句首吃掉一帧、句间静音少 36ms
+ * —— 听感不明显「快」，但会明显「赶」。
+ */
+function frameStartAt(geo: ChapterGeometry, fi: number): number {
+  const { frames } = geo
+  if (fi <= 0) return frames.offset
+  return frames.offset + geo.firstFrameLen + (fi - 1) * frames.frameLen
 }
 
 /**
@@ -218,10 +233,10 @@ export function buildChapterGeometry(bytes: Uint8Array, notesDurationMs?: number
  * 用整章帧数做比例标定，避免帧数取整造成的累计漂移。
  */
 export function byteAtMs(geo: ChapterGeometry, ms: number): number {
-  const { frames, frameCount, size } = geo
+  const { frameCount, size } = geo
   const clamped = Math.max(0, Math.min(ms, geo.durationMs))
   const fi = Math.round((clamped / geo.durationMs) * (frameCount - 1))
-  const start = frames.offset + fi * frames.frameLen
+  const start = frameStartAt(geo, fi)
   return Math.max(0, Math.min(start, size))
 }
 
