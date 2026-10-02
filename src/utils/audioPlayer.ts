@@ -239,8 +239,12 @@ export function createAudioPlayer(): AudioPlayerController {
   }
 
   /** chunk 模式播放第 i 段（播完自动进下一段，由 audio 的 ended 驱动） */
+  /** 播放令牌：快速连点跳句时，旧的 playSlot 回来后发现自己过期就直接放弃 */
+  let playToken = 0
+
   async function playSlot(i: number) {
     if (stopped || mode !== 'chunk') return
+    const token = ++playToken
     const slot = slots[i]
     if (!slot) {
       finish()
@@ -264,6 +268,8 @@ export function createAudioPlayer(): AudioPlayerController {
     } catch {
       /* play() 被拒/失败：ended 或 watchdog 会兜底 */
     }
+    if (token !== playToken) return // 期间又跳了句，这次的播放交给新一轮
+    if (stopped || mode !== 'chunk') return
   }
 
   function slotIndexOfSentence(index: number): number {
