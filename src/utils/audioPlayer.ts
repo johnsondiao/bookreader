@@ -5,6 +5,14 @@
  *   - 正文句按 index 顺序连续（[startMs, endMs) 首尾相接）；
  *   - 某句含 noteRef 时，播完该句 → 跳到对应注释 [startMs, endMs) → 回到下一句继续。
  * 通过 currentTime 轮询 + 段边界 seek 实现，无爆音、句级高亮、注释跳播。
+ *
+ * 「句首重复」修复要点（Android WebView 上必现）：
+ *   1. 轮询有滞后（setInterval 100ms + 媒体时钟刷新），触发切段时真实播放位置
+ *      已经跑到段起点之后 100~300ms。若此时无条件 seek 回段首，就会把刚念过的
+ *      那一小段再播一遍 —— 听感即「每句开头重复一下」。
+ *   → advance 前先比较：播放位置已在目标段内就不回退，直接接上继续播。
+ *   2. 必须回退时（章首 / 跳句 / 跳注释）：先 pause 再 seek，并等 `seeked` 事件
+ *      完成后才 play()，否则 seek 生效前会吐出旧位置（上一句尾巴）的残留音频。
  */
 import type { AudioChapter, AudioNote } from '../types'
 
@@ -98,6 +106,37 @@ export function createAudioPlayer(): AudioPlayerController {
     else cb.onNote?.(seg.noteId)
   }
 
+  /** seek 到指定毫秒，等 seeked 完成才 resolve（seek 未完成时 play 会吐出旧位置残留） */
+  const seekTo = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      const a = ensureAudio()
+      let done = false
+      const finish = () => {
+        if (done) return
+        done = true
+        a.removeEventListener('seeked', onSeeked)
+        window.clearTimeout(timer)
+        resolve()
+      }
+      const onSeeked = () => finish()
+      const timer = window.setTimeout(finish, 800)
+      a.addEventListener('seeked', onSeeked)
+      a.currentTime = ms / 1000
+    })
+
+  /** 回退到段首并把该段播起来（章首 / 跳句 / 跳注释等必须回退的场景） */
+  const seekIntoSegment = async (seg: Segment) => {
+    const a = ensureAudio()
+    // 已经在段首附近（含章首 0 位置）就不必 seek，省一次 seeked 等待
+    if (Math.abs((a.currentTime || 0) * 1000 - seg.start) < 20) {
+      void a.play().catch(() => {})
+      return
+    }
+    a.pause()
+    await seekTo(seg.start)
+    void a.play().catch(() => {})
+  }
+
   const advance = () => {
     segIndex++
     if (segIndex >= segments.length) {
@@ -107,15 +146,21 @@ export function createAudioPlayer(): AudioPlayerController {
     }
     const seg = segments[segIndex]
     const a = ensureAudio()
-    a.currentTime = seg.start / 1000
     emit(seg)
-    void a.play().catch(() => {})
+    // 播放位置已落到本段内（轮询滞后的常态）→ 不回退 seek，直接接上，
+    // 否则会把本段开头刚播过的那 100~300ms 重播一遍。
+    if ((a.currentTime || 0) * 1000 >= seg.start - 20) {
+      void a.play().catch(() => {})
+      return
+    }
+    void seekIntoSegment(seg)
   }
 
   const tick = () => {
     if (stopped || !audio || segIndex < 0 || segIndex >= segments.length) return
     const seg = segments[segIndex]
-    if (audio.currentTime * 1000 >= seg.end) advance()
+    // 提前 30ms 触发，抵消轮询滞后，尽量让位置停在段首附近
+    if (audio.currentTime * 1000 >= seg.end - 30) advance()
   }
 
   const startTimer = () => {
@@ -157,11 +202,12 @@ export function createAudioPlayer(): AudioPlayerController {
     })
 
     const seg = segments[segIndex]
-    if (seg) a.currentTime = seg.start / 1000
     stopped = false
-    emit(seg)
     cb.onStatus?.('playing')
-    await a.play()
+    if (seg) {
+      await seekIntoSegment(seg)
+      emit(seg)
+    }
     startTimer()
   }
 
@@ -188,14 +234,17 @@ export function createAudioPlayer(): AudioPlayerController {
     cb.onStatus?.('idle')
   }
 
+  function seekToSegment(seg: Segment | undefined) {
+    if (!seg) return
+    emit(seg)
+    if (audio && audio.src) void seekIntoSegment(seg)
+  }
+
   function seekToSentence(index: number) {
     const i = segments.findIndex((seg) => seg.kind === 'body' && seg.sentenceIndex === index)
     if (i < 0) return
     segIndex = i
-    if (audio && audio.src) {
-      audio.currentTime = segments[i].start / 1000
-      emit(segments[i])
-    }
+    seekToSegment(segments[i])
   }
 
   /** 回到章首重念标题（仅当本章带标题朗读段时有效） */
@@ -203,20 +252,14 @@ export function createAudioPlayer(): AudioPlayerController {
     const i = segments.findIndex((seg) => seg.kind === 'title')
     if (i < 0) return
     segIndex = i
-    if (audio && audio.src) {
-      audio.currentTime = segments[i].start / 1000
-      emit(segments[i])
-    }
+    seekToSegment(segments[i])
   }
 
   function seekToNote(noteId: string) {
     const i = segments.findIndex((seg) => seg.kind === 'note' && seg.noteId === noteId)
     if (i < 0) return
     segIndex = i
-    if (audio && audio.src) {
-      audio.currentTime = segments[i].start / 1000
-      emit(segments[i])
-    }
+    seekToSegment(segments[i])
   }
 
   return {
