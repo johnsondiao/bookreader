@@ -282,6 +282,12 @@ func main() {
 			newTotal += fi.Size()
 		}
 	}
+	// 清掉「零长度句」：… 、”、〔2〕、）、* * * 这类纯标点/标记被切成了独立句子，
+	// TTS 对它们不发声所以 StartMs == EndMs。留着它们播放器会给它切一段，只能
+	// 切出 1 帧，播出来是「下一句开头的一小截」+ 一次切段停顿。
+	dropped := dropZeroSlots(m)
+	fmt.Printf("🧹 清理零长度句：%d 条\n", dropped)
+
 	m.Integrity.TotalBytes = newTotal
 	m.Generator = "pc-tts+patch-titles"
 	m.CreatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -321,6 +327,14 @@ func shiftChapter(ch *pack.ChapterEntry, titleEndMs, shift int64) {
 }
 
 // concatTitle 用 ffmpeg 把标题 PCM 与整章 mp3 拼成一份新的 CBR mp3。
+//
+// 标题 PCM 与正文 PCM 拼成**一整条**后再一次性转码，所以标题段和正文段共用
+// 同一套编码参数（32kbps / 16kHz / 每帧 36ms），不存在「标题和后面不一样」。
+//
+// 另外 `-write_xing 0` 不写 Xing/Info 元数据帧、再剥掉编码器前导延迟帧，
+// 保证文件里第一帧就是标题的第一个字 —— mp3 的帧时间轴与 manifest 的 PCM
+// 时间轴严格重合，播放器按 ms 切句才不会切偏（否则每段都切早约 108ms，
+// 段尾就把下一句开头念进上一句）。
 func concatTitle(titlePCM, oldMP3, outMP3 string, sampleRate int64, bitrate string) error {
 	cmd := exec.Command("ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
 		"-f", "s16le", "-ar", fmt.Sprint(sampleRate), "-ac", "1", "-i", titlePCM,
@@ -328,12 +342,42 @@ func concatTitle(titlePCM, oldMP3, outMP3 string, sampleRate int64, bitrate stri
 		"-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[a]",
 		"-map", "[a]",
 		"-codec:a", "libmp3lame", "-b:a", bitrate, "-ac", "1", "-ar", fmt.Sprint(sampleRate),
+		"-write_xing", "0",
 		outMP3,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ffmpeg: %w\n%s", err, string(out))
 	}
-	return nil
+	return synth.NormalizeMP3(outMP3)
+}
+
+// dropZeroSlots 删掉时长为 0 的句子/注释（纯标点片段），返回删除条数
+func dropZeroSlots(m *pack.Manifest) int {
+	const minSlotMs = 80
+	n := 0
+	for ci := range m.Chapters {
+		ch := &m.Chapters[ci]
+		kept := ch.Sentences[:0]
+		for _, s := range ch.Sentences {
+			if s.EndMs-s.StartMs < minSlotMs {
+				n++
+				continue
+			}
+			kept = append(kept, s)
+		}
+		ch.Sentences = kept
+		ch.SentenceCount = len(kept)
+		keptNotes := ch.Notes[:0]
+		for _, x := range ch.Notes {
+			if x.EndMs-x.StartMs < minSlotMs {
+				n++
+				continue
+			}
+			keptNotes = append(keptNotes, x)
+		}
+		ch.Notes = keptNotes
+	}
+	return n
 }
 
 // ---------------------------------------------------------------- 工具
