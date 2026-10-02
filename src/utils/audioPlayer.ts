@@ -199,7 +199,10 @@ export function createAudioPlayer(): AudioPlayerController {
     if (cached) return cached
     const slot = slots[i]
     if (!slot) return null
-    const r = byteRange(geo, slot.startMs, slot.endMs)
+    // 用**物理区间**切：段首往回借到「上一句说完」，那截真静音正好给解码器补
+    // 比特蓄水池的借位数据，否则段首 1~2 帧解不出来（听感是每句开头一声「呲」）。
+    // 高亮/排序仍用逻辑区间（slot.startMs），两者分开。
+    const r = byteRange(geo, slot.cutStartMs, slot.cutEndMs)
     if (r.end <= r.start || r.start >= bytes.byteLength) return null
     const part = bytes.slice(r.start, r.end)
     const url = URL.createObjectURL(new Blob([part], { type: 'audio/mpeg' }))

@@ -474,16 +474,16 @@ describe('buildChunkSlots 按句切段（本段开头 → 下一段开头）', (
     const geo = buildChapterGeometry(fakeMp3())!
     const slots = buildChunkSlots(chapter, true)
     for (const s of slots) {
-      const r = byteRange(geo, s.startMs, s.endMs)
+      const r = byteRange(geo, s.cutStartMs, s.cutEndMs)
       expect((r.start - geo.frames.offset) % geo.frames.frameLen).toBe(0)
       expect((r.end - geo.frames.offset) % geo.frames.frameLen).toBe(0)
     }
     for (let i = 1; i < slots.length; i++) {
-      // 时间轴：本段结尾 = 下一段开头（中间那点静音归本段，播完即切）
+      // 逻辑区间：本段结尾 = 下一段开头（中间那点静音归本段，播完即切）
       expect(slots[i].startMs).toBeGreaterThanOrEqual(slots[i - 1].endMs)
-      // 字节层面：下一段绝不越过上一段的结尾，也就是「绝不把下一句开头读进来」
-      const prev = byteRange(geo, slots[i - 1].startMs, slots[i - 1].endMs)
-      const cur = byteRange(geo, slots[i].startMs, slots[i].endMs)
+      // 物理区间：下一段绝不越过上一段的结尾，也就是「绝不把下一句开头读进来」
+      const prev = byteRange(geo, slots[i - 1].cutStartMs, slots[i - 1].cutEndMs)
+      const cur = byteRange(geo, slots[i].cutStartMs, slots[i].cutEndMs)
       expect(cur.start).toBeGreaterThanOrEqual(prev.end)
     }
   })
@@ -516,6 +516,98 @@ describe('buildChunkSlots 按句切段（本段开头 → 下一段开头）', (
     // 甲句的段照旧到 6000 收口，零长度句不再插进来
     expect(slots[1]).toMatchObject({ sentenceIndex: 0, startMs: 3150, endMs: 6000 })
     expect(slots[2]).toMatchObject({ sentenceIndex: 2, startMs: 6000, endMs: 12000 })
+  })
+})
+
+describe('段首借位预热（消除每句开头那声「呲」）', () => {
+  // mp3 的比特蓄水池：每帧要回前面几十字节取主数据（实测 main_data_begin 回溯
+  // 26~96 字节）。切片单独解码时前面没有那些字节，头 1~2 帧解不出来 —— 听感是
+  // 每句开头一声极短的「呲」。修法：段首往回借到「上一句说完」，借的是文件里
+  // 本来就有的真静音。
+  const chapter: any = {
+    id: 'ch-0',
+    title: '章',
+    titleStartMs: 0,
+    titleEndMs: 1600,
+    durationMs: 9000,
+    sentenceCount: 3,
+    sentences: [
+      { index: 0, text: '甲。', kind: 'text', startMs: 3150, endMs: 6000, voiceStartMs: 3200, voiceEndMs: 5400 },
+      { index: 1, text: '乙。', kind: 'text', startMs: 6000, endMs: 9000, voiceStartMs: 6500, voiceEndMs: 8400 },
+      { index: 2, text: '丙。', kind: 'text', startMs: 9000, endMs: 12000, voiceStartMs: 9600, voiceEndMs: 11500 },
+    ],
+    notes: [],
+    notesDurationMs: 12000,
+  }
+
+  it('段首往前借到上一句念完的位置（拿整段句间静音当解码器预热）', () => {
+    const slots = buildChunkSlots(chapter, true)
+    const body = slots.filter((s) => s.kind === 'body')
+    // 上一句念到 5400（+40ms 韵尾余量）→ 第 2 句的段首从 5440 起，
+    // 而它 6000 才开口，所以段首自带 560ms 真静音当预热
+    expect(body[1].cutStartMs).toBe(5440)
+    expect(body[1].startMs).toBe(6000) // 逻辑起点（高亮用）不动
+    expect(6000 - body[1].cutStartMs).toBeGreaterThanOrEqual(72) // 够补蓄水池
+    expect(body[2].cutStartMs).toBe(8440)
+  })
+
+  it('第一段没有「上一句」，段首就是逻辑起点（不做无意义的回退）', () => {
+    const slots = buildChunkSlots(chapter, true)
+    expect(slots[0]).toMatchObject({ kind: 'title', cutStartMs: 0, startMs: 0 })
+    // 无标题的旧包：第一句也没得借
+    const legacy = { ...chapter, titleStartMs: undefined, titleEndMs: undefined }
+    const l = buildChunkSlots(legacy, false)
+    expect(l[0]).toMatchObject({ kind: 'body', cutStartMs: 3150, startMs: 3150 })
+  })
+
+  it('借位不越界：绝不超上限，也绝不侵入上一段已播的字节', () => {
+    const long: any = {
+      ...chapter,
+      sentences: [
+        { index: 0, text: '甲。', kind: 'text', startMs: 0, endMs: 2000, voiceStartMs: 0, voiceEndMs: 1000 },
+        // 上一句念到 1000，这句 30000 才开口 → 中间 29000ms 空白，只借上限内的量
+        { index: 1, text: '乙。', kind: 'text', startMs: 30000, endMs: 32000, voiceStartMs: 30500, voiceEndMs: 31500 },
+      ],
+      notesDurationMs: 32000,
+    }
+    const slots = buildChunkSlots(long, false)
+    expect(slots[1].cutStartMs).toBe(30000 - 1200)
+  })
+
+  it('物理区间严格首尾相接：整章每个字节只播一次，不重叠也不留空', () => {
+    const geo = buildChapterGeometry(fakeMp3())!
+    const slots = buildChunkSlots(chapter, true)
+    for (let i = 1; i < slots.length; i++) {
+      const prev = byteRange(geo, slots[i - 1].cutStartMs, slots[i - 1].cutEndMs)
+      const cur = byteRange(geo, slots[i].cutStartMs, slots[i].cutEndMs)
+      // 不重叠：下一段起点 ≥ 上一段终点（不会有两个字被念两遍）
+      expect(cur.start).toBeGreaterThanOrEqual(prev.end)
+      // 不留空：上一段终点 ≥ 本段起点（否则中间有音频永远播不到）
+      expect(prev.end).toBeGreaterThanOrEqual(cur.start)
+    }
+  })
+
+  it('段尾留一点韵尾余量（voiceEnd 是最后一个字的时间戳，声波尾巴还会再响一会儿）', () => {
+    const slots = buildChunkSlots(chapter, true)
+    const body = slots.filter((s) => s.kind === 'body')
+    // 逻辑 endMs 已经是「下一句开头」，物理 cutEnd 落在 voiceEnd 之后一点
+    expect(body[0].cutEndMs).toBeGreaterThan(5400)
+    expect(body[0].cutEndMs).toBeLessThan(body[1].cutStartMs === 5400 ? Infinity : Infinity)
+    expect(body[0].cutEndMs).toBe(5440)
+  })
+
+  it('voiceEndMs 缺失的旧包退回 endMs，不会算出零长度或倒挂的段', () => {
+    const old: any = {
+      ...chapter,
+      sentences: [
+        { index: 0, text: '甲。', kind: 'text', startMs: 1000, endMs: 3000 },
+        { index: 1, text: '乙。', kind: 'text', startMs: 3000, endMs: 5000 },
+      ],
+      notesDurationMs: 5000,
+    }
+    const slots = buildChunkSlots(old, false)
+    for (const s of slots) expect(s.cutEndMs).toBeGreaterThan(s.cutStartMs)
+    expect(slots[1].cutStartMs).toBe(3000)
   })
 })
 

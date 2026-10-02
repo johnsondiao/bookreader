@@ -293,55 +293,131 @@ export function byteRange(geo: ChapterGeometry, startMs: number, endMs: number) 
 // ───────────────────────── 段序列 ─────────────────────────
 
 export type ChunkSlot =
-  | { kind: 'title'; startMs: number; endMs: number; index: number }
-  | { kind: 'body'; startMs: number; endMs: number; sentenceIndex: number }
-  | { kind: 'note'; startMs: number; endMs: number; noteId: string }
+  | { kind: 'title'; startMs: number; endMs: number; index: number; cutStartMs: number; cutEndMs: number }
+  | { kind: 'body'; startMs: number; endMs: number; sentenceIndex: number; cutStartMs: number; cutEndMs: number }
+  | { kind: 'note'; startMs: number; endMs: number; noteId: string; cutStartMs: number; cutEndMs: number }
+
+/** 一个待播的「体」：标题 / 一句正文 / 一条注释 */
+type Item =
+  | { kind: 'title'; startMs: number; endMs: number; voiceEndMs: number }
+  | { kind: 'body'; startMs: number; endMs: number; voiceEndMs: number; sentenceIndex: number }
+  | { kind: 'note'; startMs: number; endMs: number; voiceEndMs: number; noteId: string }
+
+/**
+ * 段首「借位预热」的上限（ms）。
+ *
+ * 切出来的每一段 mp3 都被解码器**从零开始解**：它要回前面几十字节去取本帧的主数据
+ * （MP3 的比特蓄水池，实测 side_info 的 main_data_begin 回溯 26~96 字节，帧长 144
+ * 字节，所以相当于缺了 0.2~0.7 帧的主数据），而切片前面什么都没有 —— 于是段首
+ * 1~2 帧解不出东西，听感就是每句开头一声极短的「呲」（本包实测：句首 40ms RMS 全 0，
+ * 8/8 句都这样）。
+ *
+ * 修法：把切点从「这句的第一个字」往前挪到「上一句说完」的位置。文件里那段本来
+ * 就是**真静音**（合成时留的句间停顿，实测最短 120ms、中位 500ms、100% ≥ 72ms），
+ * 拿它给解码器当预热，句首就干净了；不额外占空间、不改变时长、句间停顿还是原样。
+ *
+ * 上限只是防呆：万一某句后面跟了超长空白，别把一大段静音都塞进段首。
+ */
+const MAX_LEAD_IN_MS = 1200
+
+/**
+ * 段尾保护（ms）：切点落在「这句念完」之后再留一点余量。
+ *
+ * manifest 的 voiceEndMs 是引擎给最后一个字的时间戳，实际声波尾巴还会再响十几毫秒；
+ * 掐得太准会削掉韵尾。留一帧多（36ms）的余量，这截余量落在句间静音里，听不出来。
+ */
+const TAIL_GUARD_MS = 40
+
+/** 取一个可靠的「语音结束」时刻：voiceEndMs 缺失或为 0 时退回 endMs */
+function voiceEndOf(v: number | undefined | null, fallback: number): number {
+  return typeof v === 'number' && v > 0 ? v : fallback
+}
 
 /**
  * 把一章摊成按时间升序的播放段。
  *
- * 每个体的区间规则（用户定的）：**[本段开头, 下一段开头)**。
- * 于是「第 i 句的音频」= 从第 i 句开头到第 i+1 句开头之间那块字节，
- * 播的时候只把这块字节给播放器，既不重念上一句、也不提前吃下一句。
- * 段尾多出来的不到一帧（<=36ms）是句尾静音，无所谓。
+ * **逻辑区间**（用于排序 / 高亮 / 零长度判定）沿用老规则：`[本段开头, 下一段开头)`。
  *
- * 与 `audioPlayer.buildSegments` 的区别：这里额外带 `endMs`（下一自然段边界），
- * 供切字节用；且导出的顺序就是物理顺序，播放器顺序取用即可。
+ * **物理区间**（切字节用）另算一套：把切点挪进句间静音里 ——
+ *   段 i 的物理区间 = `[上一个切点, 本段切点)`，切点落在「本句念完 + 一点余量」
+ *   与「下一句开口」之间的那段静音里。
+ * 于是每段开头自带一段真静音当解码器预热，句首不再有「呲」声；切点被相邻两段
+ * 共享，既不重叠（同一段字节播两次）也不越界（削掉下一个字）。
  */
 export function buildChunkSlots(chapter: AudioChapter, withTitle: boolean): ChunkSlot[] {
-  const slots: ChunkSlot[] = []
-  const ts = chapter.titleStartMs ?? 0
-  const te = chapter.titleEndMs ?? ts
-  if (withTitle && te > ts) slots.push({ kind: 'title', startMs: ts, endMs: te, index: -1 })
-
-  const notes = chapter.notes.filter((n) => n.startMs != null && n.endMs != null)
-
   // 小于这个值（1 帧 = 36ms 的两倍多）的段不单独播：见下面「零长度句」的说明
   const MIN_SLOT_MS = 80
 
+  const items: Item[] = []
+  const ts = chapter.titleStartMs ?? 0
+  const te = chapter.titleEndMs ?? ts
+  if (withTitle && te > ts) {
+    items.push({ kind: 'title', startMs: ts, endMs: te, voiceEndMs: te })
+  }
+
+  const notes = chapter.notes.filter((n) => n.startMs != null && n.endMs != null)
+  const chapterEndMs = chapter.notesDurationMs ?? 0
+
   chapter.sentences.forEach((s, i) => {
     const start = s.startMs
-    // 上一条注释的开头 = 本句的物理终点；没有注释就用整章时长封口
+    // 下一句的开头 / 下一条注释的开头 / 整章时长 —— 谁先来用谁
     const nextNote = notes.find((n) => (n.startMs ?? 0) > start)
     const nextSentence = chapter.sentences[i + 1]
-    const endMs = nextSentence?.startMs ?? nextNote?.startMs ?? chapter.notesDurationMs ?? start
-    //
+    const endMs = nextSentence?.startMs ?? nextNote?.startMs ?? chapterEndMs ?? start
     // 跳过「零长度句」：manifest 里有一批时长为 0 的句子，文本是纯标点/标记
-    // （… 、”、〔2〕、）、* * * 之类）。TTS 对它们不发声，所以 startMs == endMs。
-    // 如果照样给它切一段，只能切出 1 帧（36ms）—— 播出来是「下一句开头的一小截」
-    // 紧接着一次切段停顿，然后再从头念下一句，听感就是「下一句前几个字被上一句念了」。
-    // 这类句子不产生声音，直接不排进播放序列；它们的文本照常显示在屏幕上。
+    // （… 、”、〔2〕、）、* * * 之类）。TTS 对它们不发声，所以 startMs == endMs，
+    // 给它切段只能切出 1 帧（36ms），听感是「下一句开头的一小截 + 停顿 + 重念」。
+    // 这类句子不产生声音，不排进播放序列；文本照常显示在屏幕上。
     if (endMs - start < MIN_SLOT_MS) return
-    slots.push({ kind: 'body', startMs: start, endMs, sentenceIndex: s.index ?? i })
+    items.push({ kind: 'body', startMs: start, endMs, voiceEndMs: s.voiceEndMs ?? s.endMs, sentenceIndex: s.index ?? i })
   })
 
   notes.forEach((n, i) => {
     const next = notes[i + 1]
-    const endMs = next?.startMs ?? chapter.notesDurationMs ?? (n.endMs ?? 0)
+    const endMs = next?.startMs ?? chapterEndMs ?? (n.endMs ?? 0)
     if (endMs - (n.startMs ?? 0) < MIN_SLOT_MS) return // 同上，零长度注释不单独成段
-    slots.push({ kind: 'note', startMs: n.startMs!, endMs, noteId: n.id })
+    const startMs = n.startMs!
+    items.push({ kind: 'note', startMs, endMs, voiceEndMs: n.voiceEndMs ?? n.endMs ?? startMs, noteId: n.id })
   })
 
-  slots.sort((a, b) => a.startMs - b.startMs)
+  items.sort((a, b) => a.startMs - b.startMs)
+
+  // 语音结束时刻（voiceEndMs 是引擎给「最后一个字」的时间戳，声波尾巴还会再响一会儿）
+  const voiceEnds = items.map((it) => Math.max(voiceEndOf(it.voiceEndMs, it.endMs), it.startMs))
+
+  // —— 先算出每两个相邻段之间的**切点** ——
+  //
+  // 切点必须落在「本句念完」与「下一句开口」之间的那段静音里，而且**被相邻两段共享**：
+  //   · ≥ 本句 voiceEnd + 余量 → 不削掉本句的韵尾
+  //   · ≤ 下一句 startMs      → 不切进下一句的字（那正是当初「抢字」的成因）
+  //   · 静音太长时后移到「只留 MAX_LEAD_IN_MS 预热」→ 不灌几十秒白噪音
+  // 共享切点 = 既不重叠（不会有字被念两遍），也不留缝（不会有字永远播不到）。
+  const cuts: number[] = []
+  for (let k = 0; k + 1 < items.length; k++) {
+    const latest = items[k + 1].startMs
+    const earliest = Math.min(voiceEnds[k], latest) // 绝不削掉本句尾巴
+    let cut = Math.min(voiceEnds[k] + TAIL_GUARD_MS, latest)
+    cut = Math.max(cut, earliest)
+    cut = Math.min(Math.max(cut, latest - MAX_LEAD_IN_MS), latest)
+    cuts.push(cut)
+  }
+
+  // —— 再用切点拼出各段的物理区间 ——
+  const slots: ChunkSlot[] = []
+  for (let k = 0; k < items.length; k++) {
+    const it = items[k]
+    // 第一段从逻辑起点起（没「上一句」可借）；最后一段封到本章结束
+    const cutStart = k === 0 ? it.startMs : cuts[k - 1]
+    const cutEnd = k === items.length - 1 ? Math.max(voiceEnds[k] + TAIL_GUARD_MS, it.endMs) : cuts[k]
+    if (cutEnd <= cutStart) continue
+    if (it.kind === 'title') {
+      slots.push({ kind: 'title', startMs: it.startMs, endMs: it.endMs, index: -1, cutStartMs: cutStart, cutEndMs: cutEnd })
+    } else if (it.kind === 'body') {
+      slots.push({ kind: 'body', startMs: it.startMs, endMs: it.endMs, sentenceIndex: it.sentenceIndex, cutStartMs: cutStart, cutEndMs: cutEnd })
+    } else {
+      slots.push({ kind: 'note', startMs: it.startMs, endMs: it.endMs, noteId: it.noteId, cutStartMs: cutStart, cutEndMs: cutEnd })
+    }
+  }
   return slots
 }
+
