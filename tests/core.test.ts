@@ -19,7 +19,7 @@ import {
   AUDIO_PACKAGE_VERSION,
   type ImportProgress,
 } from '../src/utils/audioPackage'
-import { buildSegments } from '../src/utils/audioPlayer'
+import { activeSlotIndex, buildSegments } from '../src/utils/audioPlayer'
 
 describe('isSentenceEnd', () => {
   it('中文标点', () => {
@@ -160,6 +160,57 @@ describe('buildSegments 标题段', () => {
   it('从中间某句起播时跳过标题（不重复念）', () => {
     const segs = buildSegments(chapter, false)
     expect(segs[0]).toMatchObject({ kind: 'body', start: 3150 })
+  })
+})
+
+// ───────────────── 整章顺序播放：时间轴推导高亮（进度途中零 seek） ─────────────────
+
+describe('activeSlotIndex 位置推导', () => {
+  const chapter = {
+    id: 'ch-0',
+    title: '章标题',
+    titleStartMs: 0,
+    titleEndMs: 1600,
+    durationMs: 9000,
+    sentenceCount: 2,
+    sentences: [
+      { index: 0, text: '甲。', kind: 'text' as const, startMs: 3150, endMs: 6000, voiceStartMs: 3200, voiceEndMs: 5900 },
+      { index: 1, text: '乙。', kind: 'text' as const, startMs: 6000, endMs: 9000, voiceStartMs: 6050, voiceEndMs: 8800 },
+    ],
+    notes: [{ id: 'n0', index: 0, kind: 'note' as const, text: '注', startMs: 12000, endMs: 14000 }],
+    notesDurationMs: 14000,
+  }
+  const segs = buildSegments(chapter, true)
+
+  it('章标题区间 → 高亮标题', () => {
+    expect(activeSlotIndex(segs, 0)).toBe(0)
+    expect(activeSlotIndex(segs, 1599)).toBe(0)
+  })
+  it('标题与正文的静音空档不吃掉高亮（停在上一句标题）', () => {
+    expect(activeSlotIndex(segs, 2000)).toBe(0)
+    expect(activeSlotIndex(segs, 3000)).toBe(0)
+  })
+  it('正文按区间落到对应句', () => {
+    expect(activeSlotIndex(segs, 3150)).toBe(1)
+    expect(activeSlotIndex(segs, 5999)).toBe(1)
+    expect(activeSlotIndex(segs, 6000)).toBe(2)
+    expect(activeSlotIndex(segs, 8999)).toBe(2)
+  })
+  it('注释排在正文之后，播到注释区才高亮注释', () => {
+    expect(segs[3]).toMatchObject({ kind: 'note', start: 12000 })
+    expect(activeSlotIndex(segs, 11000)).toBe(2) // 仍在正文第 2 句
+    expect(activeSlotIndex(segs, 12000)).toBe(3)
+    expect(activeSlotIndex(segs, 13999)).toBe(3)
+  })
+  it('越过章尾仍停在最后一个槽位（高亮不闪断，收尾交给 tick 的 end+500 判定）', () => {
+    expect(activeSlotIndex(segs, 999999)).toBe(3)
+    expect(activeSlotIndex(segs, -1)).toBe(-1)
+  })
+
+  it('时间轴严格按时间升序（保证顺序播放不跳转）', () => {
+    const starts = segs.map((s) => s.start)
+    expect(starts).toEqual([...starts].sort((a, b) => a - b))
+    expect(starts).toEqual([0, 3150, 6000, 12000])
   })
 })
 

@@ -88,8 +88,8 @@
 > **注释（脚注）的处理**：原文正文里的注释标记（①、`[1]`、`*` 等）与注释正文通常分离（注释在章末或「注释」段）。PC 端：
 > 1. 合成**正文**：分批合成去掉注释正文、并**去掉标记 glyph**（避免被念出）的文本，得到本章**前半段（正文段）**；含标记的句子在 manifest 里带 `noteRef`（指向注释 id），`text` 仍保留标记供 UI 展示。
 > 2. 把**全部注释**用 `noteVoice`（**与正文音色不同**）分批合成、拼接为**注释段**，追加到本章音频的**后面**，得到 `notes[]` 各自 `startMs/endMs`（偏移位于正文之后）。
-> 3. 播放器在正文遇到 `noteRef` 时：先播完该句 → `currentTime` 跳到对应注释 `startMs` 播完注释 → 回到该句 `endMs` 继续正文。
-> 这样注释音频"对应序号、位于后面、按需跳转"，正文朗读不被注释打断。
+> 3. 播放器把整章当连续音轨播（标题 → 正文 → 注释），注释按物理顺序连读；正文遇到 `noteRef` 时在屏幕上对应高亮，想立刻听到该注释可点注释角标手动跳播。
+> 这样注释音频"对应序号、位于后面、按需跳转"，正文朗读不被注释打断，且朗读全程零 seek。
 
 ---
 
@@ -166,7 +166,7 @@
 - `sentences[].kind`：`text` 正文 / `note` 注释，沿用手机端 `isNoteParagraph` 判定，便于播放时切换音色、UI 区分。
 - `sentences[].startMs/endMs`：该**正文句**在章节 mp3【正文段】中的起止偏移（毫秒）。**对齐核心字段**，由 PC 端「批级合成 + 批内字级时间戳切句 + 批间 PCM 平移」计算得到，句间连续无缝。
 - `sentences[].voiceStartMs/voiceEndMs`：**可选**，句内**真实语音**的起止（毫秒），由 API 字级时间戳（`Subtitles` 首字 `BeginTime` / 末字 `EndTime`）精修得到，用于高亮（跳过句首尾静音）；缺省时高亮回退用 `startMs/endMs`。
-- `sentences[].noteRef`：可选，字符串数组，指向 `notes[].id`。当该正文句含注释标记（①、`[1]`、`*` 等）时存在；播放器播完此句后跳到对应注释音频播放，再回到本句 `endMs` 继续正文。一句可含多个标记 → 数组按顺序播放。
+- `sentences[].noteRef`：可选，字符串数组，指向 `notes[].id`。当该正文句含注释标记（①、`[1]`、`*` 等）时存在；播放器在正文连播经过此句时把对应注释高亮出来，用户点注释角标可跳播该条注释音频（一句可含多个标记 → 数组按顺序播放）。**注意**：注释音频在音频流里整体排在正文之后，所以「注释紧跟被引用句」是 UI/手动跳播实现，不是连播顺序。
 - `chapters[].notes[]`：注释（脚注）数组，每项为一条独立注释音频：`id`（如 `n0`）、`index`（序号，从 0）、`kind:"note"`、`text`、`startMs/endMs`（在**注释段**中的偏移，位于正文之后）、`voiceStartMs/voiceEndMs`（**可选**，同句子的语音起止语义：由注释批的字级时间戳精修，缺省时高亮回退用 `startMs/endMs`）。
 - `chapters[].titleStartMs` / `titleEndMs`（**可选，v1.1 新增**）：本章标题语音在**整章 mp3** 里的区间。PC 端把章标题单独合成一段、前置到每章音频开头，听感上是「（标题）……正文」，并留 `gap` 静音与正文隔开。**标题不占正文句号**（`sentences[]` 里仍是纯正文，index 不变），只是整章时间轴向后平移，手机端按 `startMs` 定位即可自动对齐。缺这两个字段（=0）表示**本章不朗读标题**（旧包兼容），手机端仍按正文正常播放、标题仅作显示。
 - `chapters[].durationMs`：正文时长（= 末句 `endMs`），进度条以此为准。
@@ -218,15 +218,19 @@ PC/手机必须复用同一份 `isNoteParagraph` 与本节配对规则；任一�
 
 | 播放动作 | 实现 |
 |---------|------|
-| 章首朗读标题 | `titleEndMs > titleStartMs > 0` 时，段序列最前面插一条 `title` 段（`start=titleStartMs, end=titleEndMs`），播完自动落到正文句 0；从中间某句起播时**不插**标题段（避免重念） |
-| 定位到某句 | `audio.currentTime = manifest.chapters[id].sentences[sentenceIndex].startMs` |
-| 高亮文本 | 取 `sentences[sentenceIndex].text`，并以 currentTime 跨边界驱动高亮更新 |
-| 正文句含注释标记 | 播完该句后 `audio.currentTime = notes[noteRef].startMs`，播完注释回到该句 `endMs` 继续正文（多标记按 `noteRef` 数组顺序）；注释段音频由 PC 端用 `noteVoice` 合成，播放器直接播放该段 |
+| 整体策略 | **整章顺序播放、进度途中零 seek**：`audio.currentTime` 只读不写，高亮由位置反查时间轴得出（见下） |
+| 章首朗读标题 | `titleEndMs > titleStartMs > 0` 时，时间轴首位是 `title` 槽位（`titleStartMs`→`titleEndMs`），连播经过它时自动触发标题高亮；从中间某句起播时**不插**标题槽位（避免重念，且一次性前跳到该句） |
+| 定位到某句 | `audio.currentTime = manifest.chapters[id].sentences[sentenceIndex].startMs`（**仅用户点击时执行**，pause → 等 `seeked` → play） |
+| 高亮文本 | 每 100ms 读一次 currentTime，二分查找「最后一个 `start <= t` 的槽位」，槽位变了才回调（onSentence / onNote / onTitle）；落在句间空档时沿用前一个槽位，高亮不闪断 |
+| 正文句含注释标记 | **不再自动插播**（插播需要「跳回正文」的回退 seek，Android 上必然重念）；改为注释按物理顺序在正文念完后连读，屏幕高亮跟随；想「这里就听到注」时点该句末尾的注释角标 → `audio.currentTime = notes[noteRef].startMs` 手动跳播 |
 | 单条注释定位 | `audio.currentTime = notes[k].startMs`（如用户从注释列表点开某条） |
-| 连续播放本章 | 直接播 `audio/{chapterId}.mp3`，根据 currentTime 自动切换高亮句；**播到正文结束（`durationMs`）即停**，注释段仅在遇到 `noteRef` 时按需跳转 |
+| 连续播放本章 | 直接播 `audio/{chapterId}.mp3` 从头到尾（标题 → 正文 → 注释），全程不 seek；`ended` 事件收尾并续下一章 |
 | 章节跳转 | 切到 `audio/{chapterId}.mp3` 从头播 |
-| 单句重播 | 在 `[startMs, endMs]` 区间循环 |
+| 单句重播 | 跳到 `[startMs, endMs]` 起点重播 |
 | 进度条 | 用 `chapters[].durationMs` 显示整章，currentTime 映射位置 |
+
+**为什么进度途中不能 seek**（实测定论）：Android WebView 上报的 `currentTime` 是媒体时钟的阶梯值（约 250ms 刷新一次），且**滞后于喇叭里真正在响的位置**一个输出缓冲（约 200~300ms，正好一个汉字）。任何「seek 回段首」都会把该段开头已经念过的 200~300ms 再念一遍 —— 第一版无条件 seek 是「每句重三个字」，改成「位置已在段内就不回退」仍剩「每句重一个字」（fallback 分支还是 seek 了）。最终把 seek 从进度路径彻底移除后，重复从原理上不可能发生。
+
 
 **为什么每章一个文件 + 每句偏移**：PC 端逐句合成 PCM 后无损拼接为整章单文件（天然无缝），每句边界由 PCM 字节数精确计算；整章单文件既无缝又只需极少文件数，导入/扫描/播放都轻。
 
