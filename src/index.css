@@ -880,6 +880,17 @@ button {
   letter-spacing: 0.06em;
 }
 
+/* 正在朗读本章标题：跟正文高亮同一套红，点一下可回到章首重听 */
+.reader-content .chapter-title.speaking {
+  color: #c62828;
+}
+.reader.theme-eye .reader-content .chapter-title.speaking {
+  color: #2e7d32;
+}
+.reader.theme-night .reader-content .chapter-title.speaking {
+  color: #ffd54f;
+}
+
 .reader-content p {
   margin-bottom: 1em;
   text-indent: 2em;

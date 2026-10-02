@@ -133,6 +133,8 @@
     {
       "id": "ch-0",                // 与 audio/{id}.mp3 一致
       "title": "湖南农民运动考察报告",
+      "titleStartMs": 0,           // 【新增 v1.1】章标题语音在整章 mp3 里的起点（=0）
+      "titleEndMs": 1600,          // 【新增 v1.1】章标题语音结束点；整章开头一段就是标题，念完接正文
       "durationMs": 5300,          // 正文时长（= 末句 endMs），进度条以此为准
       "sentenceCount": 3,          // 必须等于 sentences 数组长度（仅正文句）
       "sentences": [              // 正文句子，下标 = 句子序号；startMs/endMs = 在【正文段】中的偏移
@@ -166,6 +168,7 @@
 - `sentences[].voiceStartMs/voiceEndMs`：**可选**，句内**真实语音**的起止（毫秒），由 API 字级时间戳（`Subtitles` 首字 `BeginTime` / 末字 `EndTime`）精修得到，用于高亮（跳过句首尾静音）；缺省时高亮回退用 `startMs/endMs`。
 - `sentences[].noteRef`：可选，字符串数组，指向 `notes[].id`。当该正文句含注释标记（①、`[1]`、`*` 等）时存在；播放器播完此句后跳到对应注释音频播放，再回到本句 `endMs` 继续正文。一句可含多个标记 → 数组按顺序播放。
 - `chapters[].notes[]`：注释（脚注）数组，每项为一条独立注释音频：`id`（如 `n0`）、`index`（序号，从 0）、`kind:"note"`、`text`、`startMs/endMs`（在**注释段**中的偏移，位于正文之后）、`voiceStartMs/voiceEndMs`（**可选**，同句子的语音起止语义：由注释批的字级时间戳精修，缺省时高亮回退用 `startMs/endMs`）。
+- `chapters[].titleStartMs` / `titleEndMs`（**可选，v1.1 新增**）：本章标题语音在**整章 mp3** 里的区间。PC 端把章标题单独合成一段、前置到每章音频开头，听感上是「（标题）……正文」，并留 `gap` 静音与正文隔开。**标题不占正文句号**（`sentences[]` 里仍是纯正文，index 不变），只是整章时间轴向后平移，手机端按 `startMs` 定位即可自动对齐。缺这两个字段（=0）表示**本章不朗读标题**（旧包兼容），手机端仍按正文正常播放、标题仅作显示。
 - `chapters[].durationMs`：正文时长（= 末句 `endMs`），进度条以此为准。
 - `chapters[].notesDurationMs`：含注释段的整章文件总时长（≥ `durationMs`）。
 - `integrity.chapterCount` / `sentenceCount` / `noteCount`：均为**本包**口径（不是全书），用于校验包内数据自洽。
@@ -209,10 +212,13 @@ PC/手机必须复用同一份 `isNoteParagraph` 与本节配对规则；任一�
 
 ## 四、对齐契约（播放器如何使用）
 
+每章 mp3 的**时间轴三段**：`[0, titleEndMs)` 章标题段 → `[titleEndMs, durationMs)` 正文段（含句间静音）→ `[durationMs, notesDurationMs)` 注释段。章标题不占正文句号，手机端播到章首会先念「本章标题」再进正文。
+
 播放器当前阅读位置用 `(chapterId, sentenceIndex)` 表示，对齐规则：
 
 | 播放动作 | 实现 |
 |---------|------|
+| 章首朗读标题 | `titleEndMs > titleStartMs > 0` 时，段序列最前面插一条 `title` 段（`start=titleStartMs, end=titleEndMs`），播完自动落到正文句 0；从中间某句起播时**不插**标题段（避免重念） |
 | 定位到某句 | `audio.currentTime = manifest.chapters[id].sentences[sentenceIndex].startMs` |
 | 高亮文本 | 取 `sentences[sentenceIndex].text`，并以 currentTime 跨边界驱动高亮更新 |
 | 正文句含注释标记 | 播完该句后 `audio.currentTime = notes[noteRef].startMs`，播完注释回到该句 `endMs` 继续正文（多标记按 `noteRef` 数组顺序）；注释段音频由 PC 端用 `noteVoice` 合成，播放器直接播放该段 |
@@ -252,6 +258,7 @@ PC/手机必须复用同一份 `isNoteParagraph` 与本节配对规则；任一�
 - `format`/`version` 不匹配 → 拒绝导入并提示「请升级 App / 重新导出」。
 - `package.mode` 为 `partial`（缺章）属正常情况，手机端**不因缺章拒绝导入**；只有 `format`/`version` 不兼容才拒绝。
 - `book.id` 相同即视为同一本书，允许跨包合并；`book.id` 不同则视为新书各自入库。
+- **v1.1 新增可选字段（向后兼容）**：`chapters[].titleStartMs/titleEndMs`。旧包没有这两个字段 → 手机端按「本章不朗读标题」处理，正文播放完全不受影响；新包给旧 App 也能正常导入（忽略新字段）。因此**不必为了朗读标题而升 `version`**（`version` 仍为 1）。
 - **v2 预留**：句子级可扩展 `charStart/charEnd`（在章节正文中的字符区间）支持「句内逐字高亮」；当前 v1 仅句级。
 - **逐字高亮（可选 v2）**：若 TTS 后期支持词级时间戳，可在 `sentences[]` 内加 `words:[{text,startMs,endMs}]`，不改文件结构。
 

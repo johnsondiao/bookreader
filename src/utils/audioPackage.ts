@@ -134,6 +134,8 @@ export function parseAudioManifest(raw: unknown): AudioManifest {
     chapters.push({
       id: ch.id,
       title: typeof ch.title === 'string' ? ch.title : ch.id,
+      titleStartMs: Number(ch.titleStartMs) || 0,
+      titleEndMs: Number(ch.titleEndMs) || 0,
       durationMs: Number(ch.durationMs) || 0,
       sentenceCount: Number(ch.sentenceCount) || 0,
       sentences,

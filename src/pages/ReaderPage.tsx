@@ -57,6 +57,7 @@ export function ReaderPage() {
   const [posIndex, setPosIndex] = useState(0) // 音频=渲染单元下标；纯文本=段落下标
   const [activeSentence, setActiveSentence] = useState(-1) // 正文句 index
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null)
+  const [speakingTitle, setSpeakingTitle] = useState(false) // 正在念本章标题
   const [playing, setPlaying] = useState(false)
   const [paused, setPaused] = useState(false)
   const [toast, setToast] = useState('')
@@ -100,6 +101,9 @@ export function ReaderPage() {
     [book, chapter],
   )
   const isAudio = !!audioCh
+
+  /** 本章是否朗读标题（旧包无 titleStartMs 时为空 → 标题只显示、不朗读） */
+  const chapterHasTitleAudio = (audioCh?.titleStartMs ?? 0) > 0 && (audioCh?.titleEndMs ?? 0) > 0
 
   /* ---- 音频章节：渲染单元 = 正文句 + 注释 ---- */
   const audioUnits = useMemo(() => {
@@ -236,6 +240,7 @@ export function ReaderPage() {
     setPaused(false)
     setActiveSentence(-1)
     setActiveNoteId(null)
+    setSpeakingTitle(false)
   }, [])
 
   const saveProgress = useCallback(
@@ -313,8 +318,15 @@ export function ReaderPage() {
         rate: settings.playbackRate,
         startSentenceIndex: startSentence,
         callbacks: {
+          onTitle: () => {
+            if (!mountedRef.current) return
+            setSpeakingTitle(true)
+            setActiveSentence(-1)
+            setActiveNoteId(null)
+          },
           onSentence: (i) => {
             if (!mountedRef.current) return
+            setSpeakingTitle(false)
             setActiveSentence(i)
             setActiveNoteId(null)
             const u = sentenceUnitMap.get(i) ?? 0
@@ -324,6 +336,7 @@ export function ReaderPage() {
           },
           onNote: (id) => {
             if (!mountedRef.current) return
+            setSpeakingTitle(false)
             setActiveNoteId(id)
             const u = noteUnitMap.get(id)
             if (u != null) {
@@ -345,6 +358,7 @@ export function ReaderPage() {
               setPosIndex(0)
               setActiveSentence(-1)
               setActiveNoteId(null)
+              setSpeakingTitle(false)
               saveProgressRef.current(next, 0, 'audio', '进入下一章')
               showToast('继续下一章…')
             } else {
@@ -422,6 +436,7 @@ export function ReaderPage() {
     setPosIndex(0)
     setActiveSentence(-1)
     setActiveNoteId(null)
+    setSpeakingTitle(false)
     setPanel(null)
     saveProgress(cid, 0, 'read', '切换章节')
   }
@@ -613,7 +628,18 @@ export function ReaderPage() {
         onTouchStart={onTouchStart}
         onTouchEnd={onTouchEnd}
       >
-        <h2 className="chapter-title">
+        <h2
+          className={`chapter-title${speakingTitle ? ' speaking' : ''}`}
+          onClick={(e) => {
+            if (!chapterHasTitleAudio) return
+            e.stopPropagation()
+            if (playing) {
+              // 正在念标题 → 再点一次从头重念；否则跳回章首
+              playerRef.current.seekToTitle()
+            }
+          }}
+          title={chapterHasTitleAudio ? '点击回到本章开头重听标题' : undefined}
+        >
           {chapter.title}
           {isAudio && <span className="audio-badge">有音频</span>}
         </h2>

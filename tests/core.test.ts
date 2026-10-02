@@ -19,6 +19,7 @@ import {
   AUDIO_PACKAGE_VERSION,
   type ImportProgress,
 } from '../src/utils/audioPackage'
+import { buildSegments } from '../src/utils/audioPlayer'
 
 describe('isSentenceEnd', () => {
   it('中文标点', () => {
@@ -98,6 +99,67 @@ describe('parseAudioManifest', () => {
     expect(m.chapters).toHaveLength(1)
     expect(m.chapters[0].sentences[0].noteRef).toEqual(['n0'])
     expect(m.chapters[0].notes[0].id).toBe('n0')
+  })
+
+  it('透传章标题朗读区间，旧包缺省为 0', () => {
+    const base = {
+      format: AUDIO_PACKAGE_FORMAT,
+      version: AUDIO_PACKAGE_VERSION,
+      book: { id: 'b-1', title: '测试书', sourceFile: 'book/source.epub', sourceFormat: 'epub' as const },
+      package: { mode: 'full' as const, chapterIds: ['ch-0'], sourceChapterCount: 1 },
+    }
+    const withTitle = parseAudioManifest({
+      ...base,
+      chapters: [{ id: 'ch-0', title: '湖南农民运动考察报告', titleStartMs: 0, titleEndMs: 1600, durationMs: 5000, sentences: [], notes: [] }],
+    })
+    expect(withTitle.chapters[0].titleStartMs).toBe(0)
+    expect(withTitle.chapters[0].titleEndMs).toBe(1600)
+
+    const legacy = parseAudioManifest({
+      ...base,
+      chapters: [{ id: 'ch-0', title: '湖南农民运动考察报告', durationMs: 5000, sentences: [], notes: [] }],
+    })
+    expect(legacy.chapters[0].titleStartMs).toBe(0)
+    expect(legacy.chapters[0].titleEndMs).toBe(0)
+  })
+})
+
+// ─────────────────────── 章标题朗读段（audioPlayer） ───────────────────────
+
+describe('buildSegments 标题段', () => {
+  const chapter = {
+    id: 'ch-0',
+    title: '湖南农民运动考察报告',
+    titleStartMs: 0,
+    titleEndMs: 1600,
+    durationMs: 9000,
+    sentenceCount: 2,
+    // 正文整体排在标题之后（与 PC 端合成结果一致）
+    sentences: [
+      { index: 0, text: '甲。', kind: 'text' as const, startMs: 3150, endMs: 6000, voiceStartMs: 3200, voiceEndMs: 5900 },
+      { index: 1, text: '乙。', kind: 'text' as const, startMs: 6000, endMs: 9000, voiceStartMs: 6050, voiceEndMs: 8800 },
+    ],
+    notes: [],
+    notesDurationMs: 9000,
+  }
+
+  it('章首先插标题段，正文段整体后移', () => {
+    const segs = buildSegments(chapter, true)
+    expect(segs).toHaveLength(3)
+    expect(segs[0]).toMatchObject({ kind: 'title', start: 0, end: 1600, index: -1 })
+    expect(segs[1]).toMatchObject({ kind: 'body', start: 3150, sentenceIndex: 0 })
+    expect(segs[2]).toMatchObject({ kind: 'body', start: 6000, sentenceIndex: 1 })
+  })
+
+  it('旧包（无标题区间）不插标题段', () => {
+    const legacy = { ...chapter, titleStartMs: undefined, titleEndMs: undefined }
+    const segs = buildSegments(legacy, true)
+    expect(segs[0]).toMatchObject({ kind: 'body', start: 3150 })
+  })
+
+  it('从中间某句起播时跳过标题（不重复念）', () => {
+    const segs = buildSegments(chapter, false)
+    expect(segs[0]).toMatchObject({ kind: 'body', start: 3150 })
   })
 })
 

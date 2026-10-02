@@ -15,6 +15,8 @@ export interface PlayerCallbacks {
   onSentence?: (index: number) => void
   /** 开始播某条注释（跳播时触发） */
   onNote?: (noteId: string) => void
+  /** 开始播本章标题（章首朗读「这是哪一章」时触发一次，index 恒为 -1） */
+  onTitle?: (index: number) => void
   onStatus?: (status: PlayerStatus, msg?: string) => void
   /** 本章播完（正文+注释都结束） */
   onChapterEnd?: () => void
@@ -23,6 +25,8 @@ export interface PlayerCallbacks {
 type Segment =
   | { kind: 'body'; start: number; end: number; sentenceIndex: number }
   | { kind: 'note'; start: number; end: number; noteId: string }
+  /** 章标题：位于整章开头，播完自动落到正文第 0 句 */
+  | { kind: 'title'; start: number; end: number; index: number }
 
 export interface PlayChapterOptions {
   url: string
@@ -33,9 +37,15 @@ export interface PlayChapterOptions {
   callbacks: PlayerCallbacks
 }
 
-function buildSegments(chapter: AudioChapter): Segment[] {
+/** 把一章摊平成播放段序列（标题 → 正文句 / 注释交替）。导出供测试断言段顺序。 */
+export function buildSegments(chapter: AudioChapter, withTitle: boolean): Segment[] {
   const noteById = new Map<string, AudioNote>(chapter.notes.map((n) => [n.id, n]))
   const segs: Segment[] = []
+  const ts = chapter.titleStartMs ?? 0
+  const te = chapter.titleEndMs ?? ts
+  if (withTitle && ts >= 0 && te > ts) {
+    segs.push({ kind: 'title', start: ts, end: te, index: -1 })
+  }
   for (const s of chapter.sentences) {
     segs.push({ kind: 'body', start: s.startMs, end: s.endMs, sentenceIndex: s.index })
     for (const ref of s.noteRef ?? []) {
@@ -52,6 +62,8 @@ export interface AudioPlayerController {
   resume: () => void
   stop: () => void
   seekToSentence: (index: number) => void
+  /** 跳回章首标题段（本章无标题朗读段时无效） */
+  seekToTitle: () => void
   seekToNote: (noteId: string) => void
   isStopped: () => boolean
 }
@@ -82,6 +94,7 @@ export function createAudioPlayer(): AudioPlayerController {
   const emit = (seg: Segment | undefined) => {
     if (!seg) return
     if (seg.kind === 'body') cb.onSentence?.(seg.sentenceIndex)
+    else if (seg.kind === 'title') cb.onTitle?.(seg.index)
     else cb.onNote?.(seg.noteId)
   }
 
@@ -120,7 +133,9 @@ export function createAudioPlayer(): AudioPlayerController {
     stopped = true
     segIndex = -1
 
-    segments = buildSegments(opts.chapter)
+    // 从章首播放时（startSentenceIndex=0）先念章标题，再进正文；
+    // 从中间某句起播则跳过标题，避免已经读过还再念一遍。
+    segments = buildSegments(opts.chapter, (opts.startSentenceIndex ?? 0) <= 0)
     let start = 0
     const startIdx = opts.startSentenceIndex ?? 0
     if (startIdx > 0) {
@@ -183,6 +198,17 @@ export function createAudioPlayer(): AudioPlayerController {
     }
   }
 
+  /** 回到章首重念标题（仅当本章带标题朗读段时有效） */
+  function seekToTitle() {
+    const i = segments.findIndex((seg) => seg.kind === 'title')
+    if (i < 0) return
+    segIndex = i
+    if (audio && audio.src) {
+      audio.currentTime = segments[i].start / 1000
+      emit(segments[i])
+    }
+  }
+
   function seekToNote(noteId: string) {
     const i = segments.findIndex((seg) => seg.kind === 'note' && seg.noteId === noteId)
     if (i < 0) return
@@ -199,6 +225,7 @@ export function createAudioPlayer(): AudioPlayerController {
     resume,
     stop,
     seekToSentence,
+    seekToTitle,
     seekToNote,
     isStopped: () => stopped,
   }

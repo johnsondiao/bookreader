@@ -125,6 +125,12 @@ export interface AudioNote {
 export interface AudioChapter {
   id: string
   title: string
+  /**
+   * 章标题语音在本章 mp3 里的区间（整章从 0 起）。
+   * 旧包无此字段（=0）表示本章不朗读标题，播放与高亮都按「无标题」处理。
+   */
+  titleStartMs?: number
+  titleEndMs?: number
   /** 正文时长（= 末句 endMs） */
   durationMs: number
   sentenceCount: number
