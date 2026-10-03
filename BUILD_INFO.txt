@@ -1,0 +1,5 @@
+commit=441e76eb3910c470453abba75edd87d64f556aac
+run=135
+version=1.6.7
+built_at=2026-10-03 01:24 UTC
+message=fix(player): 修复播放倍速失效（切句模式换 src 把倍速冲成 1.0x，v1.6.7）
