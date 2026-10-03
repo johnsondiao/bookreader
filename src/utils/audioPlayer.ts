@@ -260,8 +260,12 @@ export function createAudioPlayer(): AudioPlayerController {
       return
     }
     slotIdx = i
-    a.playbackRate = rate
     if (a.src !== url) a.src = url
+    // 倍速必须在换src **之后** 设：改 src 会触发媒体加载流程，实测会把 playbackRate
+    // 复位到 defaultPlaybackRate（默认 1.0）。切句模式每句换一个 blob URL，
+    // 顺序反了的话每句都会被冲成 1.0x，设置面板的倍速完全不起作用。
+    a.playbackRate = rate
+    a.defaultPlaybackRate = rate
     emitChunk(slot)
     if (stopped) return
     startWatchdog()
@@ -295,6 +299,7 @@ export function createAudioPlayer(): AudioPlayerController {
     cursor = 0
     a.src = lastUrl ?? ''
     a.playbackRate = rate
+    a.defaultPlaybackRate = rate
     if (stopped) return
     void a.play().catch(() => {})
     if (!timer) startTimer()
@@ -344,6 +349,11 @@ export function createAudioPlayer(): AudioPlayerController {
     userPaused = false
 
     const a = ensureAudio()
+    // 复位兜底：换 src / ended 续段时浏览器会把 playbackRate 复位到
+    // defaultPlaybackRate（默认 1.0）。把它设成用户选的倍速，即便复位也复活成对的。
+    // 设置面板的倍速只在这里读一次，所以「调节速 → 下次播放生效」天然满足。
+    // TEMP-REVERT-CHECK
+    a.defaultPlaybackRate = rate
     clearTimer()
     clearWatchdog()
     a.pause()
@@ -390,8 +400,14 @@ export function createAudioPlayer(): AudioPlayerController {
     }
     a.src = opts.url
     a.playbackRate = rate
+    a.defaultPlaybackRate = rate
     await new Promise<void>((resolve) => {
-      a.addEventListener('loadedmetadata', () => resolve(), { once: true })
+      a.addEventListener('loadedmetadata', () => {
+        // 元数据到位后再补一次倍速：readyState 为 0 时赋值可能被忽略
+        if (stopped || mode !== 'continuous') return
+        a.playbackRate = rate
+        resolve()
+      }, { once: true })
       window.setTimeout(resolve, 2000)
     })
     cursor = 0

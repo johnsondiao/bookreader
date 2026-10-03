@@ -19,7 +19,7 @@ import {
   AUDIO_PACKAGE_VERSION,
   type ImportProgress,
 } from '../src/utils/audioPackage'
-import { activeSlotIndex, buildSegments } from '../src/utils/audioPlayer'
+import { activeSlotIndex, buildSegments, createAudioPlayer } from '../src/utils/audioPlayer'
 import {
   parseMpegFrame,
   buildChapterGeometry,
@@ -618,5 +618,88 @@ describe('formatBytes', () => {
     expect(formatBytes(1024)).toBe('1.0 KB')
     expect(formatBytes(1024 * 1024 * 3)).toBe('3.0 MB')
     expect(formatBytes(Math.round(1024 ** 3 * 1.2))).toBe('1.20 GB')
+  })
+})
+
+/**
+ * 倍速回归测试。
+ *
+ * 背景：切句模式每句换一个 blob src，而改src 会触发媒体加载流程，实测会把
+ * playbackRate 复位到 defaultPlaybackRate（默认 1.0）。原来 playSlot 里
+ * `a.playbackRate = rate` 写在 `a.src = url` **之前**，于是每句都被冲成 1.0x，
+ * 设置面板的倍速完全失效（v1.6.3 引入的回归）。
+ *
+ * 修法：把倍速移到 src 之后，并设 defaultPlaybackRate 作复位兜底。
+ * 本例断言 defaultPlaybackRate 被设成用户选的倍速 —— 这是复位后的回落值，
+ * 也就是这段修复的核心兜底。
+ */
+describe('播放倍速（v1.6.7回归修复）', () => {
+  /** 装一个最小 HTMLAudioElement 替身，记录被写进去的属性 */
+  function stubAudio(): { created: () => any } {
+    let instance: any = null
+    class FakeAudio {
+      src = ''
+      paused = true
+      currentTime = 0
+      playbackRate = 1
+      defaultPlaybackRate = 1
+      preload = ''
+      error: unknown = null
+      addEventListener() {}
+      removeEventListener() {}
+      play() { return Promise.resolve() }
+      pause() {}
+    }
+    const g: any = globalThis
+    g.Audio = function () {
+      instance = new FakeAudio()
+      return instance
+    } as unknown as typeof Audio
+    return { created: () => instance }
+  }
+
+  const emptyChapter: any = {
+    chapterId: 'ch-0',
+    title: '空章',
+    sentences: [],
+    notes: [],
+    durationMs: 0,
+    notesDurationMs: 0,
+  }
+
+  it('playChapter 用传入的 rate 设置 defaultPlaybackRate（换src 复位后的回落值）', async () => {
+    const g: any = globalThis
+    const prevAudio = g.Audio
+    const prevWindow = g.window
+    const { created } = stubAudio()
+    g.window = { setTimeout, clearTimeout, setInterval, clearInterval }
+    try {
+      const p = createAudioPlayer()
+      // url 传空串=> 不发网络请求，直接走回退分支并在 segments 为空时提前返回
+      await p.playChapter({ url: '', chapter: emptyChapter, rate: 0.6, callbacks: {} })
+      expect(created().defaultPlaybackRate).toBe(0.6)
+    } finally {
+      g.Audio = prevAudio
+      g.window = prevWindow
+    }
+  })
+
+  it('rate 非法（0/负数/NaN）时回落到 1.0，不把 0 或 NaN 塞进播放器', async () => {
+    const g: any = globalThis
+    const prevAudio = g.Audio
+    const prevWindow = g.window
+    const { created } = stubAudio()
+    g.window = { setTimeout, clearTimeout, setInterval, clearInterval }
+    try {
+      for (const bad of [0, -1, Number.NaN]) {
+        const p = createAudioPlayer()
+        await p.playChapter({ url: '', chapter: emptyChapter, rate: bad, callbacks: {} })
+        expect(created().defaultPlaybackRate).toBe(1)
+        expect(Number.isNaN(created().defaultPlaybackRate)).toBe(false)
+      }
+    } finally {
+      g.Audio = prevAudio
+      g.window = prevWindow
+    }
   })
 })
