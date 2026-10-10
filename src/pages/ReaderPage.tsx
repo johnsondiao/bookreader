@@ -4,6 +4,7 @@ import { ReaderSettingsPanel } from '../components/ReaderSettingsPanel'
 import { useAppStore } from '../store/useAppStore'
 import { splitParagraphs, splitSentences } from '../utils/chapterParser'
 import { createAudioPlayer, type AudioPlayerController } from '../utils/audioPlayer'
+import { playbackKeepAlive } from '../utils/playbackKeepAlive'
 import { getChapterAudioUrl } from '../utils/audioPackageStore'
 
 type Panel = null | 'toc' | 'settings'
@@ -219,11 +220,18 @@ export function ReaderPage() {
   useEffect(() => {
     return () => {
       playerRef.current.stop()
+      void playbackKeepAlive.stop() // 卸载时必须撤掉前台服务，否则通知栏残留
       mountedRef.current = false
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
       if (sleepIntervalRef.current !== null) window.clearInterval(sleepIntervalRef.current)
     }
   }, [])
+
+  // 播放状态驱动前台服务：播放中保活（息屏不断播），停止时撤服务
+  useEffect(() => {
+    if (playing) void playbackKeepAlive.start()
+    else void playbackKeepAlive.stop()
+  }, [playing])
 
   const showToast = (msg: string, ms = 2800) => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
@@ -242,6 +250,27 @@ export function ReaderPage() {
     setActiveNoteId(null)
     setSpeakingTitle(false)
   }, [])
+
+  /**
+   * 计算这次播放的起始句：优先用内存里的 activeSentence（正在听/刚暂停）。
+   * 内存里没有（进程被杀重启 / 重新打开 App）时，从持久化的进度推导 ——
+   * 音频播放每句都会 saveProgress(source:'audio', paragraphIndex=渲染单元下标)，
+   * 这里反过来把单元下标还原成正文句号，实现「从上次停的地方接着听」。
+   */
+  const resumeStartSentence = (): number => {
+    if (activeSentence >= 0) return activeSentence
+    if (!isAudio || !audioCh || !book || !chapter) return 0
+    if (book.chapterId !== chapter.id) return 0
+    const u = book.paragraphIndex || 0
+    if (u <= 0) return 0
+    if (u < audioCh.sentences.length) {
+      const s = audioCh.sentences[u]
+      return s ? s.index : 0
+    }
+    // 落在注释区/末尾：正文其实已念完，回最后一句正文（避免整章重播）
+    const last = audioCh.sentences[audioCh.sentences.length - 1]
+    return last ? last.index : 0
+  }
 
   const saveProgress = useCallback(
     (cid: string, idx: number, source: 'read' | 'audio', note?: string, recordSnapshot = true) => {
@@ -554,7 +583,7 @@ export function ReaderPage() {
 
   const togglePlay = () => {
     if (!playing) {
-      const start = isAudio ? (activeSentence >= 0 ? activeSentence : 0) : 0
+      const start = isAudio ? resumeStartSentence() : 0
       void playFrom(start)
       return
     }
@@ -760,7 +789,7 @@ export function ReaderPage() {
           <button
             type="button"
             className={playing ? 'active' : ''}
-            onClick={() => { if (playing) stopPlayer(); else void playFrom(activeSentence >= 0 ? activeSentence : 0) }}
+            onClick={() => { if (playing) stopPlayer(); else void playFrom(resumeStartSentence()) }}
           >
             <span className="mi">听</span>
             听书

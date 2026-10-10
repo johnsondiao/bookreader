@@ -25,6 +25,12 @@
 
         </activity>
 
+        <!-- 朗读保活：mediaPlayback 前台服务（targetSdk 34+ 必须声明类型） -->
+        <service
+            android:name=".PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -39,5 +45,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 息屏保活：前台服务 + CPU 唤醒锁 + 常驻通知（Android 13+ 通知需运行时授权） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 音频存于 App 私有目录（Directory.Data），无需任何存储权限 -->
 </manifest>
