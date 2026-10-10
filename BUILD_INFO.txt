@@ -1,0 +1,5 @@
+commit=daab58475eb83f01397c9950e76fea06ba68c2b3
+run=136
+version=1.6.8
+built_at=2026-10-10 08:01 UTC
+message=fix(player): 息屏后持续播放 + 重开 App 从上次位置接着听（v1.6.8）
